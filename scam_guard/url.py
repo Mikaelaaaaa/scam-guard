@@ -19,6 +19,7 @@ import 本模組不讀取任何檔案，即使 PSL 快照不存在亦不失敗 �
 
 import json
 import re
+from operator import itemgetter
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from enum import Enum
@@ -445,7 +446,7 @@ def _candidates(sentence: str, icann_tlds: frozenset[str]) -> list[_Candidate]:
         if tld not in icann_tlds or tld in EXTENSION_LIKE_TLDS:
             continue
         found.append((match.start(), _Candidate(text=text, scheme_present=False)))
-    found.sort(key=lambda item: item[0])
+    found.sort(key=itemgetter(0))
     return [candidate for _, candidate in found]
 
 
