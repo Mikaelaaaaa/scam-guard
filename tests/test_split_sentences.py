@@ -104,3 +104,11 @@ def test_otp_message_stays_one_sentence_with_its_comma() -> None:
 
     assert sentences == ["您的驗證碼是 123456,請勿告訴他人"]
     assert "," in sentences[0]
+
+
+def test_raw_fragment_keeps_boundary_whitespace_and_zero_width() -> None:
+    """句子邊界上的空白與零寬字元是規避痕跡，原文片段不得去除。"""
+    sentences = split(f"你好。 {ZWSP}驗證碼")
+
+    assert [text for text, _ in sentences] == ["你好。", "驗證碼"]
+    assert [raw for _, raw in sentences] == ["你好。", f" {ZWSP}驗證碼"]

@@ -264,7 +264,9 @@ def split_sentences(norm: NormalizedText) -> list[tuple[str, str]]:
     for raw_start, raw_end in bounds:
         a, b = _strip_span(text, raw_start, raw_end)
         if a < b:
-            sentences.append((text[a:b], norm.raw_span(a, b)))
+            # 正規化片段去除前後空白，原文片段**不去除**——句子邊界上的空白與
+            # 零寬字元本身就是規避痕跡，抹掉它們等於抹掉保留原文的理由。
+            sentences.append((text[a:b], norm.raw_span(raw_start, raw_end)))
     return sentences
 
 
