@@ -1,6 +1,35 @@
+---
+title: scam-guard
+emoji: 🛡️
+colorFrom: gray
+colorTo: blue
+sdk: gradio
+app_file: app.py
+python_version: "3.11"
+pinned: false
+---
+
 # scam-guard
 
 台灣中文詐騙訊息偵測。
+
+## Demo
+
+```bash
+pip install -e ".[dev,demo]"
+python app.py
+```
+
+介面有兩個模式：
+
+- **詐騙對練** —— 你扮演詐騙方打字，受害方由系統回應，而受害方說的每一句都是
+  判定結果的對話化呈現。它只會說判定裡有的東西。
+- **這是詐騙嗎** —— 貼上你真的收到的訊息，輸出是判定、依據與建議動作。
+  多則轉傳以**空行**分隔。
+
+`app.py` 是介面層的唯一檔案。位置不是自由選擇：`pyproject.toml` 的 `banned-api`
+對 `gradio` 的訊息已經指名它，`per-file-ignores` 也已經豁免它，而 HuggingFace
+Spaces 固定執行 repo 根目錄的 `app.py`。
 
 ## 這個系統會不會把你的訊息送出去
 
@@ -33,6 +62,10 @@ python3 -m pytest -q        # 全部測試，不需要網路
 python3 -m ruff check .     # lint，含架構界線（scam_guard/ 不得 import 網路函式庫）
 ```
 
+`tests/test_gradio_demo.py` 以 `pytest.importorskip("gradio")` 開頭，本機沒裝
+`[demo]` extra 時整個檔案會被跳過。CI 因此安裝 `.[dev,demo]` —— skipped 不會讓
+CI 變紅，安靜跳過的測試等於沒有測試。
+
 部署前需要的本機快照：
 
 ```bash
@@ -40,3 +73,11 @@ python -m tools.fetch_psl                # Public Suffix List
 python -m tools.fetch_blocklist          # 165 涉詐網址黑名單
 python -m tools.fetch_rdap_bootstrap     # IANA RDAP 端點對照（僅啟用 domain_age 時需要）
 ```
+
+## 授權
+
+本專案為 MIT（見 `LICENSE`）。
+
+**例外：`demo_samples.json` 的內容為 CC BY-SA 4.0。** 該檔的訊息取自
+[Cofacts 真的假的](https://cofacts.tw) 的開放資料，姓名標示以每一筆的
+`source_uri` 滿足。散布該檔或其衍生內容時須以相同條款釋出，不適用本專案的 MIT。

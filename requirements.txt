@@ -1,0 +1,3 @@
+# HuggingFace Spaces 只讀這個檔，不讀 pyproject.toml 的 optional-dependencies。
+# 內容 MUST 與 `[project.optional-dependencies]` 的 `demo` extra 一致。
+gradio>=6.0

@@ -14,8 +14,10 @@ jobs:
         with:
           python-version: "3.11"
 
+      # 必須含 demo extra：`tests/test_gradio_demo.py` 以 `importorskip("gradio")`
+      # 開頭，少了它整個檔案會被安靜跳過，而 skipped 不會讓 CI 變紅。
       - name: Install
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,demo]"
 
       - name: Lint
         run: ruff check .

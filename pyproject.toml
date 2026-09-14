@@ -29,6 +29,12 @@ pii-nlp = [
     "privacy-filter",
 ]
 
+# 介面層的執行期依賴。`pip install scam-guard` 不會裝到它 ——
+# `scam_guard/` 的 `dependencies` 維持 `[]`。
+demo = [
+    "gradio>=6.0",
+]
+
 [tool.setuptools.packages.find]
 include = ["scam_guard*"]
 
