@@ -1,4 +1,4 @@
-"""在 tw-PII-bench（910 題）上量測四條 regex 的 precision / recall / F1。
+"""在 tw-PII-bench（910 題）上量測四條 regex 的 precision，並檢查遮蔽的不變式。
 
 執行：`python -m scripts.bench_pii_regex`
 
@@ -35,6 +35,12 @@ NFKC 把全形數字收斂為半形之後才辨識得到），而 gold span 的�
 軍人補給證號 —— 它們與國民身分證共用 `[A-Z][12]\\d{8}` 的形狀而且通過同一個
 checksum，在字元層無法區分。遮掉它們不是 over-redaction，遮掉的確實是個資，
 只是類型標籤說錯了。把這兩種錯混成一個數字會讓這一層看起來比實際危險。
+
+**同一輪順便檢查 `redact_document()` 的三條結構不變式**（句數不變、無空句、
+網址未被改寫），不另建語料。理由是那三條是**全稱命題**，全稱命題要的是
+反例搜尋而不是代表性樣本 —— 910 題的價值在於它含有我們想不到的形狀
+（19 種實體、合成對話、中英混排）。同一份語料同一次執行還有一個附帶好處：
+precision 與「套用沒有破壞座標」這兩件事來自同一個 run，不會各自過期。
 """
 
 import sys
@@ -44,7 +50,9 @@ from pathlib import Path
 import pyarrow.parquet as pq
 
 from scam_guard import pii
-from scam_guard.normalize import normalize_text
+from scam_guard.normalize import URL_PATTERN, build_document, normalize_text
+from scam_guard.redact import redact_document
+from scam_guard.types import Message
 
 DATA_DIR = Path("data/tw-pii-bench")
 SPLITS = ("short", "mid", "long")
@@ -122,6 +130,27 @@ def _is_covered(gold: dict, predictions: Sequence[tuple[int, int, str]]) -> bool
     )
 
 
+def _redaction_violations(text: str) -> list[str]:
+    """回傳該題違反遮蔽不變式的描述。全部成立時回傳空陣列。
+
+    三條都是全稱命題，所以這裡只找反例，不算比率。
+    """
+    doc = build_document([Message(text=text)])
+    redacted = redact_document(doc)
+    violations: list[str] = []
+    if len(redacted.sentences) != len(doc.sentences):
+        violations.append(f"句數改變：{len(doc.sentences)} → {len(redacted.sentences)}")
+        return violations
+    for position, sentence in enumerate(redacted.sentences):
+        if not sentence:
+            violations.append(f"第 {position} 句遮蔽後為空字串")
+    for position, original in enumerate(doc.sentences):
+        for match in URL_PATTERN.finditer(original):
+            if match.group() not in redacted.sentences[position]:
+                violations.append(f"第 {position} 句的網址被改寫：{match.group()}")
+    return violations
+
+
 def _ratio(numerator: int, denominator: int) -> float:
     if denominator == 0:
         return 0.0
@@ -142,10 +171,12 @@ def main() -> int:
     over_redacted = dict.fromkeys(pii.ENTITY_TYPES, 0)
     gold_total = dict.fromkeys(IN_SCOPE_LABELS, 0)
     gold_covered = dict.fromkeys(IN_SCOPE_LABELS, 0)
+    violations: list[str] = []
 
     for row in rows:
         gold_spans = row["spans"]
         predictions = _predictions(row["text"])
+        violations.extend(f"{row['id']}：{note}" for note in _redaction_violations(row["text"]))
         for prediction in predictions:
             hits[prediction[2]] += 1
             if _is_true_positive(prediction, gold_spans):
@@ -220,9 +251,24 @@ def main() -> int:
     print("  (c) benchmark 為合成語料，與 Cofacts 真實訊息的分佈不同。")
     print("      `實驗結果.md` 的四個誤判字串仍是主要驗收依據，本表是補充不是取代。")
     print()
+    print("redact_document() 的三條結構不變式（句數不變 / 無空句 / 網址未被改寫）")
+    if violations:
+        print(f"  ✗ {len(violations)} 個反例：")
+        for note in violations[:20]:
+            print(f"    {note}")
+    else:
+        print(f"  ✓ {len(rows)} 題全部成立，零反例")
+    print()
+    print("誤遮率與 counts 的關係（`RedactedText.counts` 唯一可對照的外部數字）")
+    over_rate = _ratio(total_over_redacted, total_hits)
+    print(f"  benchmark 誤遮率（上界）{over_rate * 100:.1f}% × production 每日 counts 總和")
+    print("  ＝ log 每日無謂遮蔽片段數的估計。counts 按 entity_type 分開統計，")
+    print("  所以「是不是 TW_MOBILE 這項在亂遮」可以直接從 log 看出，不必重跑語料。")
+    print("  ⚠️ 上界的來源見上方說明：本語料上遮到非個資的次數其實是零。")
+    print()
     print("仍不可宣稱：真實 Cofacts 語料上的 over-redaction 率仍不可量測，")
     print("那需要 `dev-data` 的樣本。`規劃.md` M5 驗收為**部分完成**。")
-    return 0
+    return 1 if violations else 0
 
 
 if __name__ == "__main__":

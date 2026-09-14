@@ -7,7 +7,15 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import TypeAlias
+from typing import TYPE_CHECKING, TypeAlias
+
+if TYPE_CHECKING:
+    # 唯一的例外，而且只在型別檢查時存在：`Verdict.redacted` 的型別定義在
+    # `scam_guard.redact`，而該模組 import `normalize` 與本模組。執行期沒有這條
+    # 邊，import 圖仍是單向的 `redact.py` → `normalize.py` → `types.py`。
+    # 把 `RedactedText` 搬進本模組可以完全消掉這條邊，但 `add-redact-apply` 的
+    # proposal 明文把它放在 `redact.py`，不在實作階段改。
+    from scam_guard.redact import RedactedText
 
 Coord: TypeAlias = tuple[int, int]
 """證據座標 `(原始訊息序號, 訊息內句子序號)`，兩者皆從 0 起算。
@@ -114,11 +122,18 @@ class Message:
 
     `sent_at` 可為 `None` —— 轉傳單則訊息時 LINE 不提供原始時間戳，
     強制必填會逼 adapter 填入無意義的值。
+
+    `__repr__` **不輸出 `text`**，只輸出長度。`repr()` 是原文進 log 最短的一條
+    路徑：一行 `logger.info("收到 %s", message)` 就足夠，而寫那行的人不會意識到
+    自己在記錄使用者的 LINE 對話。長度與 `sender` 保留，debug 仍然可用。
     """
 
-    text: str
+    text: str = field(repr=False)
     sender: str | None = None
     sent_at: datetime | None = None
+
+    def __repr__(self) -> str:
+        return f"Message(len={len(self.text)}, sender={self.sender!r}, sent_at={self.sent_at!r})"
 
 
 @dataclass(frozen=True)
@@ -130,13 +145,18 @@ class Request:
 
     `frozen=True` 防止 check 意外修改輸入 —— check 之間的隔離靠這個保證。
     已知缺口：frozen 只保護欄位重新賦值，`messages` 這個 list 的內容仍可被修改。
+
+    `__repr__` 只輸出則數，理由同 `Message`。
     """
 
-    messages: list[Message]
+    messages: list[Message] = field(repr=False)
 
     def __post_init__(self) -> None:
         if not self.messages:
             raise ValueError("Request 至少需要一則訊息")
+
+    def __repr__(self) -> str:
+        return f"Request(messages={len(self.messages)})"
 
     @property
     def latest(self) -> Message:
@@ -183,6 +203,12 @@ class CheckResult:
     的類型無法被表達。一個訊號可指向多個成員（某條話術同時屬兩種類型），
     收斂由 `add-type-resolve` 負責。
 
+    **`detail` MUST NOT 含訊息原文片段。** 它只得含數值、名稱與描述
+    （`"0.87/0.85"`、`"網域註冊於 6 天前"`、`"命中 165 涉詐網站清單"`）。
+    理由是 `detail` 會進 log，而 log 的文字只得來自 `RedactedText`。
+    一條寫成 `detail=f"命中關鍵字：{sentence}"` 的檢查會繞過整條遮蔽路徑，
+    而且它看起來比不含原文的版本更有用 —— 這正是需要把規定寫在型別旁邊的理由。
+
     空 `scam_types` 是合法值：有些訊號指示可疑但不指向特定類型（規避偵測命中），
     此時 `hit` 仍可為 True。與「未命中」同樣由 `hit` 區分，不由空陣列表達。
 
@@ -221,11 +247,33 @@ class Verdict:
 
     `checks` 保留所有執行過的檢查，含未命中者，不做摘要或過濾 ——
     UI 顯示依據時需要，消融實驗逐項分析時需要。過濾的責任在呈現層。
+
+    `redacted` 是**可記錄投影**，由 `detect()` 在全部檢查之後填入。
+    它是外層取得該投影的**唯一**途徑 —— 不另外回傳、不放全域、不讓呼叫端
+    重新正規化一次。選欄位而不選 `(Verdict, RedactedText)` 的理由是失敗模式的
+    比較：欄位被忽略的後果是「沒寫 log」，缺資料是吵的；tuple 被
+    `verdict, _ = detect(...)` 丟掉的後果是「呼叫端改去 log `req`」，
+    而 `req` 是原文 —— 安靜、看起來正常、沒有任何東西會報告。**選會吵的那一個。**
+
+    **`redacted` 不是呈現用的資料。** HTTP 回應與使用者介面 MUST NOT 顯示它，
+    呈現一律取 `Document.raw_at()` 的原文片段。
+
+    `__repr__` 不輸出 `evidence` 與 `checks` 的內容，也不輸出 `redacted` ——
+    `evidence` 是原文片段，而 `redacted` 雖然可安全記錄，但要記錄它應該是
+    一個顯式的動作，不該是 `repr(verdict)` 的副作用。
     """
 
     scam_probability: float | None
     confidence: float
     scam_type: ScamType | None
-    evidence: list[str]
+    evidence: list[str] = field(repr=False)
     actions: list[str]
-    checks: list[CheckResult]
+    checks: list[CheckResult] = field(repr=False)
+    redacted: "RedactedText" = field(repr=False)
+
+    def __repr__(self) -> str:
+        return (
+            f"Verdict(scam_probability={self.scam_probability!r}, "
+            f"confidence={self.confidence!r}, scam_type={self.scam_type!r}, "
+            f"evidence={len(self.evidence)}, checks={len(self.checks)})"
+        )

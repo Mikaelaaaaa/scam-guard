@@ -78,11 +78,17 @@ class NormalizedText:
 
     `text` 為空（輸入全為不可見字元）時，對映僅剩哨兵一個元素，
     此時沒有任何區間可查詢，全文映回的性質不適用。
+
+    `raw` 與 `text` 不出現在 `repr()` 中 —— 兩者都是未遮蔽的訊息內容，
+    而 `repr()` 是它們進 log 最短的一條路徑。見 `scam_guard.redact`。
     """
 
-    raw: str
-    text: str
-    offsets: tuple[int, ...]
+    raw: str = field(repr=False)
+    text: str = field(repr=False)
+    offsets: tuple[int, ...] = field(repr=False)
+
+    def __repr__(self) -> str:
+        return f"NormalizedText(raw_len={len(self.raw)}, text_len={len(self.text)})"
 
     def __post_init__(self) -> None:
         if len(self.offsets) != len(self.text) + 1:
@@ -302,11 +308,15 @@ class Document:
 
     序列以 `tuple` 儲存：`frozen=True` 只擋欄位重新賦值，擋不住 list 的就地修改，
     而檢查之間的隔離靠不可變性保證。
+
+    `sentences` 與 `raw_sentences` 不出現在 `repr()` 中 —— 兩者都是未遮蔽的
+    訊息內容。可寫進 log 的文字只有 `scam_guard.redact.RedactedText`。
+    `repr()` 保留句數與截斷資訊，debug 仍然可用。
     """
 
-    sentences: Sequence[str]
-    raw_sentences: Sequence[str]
-    coords: Sequence[Coord]
+    sentences: Sequence[str] = field(repr=False)
+    raw_sentences: Sequence[str] = field(repr=False)
+    coords: Sequence[Coord] = field(repr=False)
     truncated: bool = False
     dropped_messages: int = 0
     _index: dict[Coord, int] = field(init=False, repr=False, compare=False, default_factory=dict)
@@ -360,6 +370,12 @@ class Document:
             )
 
         object.__setattr__(self, "_index", {coord: i for i, coord in enumerate(self.coords)})
+
+    def __repr__(self) -> str:
+        return (
+            f"Document(sentences={len(self.sentences)}, truncated={self.truncated}, "
+            f"dropped_messages={self.dropped_messages})"
+        )
 
     def index_of(self, coord: Coord) -> int:
         """座標對應的扁平索引。無效座標拋 `KeyError`。
