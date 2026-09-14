@@ -8,7 +8,7 @@ import pytest
 from scam_guard.check import CheckRegistry, Stage
 from scam_guard.normalize import Document, Limits
 from scam_guard.pipeline import NOT_HIT, SKIPPED, detect
-from scam_guard.types import CheckResult, Coord, Message, Request
+from scam_guard.types import CheckResult, Coord, Message, Request, ScamType
 from scam_guard.weights import load_weights
 
 TABLE = load_weights()
@@ -31,11 +31,27 @@ class FakeCheck:
 
 
 def hard_hit(name: str) -> list[CheckResult]:
-    return [CheckResult(name=name, hit=True, detail="命中 165 涉詐網站清單", hard=True)]
+    return [
+        CheckResult(
+            name=name,
+            hit=True,
+            detail="命中 165 涉詐網站清單",
+            scam_types=[ScamType.PHISHING_LINK],
+            hard=True,
+        )
+    ]
 
 
 def weak_hit(name: str) -> list[CheckResult]:
-    return [CheckResult(name=name, hit=True, detail="語氣急迫", hard=False)]
+    return [
+        CheckResult(
+            name=name,
+            hit=True,
+            detail="語氣急迫",
+            scam_types=[ScamType.PHISHING_LINK],
+            hard=False,
+        )
+    ]
 
 
 def a_request() -> Request:
@@ -308,19 +324,19 @@ def test_blank_messages_do_not_interrupt_the_pipeline() -> None:
     assert rule.docs[0].sentences == ()
 
 
-def test_empty_document_without_hits_scores_zero() -> None:
-    """無訊號 → 分數 0 → 機率 0.5。
+def test_empty_document_without_hits_yields_no_probability() -> None:
+    """無訊號 → 分數 0、機率 0.5，但信心 0.05 低於門檻 → 輸出「無法判定」。
 
-    那個 0.5 不傳達任何資訊，而把它換成「無法判定」是**信心**的工作：
-    `add-confidence` 落地後此處會變回 `scam_probability is None`，
-    理由是信心不足，不是計分尚未實作。
+    那個 0.5 不傳達任何資訊，而把它換成「無法判定」是**信心**的工作。
+    拒答的理由是依據不足，不是計分尚未實作。
     """
     registry = CheckRegistry()
     registry.register(FakeCheck("solicit_otp", Stage.LOCAL, []))
 
     verdict = detect(Request.from_text("   "), registry, TABLE)
 
-    assert verdict.scam_probability == 0.5
+    assert verdict.scam_probability is None
+    assert verdict.confidence == TABLE.threshold("base_no_hit")
 
 
 def test_check_can_read_sent_at_through_the_coordinate() -> None:

@@ -507,6 +507,65 @@ basis = "placeholder"
 rationale = "約束為「單一 Tier-A 命中（2.5）跨過門檻、單一 Tier-B 命中（0.6）不跨過」，故取值區間為 (0.6, 2.5]。1.5 在該區間內沒有任何特別之處，它不是調過的"
 blocked_on = "add-metrics"
 
+# ── add-confidence ──
+#
+# 八個數字的**相對關係**是設計，絕對值不是。六條關係各有一條測試鎖住：
+#   base_no_hit < confidence_floor        完全無訊號必定拒答
+#   base_single_group < confidence_floor  單一弱訊號必定拒答
+#   base_hard > confidence_floor          硬證據必定給出判定，除非有上限生效
+#   cap_contradiction < confidence_floor  矛盾必定拒答
+#   cap_unseen_pattern < confidence_floor 說不出類型必定拒答
+#   cap_truncated > confidence_floor      截斷不單獨造成拒答
+# 數字改了關係還在，測試就還有意義。
+
+[thresholds.base_hard]
+value = 0.90
+basis = "placeholder"
+rationale = "hard 的定義是「存在一個可陳述的事實，使合法機構或正常使用者不可能送出這個言語行為」。有這種事實就有依據，因此高於地板"
+blocked_on = "add-metrics"
+
+[thresholds.base_multi_group]
+value = 0.55
+basis = "placeholder"
+rationale = "兩個獨立群組指向同一個結論，比一個群組有依據，因此高於地板但低於硬證據"
+blocked_on = "add-metrics"
+
+[thresholds.base_single_group]
+value = 0.35
+basis = "placeholder"
+rationale = "刻意低於地板：一條 Tier-B（「高薪日結免經驗」「保證獲利」）在合法的打工與理財廣告裡大量出現，單一弱訊號不足以下判斷。代價是棄權率提高，而棄權率 MUST 與誤判率一同報告"
+blocked_on = "add-metrics"
+
+[thresholds.base_no_hit]
+value = 0.05
+basis = "placeholder"
+rationale = "project.md：「完全無訊號時可能性為 0.5 但信心接近 0」。低於地板，所以無訊號必定拒答"
+blocked_on = "add-metrics"
+
+[thresholds.cap_contradiction]
+value = 0.30
+basis = "placeholder"
+rationale = "低於地板，所以矛盾成立即拒答。這是宣導文處置的落地點 —— 有證據但證據對立，系統有東西可看卻沒有依據下判斷"
+blocked_on = "add-metrics"
+
+[thresholds.cap_unseen_pattern]
+value = 0.35
+basis = "placeholder"
+rationale = "低於地板：說不出是哪一種詐騙時，scam_type 為 None 配上一個高機率數字對使用者沒有任何可執行的東西，依據也只能是「訊息中有拆字痕跡」這種沒有指向的陳述"
+blocked_on = "add-metrics"
+
+[thresholds.cap_truncated]
+value = 0.50
+basis = "placeholder"
+rationale = "高於地板：截斷降低信心但不單獨造成拒答。截斷只在超過 100 則或 50,000 字元時發生，而保留下來的是**最新**的一段，也就是最可能含關鍵行為的一段，把它當成單獨的拒答理由過重"
+blocked_on = "add-testset"
+
+[thresholds.confidence_floor]
+value = 0.40
+basis = "placeholder"
+rationale = "低於此值 scam_probability 為 None。取值使四個基準值與三個上限落在上方六條關係所要求的兩側；0.40 本身在 0.35 與 0.50 之間沒有特別之處"
+blocked_on = "add-metrics"
+
 # ══ 類型優先序 ════════════════════════════════════════════════════════
 #
 # 供 add-type-resolve 在 hard 與權重皆平手時取用。順序依 165 各 CaseTitle

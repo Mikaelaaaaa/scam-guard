@@ -1,6 +1,7 @@
 """檢查執行流程與短路規則 —— 系統的單一入口。"""
 
 from scam_guard.check import Check, CheckRegistry, Stage
+from scam_guard.confidence import compute_confidence
 from scam_guard.normalize import DEFAULT_LIMITS, Document, Limits, build_document
 from scam_guard.redact import redact_document
 from scam_guard.scoring import compute_score
@@ -88,11 +89,12 @@ def detect(
 
     `Verdict` 四個欄位的來源：
 
-    - `scam_probability` —— 計分層的機率（`add-score-compute`）
-    - `confidence` / `scam_type` / `evidence` / `actions` —— 尚未接線，
-      分別由同一個 PR 的 `add-confidence`、`add-type-resolve`、
-      `add-verdict-render` 填入。**在那之前這三行是明確的暫時狀態**，
-      不是「本階段就長這樣」。
+    - `scam_probability` —— 計分層的機率，但**信心低於門檻時為 `None`**。
+      拒答的理由是依據不足，不是計分尚未實作；`confidence` 一律填實際值，
+      低於門檻時亦然，使呼叫端看得到系統為什麼閉嘴。
+    - `confidence` —— 信心層的值（`add-confidence`）
+    - `scam_type` / `evidence` / `actions` —— 尚未接線，由同一個 PR 的
+      `add-type-resolve` 與 `add-verdict-render` 填入。
     """
     table.validate_against(registry)
     doc: Document = build_document(req.messages, limits)
@@ -112,10 +114,12 @@ def detect(
             results.extend(_run(check, req, doc))
 
     score = compute_score(results, table)
+    confidence = compute_confidence(results, doc, score.contradicted, table)
+    abstains = confidence < table.threshold("confidence_floor")
 
     return Verdict(
-        scam_probability=score.probability,
-        confidence=0.0,
+        scam_probability=None if abstains else score.probability,
+        confidence=confidence,
         scam_type=None,
         evidence=[],
         actions=[],
