@@ -1,16 +1,19 @@
-"""資料取得（網路 I/O）—— 與 `api/`、`adapters/` 同級的介面層目錄。
+"""外部資料的取得程式 —— 由人在部署前執行，不在請求路徑上。
 
-分工只有一條，但它是硬的：
+`tools/` 獨占三件知識：**下載網址、外部格式的欄位名稱，以及那些欄位裡的字串
+怎麼變成我們自己的格式**。`scam_guard/` 只認識我們自己定義的格式。
 
-- `scam_guard/` 做**資料查詢**：純函式、讀本機檔案，不知道有網路。
-- `tools/` 做**資料取得**：對外發出網路請求，把結果落地成本機檔案。
+這條界線的位置不是自明的，選它的理由是**資料集改版時壞在哪裡**：
+若 `scam_guard/` 知道欄位叫什麼，改版會在一個線上請求裡炸；
+若那個知識只在 `tools/`，它會在一支人在終端機前執行的程式裡炸。
+（這不是假想 —— data.gov.tw 的 165027 頁面把欄位寫成「一頁式詐騙購物網站」，
+實際 JSON 的鍵是「一頁式數位經濟詐騙網站」。）
 
-方向是單向的 —— `tools/` 可以 import `scam_guard/`（它是消費端），
-`scam_guard/` import `tools/` 則是違規。後者 lint 擋不到（同屬專案內模組），
-只能靠 review，與 `openspec/project.md` 既有的說法一致。
+import 方向是 `tools/` → `scam_guard/`，不反過來。主機正規化一律呼叫
+`scam_guard.url`，不在此處另寫一份。
 
-前者由 `pyproject.toml` 的 ruff `flake8-tidy-imports.banned-api` 強制：
-`urllib.request` / `requests` / `httpx` 一律禁止，`tools/*` 豁免。
-那份清單擋的是最順手的三個入口，擋不住 `socket`、`http.client` 或
-`subprocess` 叫 curl —— 它是提醒機制不是沙箱，繞過它需要刻意。
+**與 `net/` 的差別。** `tools/` 由人在部署前執行一次，產物是一個檔案；
+`net/` 在每次請求中執行。合併之後「`tools/` 是離線的」就不再成立，
+而沒有任何機制會報告這件事 —— `api/` 只要 import 了 `tools.something`，
+它就在請求路徑上了。`api/` MUST NOT import `tools/`。
 """
