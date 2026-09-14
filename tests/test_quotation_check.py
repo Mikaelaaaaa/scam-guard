@@ -21,6 +21,9 @@ from scam_guard.rules.quotation import (
 )
 from scam_guard.rules.speech_act import register_speech_act_rules
 from scam_guard.types import CheckResult, Message, Request
+from scam_guard.weights import load_weights
+
+TABLE = load_weights()
 
 CONVERSATION_LOG = (
     "上午 10:23 小明 你好\n上午 10:24 小明 幫我看一下這個\n上午 10:25 小明 請至 ATM 解除分期"
@@ -29,8 +32,15 @@ CONVERSATION_LOG = (
 AWARENESS_POST = "最近很多假檢警詐騙，會叫你把錢匯到監管帳戶，千萬不要相信"
 
 
-class FakeLlm:
-    name = "llm"
+class FakeExpensiveCheck:
+    """假的 `EXPENSIVE` 檢查，用來觀察短路有沒有發生。
+
+    名稱取 `domain_age` 而非 `llm`：`detect()` 現在會以權重表驗證 registry，
+    而 LLM 訊號要到 `llm-layer` 才登錄進表。此處要觀察的是「昂貴檢查有沒有被
+    跳過」，任何 `Stage.EXPENSIVE` 的訊號都能承載同一個觀察。
+    """
+
+    name = "domain_age"
     stage = Stage.EXPENSIVE
 
     def __init__(self) -> None:
@@ -171,11 +181,11 @@ def test_no_marker_returns_empty_list() -> None:
 # --- 與 pipeline 的整合 ------------------------------------------------------
 
 
-def registry_with_rules() -> tuple[CheckRegistry, FakeLlm]:
+def registry_with_rules() -> tuple[CheckRegistry, FakeExpensiveCheck]:
     registry = CheckRegistry()
     register_speech_act_rules(registry)
     registry.register(QuotationCheck())
-    llm = FakeLlm()
+    llm = FakeExpensiveCheck()
     registry.register(llm)
     return registry, llm
 
@@ -183,7 +193,7 @@ def registry_with_rules() -> tuple[CheckRegistry, FakeLlm]:
 def test_quotation_vetoes_the_short_circuit_despite_hard_evidence() -> None:
     registry, llm = registry_with_rules()
 
-    checks = detect(Request.from_text(AWARENESS_POST), registry).checks
+    checks = detect(Request.from_text(AWARENESS_POST), registry, TABLE).checks
 
     hard_hits = [r for r in checks if r.hit and r.hard]
     assert [r.name for r in hard_hits] == ["safe_account"]
@@ -194,7 +204,7 @@ def test_quotation_vetoes_the_short_circuit_despite_hard_evidence() -> None:
 def test_quotation_alone_runs_expensive_checks() -> None:
     registry, llm = registry_with_rules()
 
-    detect(Request.from_text("有人傳這個給我，幫我看看"), registry)
+    detect(Request.from_text("有人傳這個給我，幫我看看"), registry, TABLE)
 
     assert llm.calls == 1
 
@@ -204,7 +214,7 @@ def test_rules_only_mode_does_not_raise() -> None:
     register_speech_act_rules(registry)
     registry.register(QuotationCheck())
 
-    checks = detect(Request.from_text(AWARENESS_POST), registry).checks
+    checks = detect(Request.from_text(AWARENESS_POST), registry, TABLE).checks
 
     assert any(r.name == NAME and r.hit for r in checks)
 
@@ -217,10 +227,10 @@ def test_quotation_does_not_change_other_checks() -> None:
     register_speech_act_rules(with_quotation)
     with_quotation.register(QuotationCheck())
 
-    plain = [r for r in detect(Request.from_text(AWARENESS_POST), without).checks]
+    plain = [r for r in detect(Request.from_text(AWARENESS_POST), without, TABLE).checks]
     quoted = [
         r
-        for r in detect(Request.from_text(AWARENESS_POST), with_quotation).checks
+        for r in detect(Request.from_text(AWARENESS_POST), with_quotation, TABLE).checks
         if r.name != NAME
     ]
 
@@ -243,7 +253,7 @@ def test_scam_disguised_as_awareness_still_keeps_its_hard_evidence() -> None:
     register_speech_act_rules(registry)
     registry.register(QuotationCheck())
 
-    checks = detect(Request.from_text(text), registry).checks
+    checks = detect(Request.from_text(text), registry, TABLE).checks
     hit = {r.name: r for r in checks if r.hit}
 
     assert NAME in hit

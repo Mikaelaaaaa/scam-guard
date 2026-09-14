@@ -12,6 +12,9 @@ from scam_guard.types import Message, Request, ScamType
 from scam_guard.url import PublicSuffixList
 from scam_guard.url_check import UrlBlocklistCheck, load_tables, register_url_checks
 from tests.test_blocklist_store import PSL_WITH_EXAMPLE, days_ago, write_snapshot
+from scam_guard.weights import load_weights
+
+TABLE = load_weights()
 
 ENTRIES = (
     {
@@ -182,9 +185,9 @@ def test_hard_hit_short_circuits_expensive_checks(
     register_url_checks(registry, psl, load_tables(), store=check._store)
     expensive = RecordingExpensiveCheck()
     registry.register(expensive)
-    verdict = detect(Request(messages=[Message(text="https://evil.com/login")]), registry)
+    verdict = detect(Request(messages=[Message(text="https://evil.com/login")]), registry, TABLE)
     assert expensive.calls == 0
-    skipped = [r for r in verdict.checks if r.name == "recording_expensive"]
+    skipped = [r for r in verdict.checks if r.name == "domain_age"]
     assert [r.detail for r in skipped] == [SKIPPED]
 
 
@@ -193,14 +196,18 @@ def test_no_hard_hit_runs_expensive_checks(psl: PublicSuffixList, check: UrlBloc
     register_url_checks(registry, psl, load_tables(), store=check._store)
     expensive = RecordingExpensiveCheck()
     registry.register(expensive)
-    detect(Request(messages=[Message(text="https://clean.example/a")]), registry)
+    detect(Request(messages=[Message(text="https://clean.example/a")]), registry, TABLE)
     assert expensive.calls == 1
 
 
 class RecordingExpensiveCheck:
-    """記錄自己有沒有被呼叫的 `EXPENSIVE` 檢查。"""
+    """記錄自己有沒有被呼叫的 `EXPENSIVE` 檢查。
 
-    name = "recording_expensive"
+    名稱取 `domain_age`：`detect()` 會以權重表驗證 registry，而未登錄的名稱
+    在組裝階段就被擋下。此處要觀察的是短路，任何 `EXPENSIVE` 訊號都可以。
+    """
+
+    name = "domain_age"
     stage = Stage.EXPENSIVE
 
     def __init__(self) -> None:

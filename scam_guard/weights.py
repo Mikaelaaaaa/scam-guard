@@ -64,6 +64,14 @@ MEASURED_TOLERANCE = 0.01
 
 PROBABILITY_FIELDS = ("p_hit_given_scam", "p_hit_given_ham")
 
+POSITIVE_THRESHOLDS = ("sigmoid_temperature",)
+"""必須為正值的門檻，於載入時擋下。
+
+`sigmoid_temperature` 是除數。0 或負值不是「設定得不好」而是壞掉的設定，
+而它的後果會出現在計分深處（除以零，或一條方向相反的機率曲線）。
+在邊界擋下使 `scam_guard.scoring` 不需要為它加一個防禦性分支。
+"""
+
 
 @dataclass(frozen=True)
 class SignalWeight:
@@ -440,6 +448,11 @@ def _parse_thresholds(document: Mapping[str, object], path: Path) -> dict[str, T
             rationale=_require_text(raw, "rationale", where, path),
             blocked_on=_require_text(raw, "blocked_on", where, path),
         )
+    for key in POSITIVE_THRESHOLDS:
+        if key in thresholds and thresholds[key].value <= 0.0:
+            raise ValueError(
+                f"門檻 {key!r} 必須為正值，實際為 {thresholds[key].value}（表：{path}）"
+            )
     return thresholds
 
 

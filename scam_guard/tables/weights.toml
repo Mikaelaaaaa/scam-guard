@@ -479,8 +479,33 @@ blocked_on = "add-testset"
 # 但機率與行數這類門檻根本不在那個尺度上。
 
 [thresholds]
-# 此區段在 add-weight-table 落地時為空骨架，由
+# 此區段的骨架由 add-weight-table 建立，條目由
 # add-score-compute、add-confidence、add-verdict-render 各自填入。
+
+# ── add-score-compute ──
+[thresholds.prior_log_odds]
+value = 0.0
+basis = "placeholder"
+rationale = "不用母體基本率：本系統的輸入是使用者主動拿來查的訊息，那是一個高度篩選過的分布；方法比較實驗的 970 則是平衡取樣，設計上就不含基本率資訊。先驗一旦非 0，「完全無訊號」的輸出就不是 0.5"
+blocked_on = "add-metrics"
+
+[thresholds.sigmoid_offset]
+value = 0.0
+basis = "placeholder"
+rationale = "尚未校準，位移為 0 使分數 0 對應機率 0.5。它是一個參數而不是寫死的 0，因為 add-metrics 的校準可能移動它"
+blocked_on = "add-metrics"
+
+[thresholds.sigmoid_temperature]
+value = 1.0
+basis = "placeholder"
+rationale = "尚未校準。Platt scaling 的單參數形式就是調溫度，add-metrics 若切得出校準集，調的就是它與 sigmoid_offset"
+blocked_on = "add-metrics"
+
+[thresholds.decision_score]
+value = 1.5
+basis = "placeholder"
+rationale = "約束為「單一 Tier-A 命中（2.5）跨過門檻、單一 Tier-B 命中（0.6）不跨過」，故取值區間為 (0.6, 2.5]。1.5 在該區間內沒有任何特別之處，它不是調過的"
+blocked_on = "add-metrics"
 
 # ══ 類型優先序 ════════════════════════════════════════════════════════
 #

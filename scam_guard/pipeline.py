@@ -3,7 +3,9 @@
 from scam_guard.check import Check, CheckRegistry, Stage
 from scam_guard.normalize import DEFAULT_LIMITS, Document, Limits, build_document
 from scam_guard.redact import redact_document
+from scam_guard.scoring import compute_score
 from scam_guard.types import CheckResult, Request, Verdict
+from scam_guard.weights import WeightTable
 
 QUOTATION_CHECK = "quotation"
 """引述偵測的檢查名稱。命中時否決短路 —— 見 `detect()` 的說明。"""
@@ -35,6 +37,7 @@ def _skipped(check: Check) -> CheckResult:
 def detect(
     req: Request,
     registry: CheckRegistry,
+    table: WeightTable,
     *,
     short_circuit: bool = True,
     limits: Limits = DEFAULT_LIMITS,
@@ -78,12 +81,20 @@ def detect(
     遮蔽結果在最後一個 `Check` 回傳之前**根本不存在**，檢查在時間上不可能讀到它，
     也不可能把它當成輸入。短路時也照常產出 —— 少跑幾個檢查不影響投影的完整性。
 
-    ⚠️ 此階段**不做計分**：`scam_probability` 固定為 `None`、`confidence`
-    為 0.0、`scam_type` / `evidence` / `actions` 為空，皆為佔位值。
-    實際計算屬 `scoring` PR（`add-score-compute`、`add-confidence`、
-    `add-type-resolve`、`add-verdict-render`）。在那之前接上 API 只會得到
-    「無法判定」，不會得到無意義的數字。
+    `table` 為必填且無預設值：一個有預設表的 `detect()` 會讓呼叫端在沒有表的
+    情況下跑出一個看起來正常的結果。**組裝階段就以它驗證 registry** ——
+    註冊了一個未登錄於表中的檢查時在這裡拋例外，而不是延後到第一次查表；
+    延後的話，一個沒人命中的新規則可以在表外活很久。
+
+    `Verdict` 四個欄位的來源：
+
+    - `scam_probability` —— 計分層的機率（`add-score-compute`）
+    - `confidence` / `scam_type` / `evidence` / `actions` —— 尚未接線，
+      分別由同一個 PR 的 `add-confidence`、`add-type-resolve`、
+      `add-verdict-render` 填入。**在那之前這三行是明確的暫時狀態**，
+      不是「本階段就長這樣」。
     """
+    table.validate_against(registry)
     doc: Document = build_document(req.messages, limits)
 
     checks = registry.enabled()
@@ -100,8 +111,10 @@ def detect(
         for check in expensive:
             results.extend(_run(check, req, doc))
 
+    score = compute_score(results, table)
+
     return Verdict(
-        scam_probability=None,
+        scam_probability=score.probability,
         confidence=0.0,
         scam_type=None,
         evidence=[],

@@ -224,8 +224,8 @@ def test_group_of_unknown_signal_raises(table: WeightTable) -> None:
 
 
 def test_threshold_of_unknown_key_raises(table: WeightTable) -> None:
-    with pytest.raises(KeyError, match="decision_score"):
-        table.threshold("decision_score")
+    with pytest.raises(KeyError, match="沒有這個門檻"):
+        table.threshold("沒有這個門檻")
 
 
 def test_with_overrides_does_not_mutate_the_original(table: WeightTable) -> None:

@@ -18,12 +18,20 @@ from scam_guard.rules.speech_act import (
     register_speech_act_rules,
 )
 from scam_guard.types import CheckResult, Message, Request, ScamType
+from scam_guard.weights import load_weights
+
+TABLE = load_weights()
 
 
-class FakeLlm:
-    """假的 `EXPENSIVE` 檢查，用來觀察短路有沒有發生。"""
+class FakeExpensiveCheck:
+    """假的 `EXPENSIVE` 檢查，用來觀察短路有沒有發生。
 
-    name = "llm"
+    名稱取 `domain_age` 而非 `llm`：`detect()` 現在會以權重表驗證 registry，
+    而 LLM 訊號要到 `llm-layer` 才登錄進表。此處要觀察的是「昂貴檢查有沒有被
+    跳過」，任何 `Stage.EXPENSIVE` 的訊號都能承載同一個觀察。
+    """
+
+    name = "domain_age"
     stage = Stage.EXPENSIVE
 
     def __init__(self) -> None:
@@ -93,10 +101,10 @@ def test_exemption_downgrades_but_keeps_the_record() -> None:
 def test_exemption_removes_the_short_circuit() -> None:
     registry = CheckRegistry()
     register_speech_act_rules(registry)
-    llm = FakeLlm()
+    llm = FakeExpensiveCheck()
     registry.register(llm)
 
-    detect(Request.from_text("您的驗證碼是 482913，請把驗證碼傳給我"), registry)
+    detect(Request.from_text("您的驗證碼是 482913，請把驗證碼傳給我"), registry, TABLE)
 
     assert llm.calls == 1
 
@@ -366,7 +374,7 @@ def test_registry_records_all_twenty_one_rules() -> None:
     registry = CheckRegistry()
     register_speech_act_rules(registry)
 
-    checks = detect(benign_request(), registry).checks
+    checks = detect(benign_request(), registry, TABLE).checks
 
     assert len(checks) == 21
     assert all(not result.hit for result in checks)
@@ -375,10 +383,10 @@ def test_registry_records_all_twenty_one_rules() -> None:
 def test_tier_a_hit_skips_expensive_checks() -> None:
     registry = CheckRegistry()
     register_speech_act_rules(registry)
-    llm = FakeLlm()
+    llm = FakeExpensiveCheck()
     registry.register(llm)
 
-    detect(Request.from_text("請將款項匯入監管帳戶"), registry)
+    detect(Request.from_text("請將款項匯入監管帳戶"), registry, TABLE)
 
     assert llm.calls == 0
 
@@ -386,10 +394,10 @@ def test_tier_a_hit_skips_expensive_checks() -> None:
 def test_tier_b_hit_does_not_skip_expensive_checks() -> None:
     registry = CheckRegistry()
     register_speech_act_rules(registry)
-    llm = FakeLlm()
+    llm = FakeExpensiveCheck()
     registry.register(llm)
 
-    detect(Request.from_text("跟著老師操作保證獲利"), registry)
+    detect(Request.from_text("跟著老師操作保證獲利"), registry, TABLE)
 
     assert llm.calls == 1
 
@@ -399,7 +407,7 @@ def test_disabling_one_rule_leaves_the_rest() -> None:
     register_speech_act_rules(registry)
     registry.disable("secrecy_demand")
 
-    names = [result.name for result in detect(benign_request(), registry).checks]
+    names = [result.name for result in detect(benign_request(), registry, TABLE).checks]
 
     assert "secrecy_demand" not in names
     assert len(names) == 20
@@ -432,15 +440,15 @@ def test_rules_need_no_expensive_checks() -> None:
     """純規則模式 —— baseline 的定義就是沒有 LLM 時仍完整運作。"""
     with_llm = CheckRegistry()
     register_speech_act_rules(with_llm)
-    with_llm.register(FakeLlm())
+    with_llm.register(FakeExpensiveCheck())
     rules_only = CheckRegistry()
     register_speech_act_rules(rules_only)
 
     text = "跟著老師操作保證獲利"
-    paired = detect(Request.from_text(text), with_llm).checks
-    alone = detect(Request.from_text(text), rules_only).checks
+    paired = detect(Request.from_text(text), with_llm, TABLE).checks
+    alone = detect(Request.from_text(text), rules_only, TABLE).checks
 
-    assert [r for r in paired if r.name != "llm"] == alone
+    assert [r for r in paired if r.name != "domain_age"] == alone
 
 
 IMPERATIVE_SOLICITATIONS: tuple[str, ...] = (
