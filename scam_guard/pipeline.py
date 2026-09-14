@@ -5,6 +5,7 @@ from scam_guard.confidence import compute_confidence
 from scam_guard.normalize import DEFAULT_LIMITS, Document, Limits, build_document
 from scam_guard.redact import redact_document
 from scam_guard.scoring import compute_score
+from scam_guard.type_resolve import resolve_type
 from scam_guard.types import CheckResult, Request, Verdict
 from scam_guard.weights import WeightTable
 
@@ -93,8 +94,10 @@ def detect(
       拒答的理由是依據不足，不是計分尚未實作；`confidence` 一律填實際值，
       低於門檻時亦然，使呼叫端看得到系統為什麼閉嘴。
     - `confidence` —— 信心層的值（`add-confidence`）
-    - `scam_type` / `evidence` / `actions` —— 尚未接線，由同一個 PR 的
-      `add-type-resolve` 與 `add-verdict-render` 填入。
+    - `scam_type` —— 類型判定層的結果，可為 `None`（`add-type-resolve`）。
+      類型衝突 MUST NOT 降低 `confidence`：`confidence` 的對象是「是不是詐騙」，
+      不是「是哪一種」。
+    - `evidence` / `actions` —— 尚未接線，由同一個 PR 的 `add-verdict-render` 填入。
     """
     table.validate_against(registry)
     doc: Document = build_document(req.messages, limits)
@@ -116,11 +119,12 @@ def detect(
     score = compute_score(results, table)
     confidence = compute_confidence(results, doc, score.contradicted, table)
     abstains = confidence < table.threshold("confidence_floor")
+    resolution = resolve_type(results, table)
 
     return Verdict(
         scam_probability=None if abstains else score.probability,
         confidence=confidence,
-        scam_type=None,
+        scam_type=resolution.scam_type,
         evidence=[],
         actions=[],
         checks=results,

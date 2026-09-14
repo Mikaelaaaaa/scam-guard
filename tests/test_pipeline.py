@@ -191,7 +191,7 @@ def test_end_to_end_with_one_local_and_one_expensive_check() -> None:
     assert [r.name for r in verdict.checks] == ["solicit_otp", "domain_age"]
     assert all(r.hit for r in verdict.checks)
     assert verdict.scam_probability > 0.5
-    assert verdict.scam_type is None
+    assert verdict.scam_type is ScamType.PHISHING_LINK
 
 
 def test_disabled_check_is_not_executed() -> None:
