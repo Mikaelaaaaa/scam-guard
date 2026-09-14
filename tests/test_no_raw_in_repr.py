@@ -14,6 +14,7 @@ from scam_guard.normalize import Document, NormalizedText, build_document, norma
 from scam_guard.pipeline import detect
 from scam_guard.redact import RedactedText, redact_document
 from scam_guard.types import CheckResult, Message, Request, ScamType, Verdict
+from scam_guard.weights import load_weights
 
 SECRET = "獨一無二的原文片段甲乙丙丁"
 """刻意選一個不會出現在任何欄位名、型別名或標點裡的字串。"""
@@ -43,7 +44,7 @@ def _verdict() -> Verdict:
         scam_type=ScamType.FAKE_AUTHORITY,
         evidence=[SECRET],
         actions=["撥打 165 查證"],
-        checks=[CheckResult(name="rule", hit=True, weight=1.0, detail="命中")],
+        checks=[CheckResult(name="rule", hit=True, detail="命中")],
         redacted=redact_document(doc),
     )
 
@@ -118,7 +119,7 @@ def test_invalid_coord_error_contains_no_sentence_text() -> None:
 def test_full_detect_verdict_does_not_leak_an_id_number() -> None:
     req = Request(messages=[Message(text="我的身分證是A123456789，請幫我處理。")])
 
-    verdict = detect(req, CheckRegistry())
+    verdict = detect(req, CheckRegistry(), load_weights())
 
     assert "A123456789" not in repr(verdict)
     assert "A123456789" not in f"{verdict}"

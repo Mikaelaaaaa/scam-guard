@@ -378,6 +378,7 @@ def test_verdict_fields_are_unchanged() -> None:
         "evidence",
         "actions",
         "checks",
+        "redacted",
     ]
 
 

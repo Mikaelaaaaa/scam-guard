@@ -8,9 +8,12 @@ from pathlib import Path
 import pytest
 
 from scam_guard.pipeline import NOT_HIT, SKIPPED
+from scam_guard.redact import RedactedText
 from scam_guard.scoring import _sigmoid, abstention_rate, compute_score, is_decision
 from scam_guard.types import CheckResult, ScamType, Verdict
 from scam_guard.weights import load_weights
+
+EMPTY_REDACTED = RedactedText(sentences=[], coords=[], counts={})
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TABLE = load_weights()
@@ -310,6 +313,7 @@ def a_verdict(probability: float | None) -> Verdict:
         evidence=[],
         actions=[],
         checks=[],
+        redacted=EMPTY_REDACTED,
     )
 
 
