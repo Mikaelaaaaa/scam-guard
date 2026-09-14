@@ -40,6 +40,7 @@ from scam_guard.rules.evasion import register_evasion_checks
 from scam_guard.rules.quotation import QuotationCheck
 from scam_guard.rules.speech_act import register_speech_act_rules
 from scam_guard.types import CheckResult, Coord, Message, Request, ScamType, Verdict
+from scam_guard.weights import load_weights
 
 # ---------------------------------------------------------------------------
 # 組裝層：註冊、上限、可選依賴的注入點
@@ -89,9 +90,10 @@ def build_registry() -> CheckRegistry:
     """建立本介面唯一的檢查註冊表。每落地一項檢查，此處多一行。
 
     **URL 層的五個檢查今日不註冊**：`register_url_checks()` 需要一份
-    `PublicSuffixList`（由 `tools/fetch_psl.py` 落到被版控排除的 `data/`）
-    與一張權重表（`add-weight-table` 尚未落地）。兩者在 HF Spaces 上 clone
-    出來的 repo 裡都不存在，而猜一組權重就是臆測。落地後此處多兩行。
+    `PublicSuffixList`，由 `tools/fetch_psl.py` 落到被版控排除的 `data/`，
+    而 HF Spaces 上 clone 出來的 repo 裡沒有那個目錄。權重表已經落地
+    （`weights.toml` 進了版控），所以擋住的只剩 PSL 快照這一項 ——
+    部署環境備妥該檔之後，此處多兩行。
     """
     registry = CheckRegistry()
     register_speech_act_rules(registry)
@@ -101,6 +103,15 @@ def build_registry() -> CheckRegistry:
 
 
 REGISTRY: CheckRegistry = build_registry()
+
+TABLE = load_weights()
+"""權重表的單一來源。`detect()` 的必填參數 —— 一個有預設表的 `detect()`
+會讓呼叫端在沒有表的情況下跑出一個看起來正常的結果。
+
+模組層載入而非每次請求載入：`load_weights()` 會讀檔並驗證整張表，
+放進請求路徑等於每則訊息都重讀一次 TOML。它同時在 import 時就驗證
+`REGISTRY` 的每個檢查都登記在表中 —— 缺漏會在啟動時炸，不是在第一次命中時。
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -740,7 +751,7 @@ def practice_submit(
         TRANSCRIPT_LOGGER([message.text for message in updated])
 
     request = Request(messages=updated)
-    verdict = detect(request, REGISTRY, limits=LIMITS)
+    verdict = detect(request, REGISTRY, TABLE, limits=LIMITS)
     document = build_document(request.messages, LIMITS)
 
     check_count = len(REGISTRY.enabled())
@@ -806,7 +817,7 @@ def inquiry_submit(text: str) -> tuple[str, str, str, str]:
     或 `Verdict.evidence`。這解掉該 change 自記的「投影可能沒有消費者」。
     """
     request = build_inquiry_request(text)
-    verdict = detect(request, REGISTRY, limits=LIMITS)
+    verdict = detect(request, REGISTRY, TABLE, limits=LIMITS)
     document = build_document(request.messages, LIMITS)
 
     check_count = len(REGISTRY.enabled())
