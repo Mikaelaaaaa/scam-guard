@@ -231,6 +231,26 @@ class CheckResult:
     兩級比對不需要檢查自己帶數字，代價是一條規則把 `hard` 標錯時後果從
     「短路錯了」變成「短路錯了**且**權重錯了」。交叉檢查在載入層：
     一個宣告 `hard_capable = false` 的訊號回報 `hard=True` 時查表拋例外。
+
+    `indeterminate` 標示這筆結果是否因**外部服務失敗而無法判定**，而不是
+    訊息本身沒有這類訊號。兩者在本型別出現之前完全同形：RDAP 逾時與
+    「查到了，網域註冊五年」都是空陣列，下游因此在系統其實不知道的時候
+    算出一個看起來很有把握的信心值。`hit` 是主軸（有沒有訊號），
+    `indeterminate` 是正交的第二軸（這筆結果能不能信），合法組合只有三種 ——
+    `(False, False)` 沒有訊號、`(False, True)` 問不到、`(True, False)` 有訊號。
+    **`hit=True` 且 `indeterminate=True` 不合法**：命中是一個確定的結論，
+    一個檢查不可能同時「找到證據」又「無法判定」，因此 `__post_init__`
+    對這個組合拋 `ValueError`。
+
+    `indeterminate` **不取代檢查內部的細粒度狀態**。`domain_age` 的
+    `AgeOutcome`（`KNOWN` / `NO_DATA` / `UNAVAILABLE`）決定的是快取 TTL 與
+    要不要重試，那是該模組自己的業務知識；`indeterminate` 是協定層的信號，
+    它的消費者（信心值計算、UI）只需要回答「這筆結果能不能當依據」，
+    不需要知道問不到的原因是註冊局天生不給還是這次連線失敗。
+    兩層各自負責它該負責的粒度，細節留在 `detail` 的文字裡。
+
+    產出 `indeterminate=True` 不是依賴外部服務就必須做的事 —— 見
+    `check.py` 的「外部服務失敗的處置」，那是二選一而非強制。
     """
 
     name: str
@@ -239,6 +259,14 @@ class CheckResult:
     evidence: list[Coord] = field(default_factory=list)
     scam_types: list[ScamType] = field(default_factory=list)
     hard: bool = False
+    indeterminate: bool = False
+
+    def __post_init__(self) -> None:
+        if self.hit and self.indeterminate:
+            raise ValueError(
+                f"hit 與 indeterminate 不得同時為 True：name={self.name!r}、"
+                f"hit={self.hit!r}、indeterminate={self.indeterminate!r}"
+            )
 
 
 @dataclass(frozen=True)
