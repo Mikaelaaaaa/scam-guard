@@ -6,6 +6,7 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from typing import TypeAlias
 
 Coord: TypeAlias = tuple[int, int]
@@ -21,6 +22,86 @@ Coord: TypeAlias = tuple[int, int]
 （原本的第 30 句變成第 12 句），同一則訊息在兩次請求中的編號就不同。
 LLM 的 prompt 也是逐則編號的，要它回報全域序號等於要它跨訊息做加法。
 """
+
+
+class ScamType(Enum):
+    """詐騙類型的唯一詞彙來源。訊號層、計分層、LLM 層與介面層皆用此列舉表達類型。
+
+    成員名為英文識別字，供 `weights.yaml` 的 key 與程式碼引用；值為 165 打詐儀錶板
+    `CaseTitle` 的中文原文，供 LLM prompt 的可選值與呈現層直接顯示 ——
+    因此不需要另一張顯示名稱對照表。
+
+    **納入準則：判定要件必須全部在訊息裡。** 一個 165 類別要成為成員，必須存在
+    一段可指認的訊息內容，使某個訊號層能夠命中它、並回報指向該內容的 `evidence`
+    座標。準則問的不是「這類好不好判」（那是準確率問題），而是「有沒有東西可以指」——
+    一個連指都指不到的類別，`Verdict.evidence` 就只能寫形容詞。
+
+    **排除的五類，各自的判定要件都落在訊息之外**（合計 57,387 件，29.90%）：
+
+    - `網路購物`（49,586）—— 由交易結果界定。165 按**通路**分類，話術不拘；
+      同一句「先匯訂金 300 保留」在賣家出貨時是正常交易，不出貨時是詐騙，
+      字面完全相同。可偵測的部分已由別的成員承接（帶惡意連結是 `PHISHING_LINK`、
+      要求賣家去認證是 `FAKE_BUYER`、冒稱訂單異常是 `ORDER_ANOMALY`）。
+    - `假廣告`（2,694）—— 與合法行銷沒有訊息層的界線。「限時五折」「庫存最後三組」
+      在真實促銷與詐騙廣告中字面相同，判定要件是商品存不存在。
+    - `信用卡遭盜刷`（2,331）—— 受害者事後的報案分類，描述的是填完假刷卡頁**之後**
+      的結果。「索取卡號與 CVV」是高精確度訊號，但它命中時該輸出的是承載該索取行為
+      的類型（`PHISHING_LINK`，或無連結時的 `FAKE_AUTHORITY` / `FAKE_BUYER`）。
+    - `假預付型消費`（2,186）—— 由業者是否履約界定，與「網路購物」是同一種錯誤。
+    - `其他`（590）—— 受理端的殘差桶，沒有任何訊號指向它。
+
+    **不設「其他」成員。** 三個理由，任一個都足夠：「類型：其他」的資訊量是零，
+    而「未判定出類型」已經有表達方式（`Verdict.scam_type = None`），兩種表達同一件事
+    會逼呈現層處理兩個 case；一旦存在，它會成為未知類型的 fallback 著陸點，把大聲的
+    失敗變成安靜的錯誤答案；它不是一種話術，不可能有規則寫「命中則為其他」。
+
+    **未知值 MUST NOT 被映射到任何成員。** 本模組不提供任何把未知字串轉為成員的函式。
+    `ScamType(value)` 對未知值拋 `ValueError`、`ScamType[name]` 對未知名稱拋 `KeyError`，
+    兩者皆為預期行為 —— 規則或設定檔裡出現未知值是**程式錯誤**。LLM 回傳未知類型
+    是**模型輸出不合法**，由 `add-llm-validate` 依 fail-closed 處理，同樣不映射為成員。
+    """
+
+    FAKE_INVESTMENT = "假投資"
+    ROMANCE_INVESTMENT = "假交友(投資詐財)"
+    SEXUAL_SERVICE = "色情應召"
+    FAKE_BUYER = "假買家騙賣家"
+    ROMANCE_MARRIAGE = "假交友(徵婚詐財)"
+    PHISHING_LINK = "釣魚簡訊/惡意連結"
+    FAKE_LOAN = "假借銀行貸款"
+    FAKE_AUTHORITY = "假檢警/假冒公務機關"
+    BANK_ACCOUNT_HARVEST = "騙取金融帳戶(卡片)"
+    GAME_ITEM = "虛擬遊戲"
+    FAKE_PRIZE = "假中獎通知"
+    FAKE_JOB = "假求職"
+    ACCOUNT_TAKEOVER = "盜用通訊軟體帳號"
+    GUESS_WHO = "猜猜我是誰"
+    INSTALLMENT_CANCEL = "解除分期付款"
+    ORDER_ANOMALY = "假消費異常"
+    FAKE_CHARITY = "假慈善機關(急難救助)"
+    FAKE_PARCEL = "假借包裹招領"
+
+
+MERGED_CASE_TITLES: dict[ScamType, tuple[str, ...]] = {
+    ScamType.INSTALLMENT_CANCEL: ("解除分期付款(騙買家)", "解除分期付款(騙賣家)"),
+    ScamType.ORDER_ANOMALY: ("假消費異常詐騙(騙買家)", "假交易異常詐騙(騙賣家)"),
+}
+"""因受訊者是買家或賣家而在 165 分裂、但在訊息層無法區分的成員。
+
+收訊者的身分不在訊息裡 ——「您的訂單設定錯誤為分期付款，請至 ATM 操作解除」
+送給買家與送給賣家時內容可以完全一樣。留兩個成員等於要求 `add-type-resolve`
+判斷一件訊息裡沒有的事。合併的代價是這兩個成員的值不再等於任何單一 `CaseTitle`，
+因此對照關係由本模組的 `case_titles()` 提供，而非讓每個消費端各建一張表。
+"""
+
+
+def case_titles(scam_type: ScamType) -> tuple[str, ...]:
+    """取得成員涵蓋的 165 `CaseTitle`，供 `add-metrics` 與官方分項統計對齊。
+
+    合併成員查 `MERGED_CASE_TITLES`，其餘成員的 `CaseTitle` 即其值本身。
+    """
+    if scam_type in MERGED_CASE_TITLES:
+        return MERGED_CASE_TITLES[scam_type]
+    return (scam_type.value,)
 
 
 @dataclass(frozen=True)
@@ -98,6 +179,13 @@ class CheckResult:
     消費端 MUST 以 `Document.index_of()` 解析座標 —— 越界座標是產生它的檢查
     算錯了，拋例外而非安靜略過。
 
+    `scam_types` 為 `ScamType` 詞彙表的成員，不是自由字串 —— 未列於 `ScamType`
+    的類型無法被表達。一個訊號可指向多個成員（某條話術同時屬兩種類型），
+    收斂由 `add-type-resolve` 負責。
+
+    空 `scam_types` 是合法值：有些訊號指示可疑但不指向特定類型（規避偵測命中），
+    此時 `hit` 仍可為 True。與「未命中」同樣由 `hit` 區分，不由空陣列表達。
+
     `hard` 標示此訊號是否為**硬證據**：黑名單命中、Tier-A 規則這類
     「事實不可能」的訊號為 True；弱訊號（Tier-B）為 False。
     判定標準由 `add-confidence` 的 spec 明確定義。此旗標供信心值計算與
@@ -110,7 +198,7 @@ class CheckResult:
     weight: float
     detail: str
     evidence: list[Coord] = field(default_factory=list)
-    scam_types: list[str] = field(default_factory=list)
+    scam_types: list[ScamType] = field(default_factory=list)
     hard: bool = False
 
 
@@ -126,13 +214,18 @@ class Verdict:
     `scam_probability` 與 `confidence` 是兩個獨立的量：前者答「是不是詐騙」，
     後者答「有沒有足夠依據下判斷」。
 
+    `scam_type` 為 `ScamType` 詞彙表的成員，不是自由字串。`None` 的語意是
+    **未判定出類型** —— 有訊號命中但無法收斂到特定類型時即為此。系統 MUST NOT
+    以萬用類型值（「其他」）表達同一件事：詞彙表刻意沒有那個成員，
+    兩種表達同一件事只會讓呈現層多處理一個 case。
+
     `checks` 保留所有執行過的檢查，含未命中者，不做摘要或過濾 ——
     UI 顯示依據時需要，消融實驗逐項分析時需要。過濾的責任在呈現層。
     """
 
     scam_probability: float | None
     confidence: float
-    scam_type: str | None
+    scam_type: ScamType | None
     evidence: list[str]
     actions: list[str]
     checks: list[CheckResult]
