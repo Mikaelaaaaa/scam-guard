@@ -19,13 +19,15 @@
 訊息，在下游看起來一模一樣。三種 outcome 在型別上分開，至少讓
 `lookup` 的實作與快取層不會把它們弄混。
 
-⚠️ **已知缺口（`Check` 協定表達不出「問不到」）：** `NO_DATA` 與 `UNAVAILABLE`
-依協定都回傳空陣列，`pipeline._run()` 補上 `detail="未命中"` 的記錄 ——
-於是它與「查到了，網域五年老」在 `Verdict.checks` 裡完全同形。
-`pipeline` 自己就在乎這個區別（`_skipped()` 存在的唯一理由就是區分
-「跑了沒訊號」與「根本沒跑」），少的是第三種：「跑了，但問不到」。
-修法屬 `check-protocol` 的破壞性變更，不在本 PR。在修好之前，
-查詢失敗會使 `add-confidence` 的信心值**偏高**，方向是高估，須記入報告限制。
+`NO_DATA` 與 `UNAVAILABLE` 因此**各產出一筆 `hit=False`、`indeterminate=True`
+的 `CheckResult`**，不再回傳空陣列（`add-indeterminate-outcome` 補上的協定
+第三態）。在那之前兩者與「查到了，網域五年老」在 `Verdict.checks` 裡完全同形，
+`pipeline._run()` 會補上 `detail="未命中"` 的記錄，於是下游把「問不到」
+當成「跑了沒發現問題」。
+
+⚠️ **殘餘缺口：** `indeterminate` 今天只是把這件事表達出來，
+`scam_guard/confidence.py` 尚未讀取它（`cap_indeterminate` 屬 `scoring` PR
+的後續）。在那之前，查詢失敗仍使信心值**偏高**，方向是高估，須記入報告限制。
 """
 
 from dataclasses import dataclass
@@ -72,6 +74,19 @@ class AgeOutcome(Enum):
     KNOWN = "known"
     NO_DATA = "no_data"
     UNAVAILABLE = "unavailable"
+
+
+INDETERMINATE_DETAILS: dict[AgeOutcome, str] = {
+    AgeOutcome.NO_DATA: "網域 {domain} 的註冊局未提供建立日期",
+    AgeOutcome.UNAVAILABLE: "網域 {domain} 的 RDAP 查詢逾時或失敗",
+}
+"""無法判定時的依據文案，兩者 MUST NOT 相同。
+
+`NO_DATA` 是關於**註冊局**的事實，`UNAVAILABLE` 是關於**這次請求**的事實 ——
+同一句文案會讓讀 `Verdict.checks` 的人以為重試有用（或沒用），而那兩件事的
+處置正好相反。`KNOWN` 刻意不在表中：它走的是命中或不產出結果的路徑，
+查表拿不到 key 就拋 `KeyError`，這是本模組多出第四種 outcome 時該有的聲響。
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,10 +177,21 @@ class DomainAgeCheck:
                 continue
             age = self._lookup(domain)
             if age.outcome is not AgeOutcome.KNOWN:
-                # NO_DATA 與 UNAVAILABLE 皆不產出結果，且**皆不得**被表達成
-                # 「網域很新」或「網域夠老」。兩者的差別在 lookup 那一層有意義
-                # （要不要重試、快多久），在這一層沒有 —— 見模組 docstring
-                # 記下的協定缺口。
+                # NO_DATA 與 UNAVAILABLE 皆產出一筆 indeterminate 結果，且
+                # **皆不得**被表達成「網域很新」或「網域夠老」。兩者在協定層
+                # 收斂成同一個布林（下游只問這筆能不能信），差別留在 detail
+                # 與 AgeOutcome 本身 —— 要不要重試、快取多久是 lookup 那一層
+                # 的事，不是這一層的。
+                results.append(
+                    CheckResult(
+                        name=self.name,
+                        hit=False,
+                        detail=INDETERMINATE_DETAILS[age.outcome].format(domain=domain),
+                        evidence=coords_of(urls),
+                        scam_types=[],
+                        indeterminate=True,
+                    )
+                )
                 continue
             days = (today - age.registered_on).days
             if days >= self._threshold_days:

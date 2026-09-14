@@ -92,6 +92,47 @@ def test_check_without_signal_is_recorded_as_unhit() -> None:
     assert all(r.detail == NOT_HIT for r in unhit)
 
 
+def indeterminate(name: str) -> list[CheckResult]:
+    return [
+        CheckResult(
+            name=name,
+            hit=False,
+            detail="網域 evil.com 的 RDAP 查詢逾時或失敗",
+            indeterminate=True,
+        )
+    ]
+
+
+def test_indeterminate_result_is_kept_verbatim_and_not_rewritten_as_unhit() -> None:
+    """`_run()` 的分支條件是「`results` 是否為空」，不是「有沒有命中」。
+
+    一個非空、但全部 `hit=False` 的陣列因此原樣通過 —— `pipeline.py` 不需要
+    為「跑了但問不到」寫任何一行。這個測試就是那個宣稱的驗證。
+    """
+    registry = CheckRegistry()
+    registry.register(FakeCheck("solicit_otp", Stage.LOCAL, weak_hit("solicit_otp")))
+    registry.register(FakeCheck("domain_age", Stage.EXPENSIVE, indeterminate("domain_age")))
+
+    checks = detect(a_request(), registry, TABLE).checks
+
+    recorded = next(r for r in checks if r.name == "domain_age")
+    assert recorded.indeterminate is True
+    assert recorded.detail == "網域 evil.com 的 RDAP 查詢逾時或失敗"
+    assert recorded.detail not in (NOT_HIT, SKIPPED)
+
+
+def test_indeterminate_result_never_short_circuits() -> None:
+    """`_should_short_circuit()` 讀 `hit and hard`，而無法判定的結果 `hit` 恆為 False。"""
+    registry = CheckRegistry()
+    registry.register(FakeCheck("url_blocklist", Stage.LOCAL, indeterminate("url_blocklist")))
+    llm = FakeCheck("domain_age", Stage.EXPENSIVE, [])
+    registry.register(llm)
+
+    detect(a_request(), registry, TABLE)
+
+    assert llm.calls == 1
+
+
 def test_hard_evidence_skips_expensive_checks() -> None:
     registry = CheckRegistry()
     registry.register(FakeCheck("url_blocklist", Stage.LOCAL, hard_hit("url_blocklist")))

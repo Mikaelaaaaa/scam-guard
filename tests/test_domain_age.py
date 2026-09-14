@@ -112,14 +112,62 @@ def test_known_and_old_produces_no_result() -> None:
     assert run("請點 https://evil.com/a 領取", lookup) == []
 
 
-def test_no_data_produces_no_result() -> None:
+def test_no_data_produces_an_indeterminate_result() -> None:
+    """註冊局回應正常但不給建立日期 —— 不是「沒有訊號」，是「問不到」。"""
     lookup = RecordingLookup({"evil.com": DomainAge("evil.com", AgeOutcome.NO_DATA)})
-    assert run("請點 https://evil.com/a 領取", lookup) == []
+    results = run("請點 https://evil.com/a 領取", lookup)
+
+    assert len(results) == 1
+    assert results[0].hit is False
+    assert results[0].indeterminate is True
+    assert results[0].scam_types == []
+    assert results[0].evidence == [(0, 0)]
+    assert results[0].detail == "網域 evil.com 的註冊局未提供建立日期"
 
 
-def test_unavailable_produces_no_result_and_does_not_raise() -> None:
+def test_unavailable_produces_an_indeterminate_result_and_does_not_raise() -> None:
     lookup = RecordingLookup({"evil.com": DomainAge("evil.com", AgeOutcome.UNAVAILABLE)})
-    assert run("請點 https://evil.com/a 領取", lookup) == []
+    results = run("請點 https://evil.com/a 領取", lookup)
+
+    assert len(results) == 1
+    assert results[0].hit is False
+    assert results[0].indeterminate is True
+    assert results[0].scam_types == []
+    assert results[0].evidence == [(0, 0)]
+    assert results[0].detail == "網域 evil.com 的 RDAP 查詢逾時或失敗"
+
+
+def test_no_data_and_unavailable_do_not_share_one_detail() -> None:
+    """兩者是關於不同對象的事實：註冊局天生不給，與這次請求失敗。
+
+    同一句文案會讓讀 `Verdict.checks` 的人以為重試有用（或沒用），
+    而這兩件事的處置正好相反。
+    """
+    no_data = RecordingLookup({"evil.com": DomainAge("evil.com", AgeOutcome.NO_DATA)})
+    unavailable = RecordingLookup({"evil.com": DomainAge("evil.com", AgeOutcome.UNAVAILABLE)})
+
+    first = run("https://evil.com/a", no_data)[0].detail
+    second = run("https://evil.com/a", unavailable)[0].detail
+
+    assert first != second
+
+
+def test_a_new_domain_and_an_unavailable_one_each_get_their_own_result() -> None:
+    """同一則訊息可同時產出一筆命中與一筆無法判定 —— 兩者描述不同網域。"""
+    lookup = RecordingLookup(
+        {
+            "evil.com": known("evil.com", 6),
+            "bad.net": DomainAge("bad.net", AgeOutcome.UNAVAILABLE),
+        }
+    )
+    results = run("先看 https://evil.com/a 領取。再看 https://bad.net/b 確認。", lookup)
+
+    assert len(results) == 2
+    hit, unknown = results
+    assert (hit.hit, hit.indeterminate) == (True, False)
+    assert (unknown.hit, unknown.indeterminate) == (False, True)
+    assert hit.evidence == [(0, 0)]
+    assert unknown.evidence == [(0, 1)]
 
 
 def test_unknown_outcome_must_not_carry_a_date() -> None:

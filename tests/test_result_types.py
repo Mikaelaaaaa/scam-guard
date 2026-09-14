@@ -79,6 +79,37 @@ def test_check_result_defaults_are_empty_and_not_shared() -> None:
     assert first.scam_types is not second.scam_types
 
 
+def test_indeterminate_defaults_to_false() -> None:
+    """既有 32 個檢查一行都不必改 —— 新欄位有預設值，預設是「可判定」。"""
+    result = CheckResult(name="solicit_otp", hit=True, detail="第 2 句索取驗證碼")
+
+    assert result.indeterminate is False
+
+
+def test_indeterminate_result_is_not_a_hit() -> None:
+    """「問了但拿不到答案」與「跑了沒訊號」在型別上可分辨。"""
+    result = CheckResult(
+        name="domain_age",
+        hit=False,
+        detail="網域 evil.com 的 RDAP 查詢逾時或失敗",
+        indeterminate=True,
+    )
+
+    assert result.hit is False
+    assert result.indeterminate is True
+
+
+def test_hit_and_indeterminate_are_mutually_exclusive() -> None:
+    """命中是一個確定的結論，不可能同時無法判定。"""
+    with pytest.raises(ValueError, match="hit 與 indeterminate 不得同時為 True"):
+        CheckResult(
+            name="domain_age",
+            hit=True,
+            detail="網域 evil.com 註冊於 6 天前",
+            indeterminate=True,
+        )
+
+
 def test_verdict_scam_probability_can_be_none() -> None:
     verdict = Verdict(
         scam_probability=None,
