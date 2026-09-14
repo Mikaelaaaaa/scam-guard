@@ -36,20 +36,37 @@ select = ["E", "F", "TID"]
 "fastapi".msg = "架構界線違規：介面層模組不得在 scam_guard/ 內 import，HTTP 層請放在 api/"
 "linebot".msg = "架構界線違規：介面層模組不得在 scam_guard/ 內 import，LINE 相關程式碼請放在 adapters/"
 "telegram".msg = "架構界線違規：介面層模組不得在 scam_guard/ 內 import，Telegram 相關程式碼請放在 adapters/"
-# 網路 I/O 的界線。scam_guard/ 是偵測核心（純函式、讀本機檔案），對外取資料一律
-# 放在 tools/。擋的是最順手的三個入口，擋不住 socket、http.client 或 subprocess
-# 叫 curl —— 這是提醒機制不是沙箱，繞過它需要刻意。
-"urllib.request".msg = "架構界線違規：scam_guard/ 不做 I/O，網路取得請放在 tools/"
-"requests".msg = "架構界線違規：scam_guard/ 不做 I/O，網路取得請放在 tools/"
-"httpx".msg = "架構界線違規：scam_guard/ 不做 I/O，網路取得請放在 tools/"
+# 網路 I/O 的界線。scam_guard/ 是偵測核心（純函式、讀本機檔案），不得發出網路請求：
+# 部署前取得資料放 tools/，請求路徑上的對外查詢放 net/。
+#
+# 這條規則只看**直接的 import 敘述**。`importlib.import_module("socket")` 繞得過去，
+# subprocess 叫 curl 也繞得過去 —— 這是提醒機制不是沙箱。它擋的是手滑
+# （趕時間時直接寫 `import requests`），不是擋惡意。
+"urllib.request".msg = "架構界線違規：scam_guard/ 不得發出網路請求，取得請放 tools/、請求路徑上的查詢請放 net/"
+"requests".msg = "架構界線違規：scam_guard/ 不得發出網路請求，取得請放 tools/、請求路徑上的查詢請放 net/"
+"httpx".msg = "架構界線違規：scam_guard/ 不得發出網路請求，取得請放 tools/、請求路徑上的查詢請放 net/"
+"urllib.error".msg = "架構界線違規：scam_guard/ 不得發出網路請求，取得請放 tools/、請求路徑上的查詢請放 net/"
+"http.client".msg = "架構界線違規：scam_guard/ 不得發出網路請求，取得請放 tools/、請求路徑上的查詢請放 net/"
+"socket".msg = "架構界線違規：scam_guard/ 不得發出網路請求，取得請放 tools/、請求路徑上的查詢請放 net/"
+"ftplib".msg = "架構界線違規：scam_guard/ 不得發出網路請求，取得請放 tools/、請求路徑上的查詢請放 net/"
+"smtplib".msg = "架構界線違規：scam_guard/ 不得發出網路請求，取得請放 tools/、請求路徑上的查詢請放 net/"
+"aiohttp".msg = "架構界線違規：scam_guard/ 不得發出網路請求，取得請放 tools/、請求路徑上的查詢請放 net/"
 
 # 介面層自身當然要 import 介面層模組，豁免之。新增介面層目錄時須同步更新此清單。
 [tool.ruff.lint.per-file-ignores]
 "api/*" = ["TID251"]
 "adapters/*" = ["TID251"]
 "app.py" = ["TID251"]
-# tools/ 是網路 I/O 的唯一容身處，豁免上方的 urllib.request / requests / httpx。
+# tools/ 在部署前由人執行一次，產物是一份本機快照；net/ 在每次請求中執行。
+# 兩者都做網路 I/O，豁免上方的網路函式庫禁令 —— 但**不可合併成一個目錄**：
+# 合併之後「tools/ 是離線的」就不再成立，而沒有任何機制會報告這件事。
 "tools/*" = ["TID251"]
+"net/*" = ["TID251"]
+# 測試要建構網路例外的實例（`socket.gaierror` 等）才能驗證 net/ 把它們正確
+# 歸成 UNAVAILABLE。被保護的對象是 scam_guard/，測試不是它的一部分 ——
+# 而「scam_guard/ 有沒有 import 網路函式庫」另有一個掃描原始碼的測試守著，
+# 不依賴這條 lint 規則。
+"tests/*" = ["TID251"]
 
 # 對照表（TLD 風險、短網址、品牌）是人工整理的內容，必須進版控並隨套件安裝。
 # 少了這一段，`pip install .`（非 `-e`）之後檔案不存在 —— 而這種錯在可編輯安裝下
