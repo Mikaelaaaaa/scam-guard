@@ -82,9 +82,21 @@ class CheckResult:
     強行結構化會產生大量 `None` 欄位。形式如 `"0.87/0.85"`、
     `"網域註冊於 6 天前"`、`"命中 165 涉詐網站清單"`。
 
-    `evidence` 為**句子編號**而非文字片段，對應 normalize 後的切句結果。
-    存編號則從結構上排除「檢查回傳與原文不符的字串」這個可能 ——
-    編號要嘛有效要嘛越界，可驗證。
+    `evidence` 為**座標**而非文字片段，對應 normalize 後的切句結果。
+    存位置則從結構上排除「檢查回傳與原文不符的字串」這個可能 ——
+    座標要嘛有效要嘛越界，可驗證。
+
+    座標為 `(原始訊息序號, 訊息內句子序號)`（見 `Coord`），兩者皆從 0 起算。
+    訊息序號**不因上下文截斷而位移**；句子序號是**訊息內**的，不是全域序號。
+    原本此欄位是單一整數的句子編號，在「一個 `Document` 對應一則訊息」這個
+    前提下足以定位；`add-document-type` 把 `Document` 擴及請求中的全部訊息
+    之後，單一整數的兩種讀法都壞掉（全域序號取不到訊息序號且會因截斷整體位移，
+    訊息內序號則根本不知道是哪一則），因此改為兩個分量。
+
+    空 `evidence` 是合法值：有些訊號沒有句子位置（訊息則數異常、發送時間
+    集中度、整體長度），此時 `hit` 仍可為 True。與「未命中」由 `hit` 區分。
+    消費端 MUST 以 `Document.index_of()` 解析座標 —— 越界座標是產生它的檢查
+    算錯了，拋例外而非安靜略過。
 
     `hard` 標示此訊號是否為**硬證據**：黑名單命中、Tier-A 規則這類
     「事實不可能」的訊號為 True；弱訊號（Tier-B）為 False。
@@ -97,7 +109,7 @@ class CheckResult:
     hit: bool
     weight: float
     detail: str
-    evidence: list[int] = field(default_factory=list)
+    evidence: list[Coord] = field(default_factory=list)
     scam_types: list[str] = field(default_factory=list)
     hard: bool = False
 

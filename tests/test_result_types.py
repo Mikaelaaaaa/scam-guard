@@ -13,7 +13,7 @@ def test_check_result_with_all_fields() -> None:
         hit=True,
         weight=1.8,
         detail="0.87/0.85",
-        evidence=[3, 4],
+        evidence=[(0, 3), (0, 4)],
         scam_types=["釣魚網站"],
         hard=True,
     )
@@ -22,9 +22,29 @@ def test_check_result_with_all_fields() -> None:
     assert result.hit is True
     assert result.weight == 1.8
     assert result.detail == "0.87/0.85"
-    assert result.evidence == [3, 4]
+    assert result.evidence == [(0, 3), (0, 4)]
     assert result.scam_types == ["釣魚網站"]
     assert result.hard is True
+
+
+def test_check_result_evidence_may_span_messages() -> None:
+    result = CheckResult(
+        name="trajectory",
+        hit=True,
+        weight=1.2,
+        detail="關係建立後隨即出現金錢話題",
+        evidence=[(0, 2), (4, 0)],
+    )
+
+    assert result.evidence == [(0, 2), (4, 0)]
+
+
+def test_hit_without_evidence_is_legal() -> None:
+    """整體特徵的訊號（則數異常、時間集中度）不指向特定句子。"""
+    result = CheckResult(name="burst", hit=True, weight=0.4, detail="10 分鐘內 30 則")
+
+    assert result.hit is True
+    assert result.evidence == []
 
 
 def test_check_result_defaults_are_empty_and_not_shared() -> None:

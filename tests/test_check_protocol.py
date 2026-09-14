@@ -37,7 +37,7 @@ class UrlCheck:
                 hit=True,
                 weight=2.5,
                 detail=f"命中 165 涉詐網站清單：{host}",
-                evidence=[i],
+                evidence=[(0, i)],
                 hard=True,
             )
             for i, host in enumerate(("a.example", "b.example", "c.example"))
@@ -172,7 +172,7 @@ def test_check_may_return_multiple_results() -> None:
         "命中 165 涉詐網站清單：b.example",
         "命中 165 涉詐網站清單：c.example",
     ]
-    assert [r.evidence for r in results] == [[0], [1], [2]]
+    assert [r.evidence for r in results] == [[(0, 0)], [(0, 1)], [(0, 2)]]
 
 
 def test_check_without_signal_returns_empty_list() -> None:
