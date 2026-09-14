@@ -53,17 +53,17 @@ def verdict_with(**overrides) -> Verdict:
 class HardLocalCheck:
     """一定命中的硬證據 `LOCAL` 檢查，用來觸發 pipeline 的短路。"""
 
-    name = "fake_hard"
+    name = "solicit_otp"
     stage = Stage.LOCAL
 
     def __call__(self, req: Request, doc: Document) -> list[CheckResult]:
-        return [CheckResult(name=self.name, hit=True, weight=1.0, detail="假的硬證據", hard=True)]
+        return [CheckResult(name=self.name, hit=True, detail="假的硬證據", hard=True)]
 
 
 class ExpensiveCheck:
     """永遠不該被執行到的 `EXPENSIVE` 檢查。"""
 
-    name = "fake_expensive"
+    name = "domain_age"
     stage = Stage.EXPENSIVE
 
     def __call__(self, req: Request, doc: Document) -> list[CheckResult]:
@@ -73,21 +73,17 @@ class ExpensiveCheck:
 class BadCoordCheck:
     """回報一個不存在於 `Document` 的座標。"""
 
-    name = "fake_bad_coord"
+    name = "secrecy_demand"
     stage = Stage.LOCAL
 
     def __call__(self, req: Request, doc: Document) -> list[CheckResult]:
-        return [
-            CheckResult(
-                name=self.name, hit=True, weight=1.0, detail="越界座標", evidence=[(99, 99)]
-            )
-        ]
+        return [CheckResult(name=self.name, hit=True, detail="越界座標", evidence=[(99, 99)])]
 
 
 class RecordingCheck:
     """記下 `detect()` 內部產生的 `Document`，供座標一致性比對。"""
 
-    name = "recorder"
+    name = "quotation"
     stage = Stage.LOCAL
 
     def __init__(self) -> None:
@@ -120,9 +116,9 @@ def test_render_lines_missing_advice_segment_does_not_exist() -> None:
 
 def test_render_lines_falls_back_to_raw_check_detail_with_marker() -> None:
     checks = [
-        CheckResult(name="solicit_otp", hit=True, weight=2.5, detail="索取簡訊驗證碼"),
-        CheckResult(name="secrecy_demand", hit=True, weight=2.5, detail="要求保密"),
-        CheckResult(name="atm_operation", hit=False, weight=0.0, detail=NOT_HIT),
+        CheckResult(name="solicit_otp", hit=True, detail="索取簡訊驗證碼"),
+        CheckResult(name="secrecy_demand", hit=True, detail="要求保密"),
+        CheckResult(name="atm_operation", hit=False, detail=NOT_HIT),
     ]
     lines = app.render_lines(verdict_with(checks=checks))
     assert lines.grounds is not None
@@ -133,7 +129,7 @@ def test_render_lines_falls_back_to_raw_check_detail_with_marker() -> None:
 
 
 def test_render_lines_prefers_rendered_evidence_without_marker() -> None:
-    checks = [CheckResult(name="solicit_otp", hit=True, weight=2.5, detail="索取簡訊驗證碼")]
+    checks = [CheckResult(name="solicit_otp", hit=True, detail="索取簡訊驗證碼")]
     lines = app.render_lines(verdict_with(evidence=["要求提供簡訊驗證碼"], checks=checks))
     assert lines.grounds == "要求提供簡訊驗證碼"
     assert app.RAW_GROUNDS_PREFIX not in lines.grounds
@@ -157,14 +153,14 @@ def test_inquiry_answer_always_gives_fallback_action_marked_as_unrelated() -> No
 
 
 def test_both_modes_share_the_same_three_segments() -> None:
-    checks = [CheckResult(name="solicit_otp", hit=True, weight=2.5, detail="索取簡訊驗證碼")]
+    checks = [CheckResult(name="solicit_otp", hit=True, detail="索取簡訊驗證碼")]
     verdict = verdict_with(checks=checks, actions=["不要照做"])
     lines = app.render_lines(verdict)
     assert app.practice_speech(lines, 27)[:-1] == app.inquiry_answer(lines)[:-1]
 
 
 def test_render_lines_output_is_plain_text() -> None:
-    checks = [CheckResult(name="solicit_otp", hit=True, weight=2.5, detail="索取簡訊驗證碼")]
+    checks = [CheckResult(name="solicit_otp", hit=True, detail="索取簡訊驗證碼")]
     lines = app.render_lines(verdict_with(checks=checks, actions=["撥打 165"]))
     for segment in lines.segments():
         assert "<" not in segment
@@ -246,20 +242,14 @@ def test_pipeline_detail_constants_are_locked() -> None:
 
 
 def test_check_state_classifies_three_states() -> None:
-    assert app.check_state(CheckResult(name="a", hit=True, weight=1.0, detail="命中了")) == (
-        app.STATE_HIT
-    )
-    assert app.check_state(CheckResult(name="b", hit=False, weight=0.0, detail=NOT_HIT)) == (
-        app.STATE_NOT_HIT
-    )
-    assert app.check_state(CheckResult(name="c", hit=False, weight=0.0, detail=SKIPPED)) == (
-        app.STATE_SKIPPED
-    )
+    assert app.check_state(CheckResult(name="a", hit=True, detail="命中了")) == (app.STATE_HIT)
+    assert app.check_state(CheckResult(name="b", hit=False, detail=NOT_HIT)) == (app.STATE_NOT_HIT)
+    assert app.check_state(CheckResult(name="c", hit=False, detail=SKIPPED)) == (app.STATE_SKIPPED)
 
 
 def test_check_state_refuses_to_guess() -> None:
     with pytest.raises(ValueError, match="無法分類的檢查記錄"):
-        app.check_state(CheckResult(name="d", hit=False, weight=0.0, detail="別的東西"))
+        app.check_state(CheckResult(name="d", hit=False, detail="別的東西"))
 
 
 def test_skipped_check_renders_as_its_own_state() -> None:
@@ -268,12 +258,12 @@ def test_skipped_check_renders_as_its_own_state() -> None:
     registry.register(HardLocalCheck())
     registry.register(ExpensiveCheck())
     request = Request.from_text("測試訊息。")
-    verdict = detect(request, registry, limits=app.LIMITS)
+    verdict = detect(request, registry, app.TABLE, limits=app.LIMITS)
     document = build_document(request.messages, app.LIMITS)
 
     states = {result.name: app.check_state(result) for result in verdict.checks}
-    assert states["fake_hard"] == app.STATE_HIT
-    assert states["fake_expensive"] == app.STATE_SKIPPED
+    assert states["solicit_otp"] == app.STATE_HIT
+    assert states["domain_age"] == app.STATE_SKIPPED
 
     panel = app.render_panel(verdict, document, len(registry.enabled()), None)
     assert f"state-{app.STATE_SKIPPED}" in panel
@@ -283,9 +273,9 @@ def test_skipped_check_renders_as_its_own_state() -> None:
 
 def test_panel_shows_the_four_states_distinctly() -> None:
     checks = [
-        CheckResult(name="a", hit=True, weight=1.0, detail="命中了"),
-        CheckResult(name="b", hit=False, weight=0.0, detail=NOT_HIT),
-        CheckResult(name="c", hit=False, weight=0.0, detail=SKIPPED),
+        CheckResult(name="a", hit=True, detail="命中了"),
+        CheckResult(name="b", hit=False, detail=NOT_HIT),
+        CheckResult(name="c", hit=False, detail=SKIPPED),
     ]
     request = Request.from_text("測試訊息。")
     document = build_document(request.messages, app.LIMITS)
@@ -297,7 +287,7 @@ def test_panel_shows_the_four_states_distinctly() -> None:
 
 
 def test_panel_does_not_filter_out_misses() -> None:
-    checks = [CheckResult(name="quiet_check", hit=False, weight=0.0, detail=NOT_HIT)]
+    checks = [CheckResult(name="quiet_check", hit=False, detail=NOT_HIT)]
     request = Request.from_text("測試訊息。")
     document = build_document(request.messages, app.LIMITS)
     panel = app.render_panel(verdict_with(checks=checks), document, 1, None)
@@ -331,25 +321,29 @@ def test_panel_document_coords_match_detect_internal_document() -> None:
     recorder = RecordingCheck()
     registry = CheckRegistry()
     registry.register(recorder)
-    detect(request, registry, limits=app.LIMITS)
+    detect(request, registry, app.TABLE, limits=app.LIMITS)
     panel_document = build_document(request.messages, app.LIMITS)
     assert recorder.seen[0].coords == panel_document.coords
     assert recorder.seen[0].raw_sentences == panel_document.raw_sentences
 
 
 def test_invalid_coord_propagates_key_error() -> None:
+    """越界座標 MUST 讓 `KeyError` 傳播，不得被吞成「少一條依據」。
+
+    `add-verdict-render` 落地後拋出的位置從呈現層前移到 `detect()` 內部的
+    `render_evidence()` —— 那一層同樣以 `doc.raw_at()` 解析座標。前移是好事：
+    錯誤的證據在更早的地方就炸掉，而本測試鎖的是「會炸」，不是「在哪一層炸」。
+    """
     registry = CheckRegistry()
     registry.register(BadCoordCheck())
     request = Request.from_text("測試訊息。")
-    verdict = detect(request, registry, limits=app.LIMITS)
-    document = build_document(request.messages, app.LIMITS)
     with pytest.raises(KeyError):
-        app.render_panel(verdict, document, 1, None)
+        detect(request, registry, app.TABLE, limits=app.LIMITS)
 
 
 def test_evidence_links_point_to_sentence_anchors() -> None:
     checks = [
-        CheckResult(name="a", hit=True, weight=1.0, detail="命中了", evidence=[(0, 1)]),
+        CheckResult(name="a", hit=True, detail="命中了", evidence=[(0, 1)]),
     ]
     request = Request.from_text("第一句。第二句。")
     document = build_document(request.messages, app.LIMITS)
@@ -360,7 +354,7 @@ def test_evidence_links_point_to_sentence_anchors() -> None:
 
 
 def test_hit_without_evidence_is_still_a_hit() -> None:
-    checks = [CheckResult(name="a", hit=True, weight=1.0, detail="沒有句子位置")]
+    checks = [CheckResult(name="a", hit=True, detail="沒有句子位置")]
     request = Request.from_text("測試訊息。")
     document = build_document(request.messages, app.LIMITS)
     panel = app.render_panel(verdict_with(checks=checks), document, 1, None)
@@ -405,9 +399,12 @@ def test_victim_reply_does_not_change_the_next_verdict() -> None:
     messages, replies = outputs[-1][0], outputs[-1][1]
     assert any("驗證碼" in reply for reply in replies)
 
-    with_reply = detect(Request(messages=messages), app.REGISTRY, limits=app.LIMITS)
+    with_reply = detect(Request(messages=messages), app.REGISTRY, app.TABLE, limits=app.LIMITS)
     without_reply = detect(
-        Request(messages=[Message(text=messages[0].text)]), app.REGISTRY, limits=app.LIMITS
+        Request(messages=[Message(text=messages[0].text)]),
+        app.REGISTRY,
+        app.TABLE,
+        limits=app.LIMITS,
     )
     assert [(r.name, r.hit, r.detail) for r in with_reply.checks] == [
         (r.name, r.hit, r.detail) for r in without_reply.checks
@@ -806,12 +803,12 @@ def test_panel_row_count_follows_the_registry() -> None:
 
     small = CheckRegistry()
     small.register(HardLocalCheck())
-    before = detect(request, small, limits=app.LIMITS)
+    before = detect(request, small, app.TABLE, limits=app.LIMITS)
 
     bigger = CheckRegistry()
     bigger.register(HardLocalCheck())
     bigger.register(RecordingCheck())
-    after = detect(request, bigger, limits=app.LIMITS)
+    after = detect(request, bigger, app.TABLE, limits=app.LIMITS)
 
     panel_before = app.render_panel(before, document, len(small.enabled()), None)
     panel_after = app.render_panel(after, document, len(bigger.enabled()), None)
