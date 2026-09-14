@@ -3,6 +3,7 @@
 新增檢查不需修改主流程；任一檢查可被停用，供消融實驗使用。
 """
 
+from enum import Enum
 from typing import Any, Protocol, TypeAlias
 
 from scam_guard.types import CheckResult, Request
@@ -11,6 +12,22 @@ from scam_guard.types import CheckResult, Request
 # 暫以別名佔位（而非建立臨時實作或 import 不存在的模組）。該 change 落地後
 # 改為 `if TYPE_CHECKING: from scam_guard.normalize import Document`。
 Document: TypeAlias = Any
+
+
+class Stage(Enum):
+    """檢查的成本階段。pipeline 的短路只跳過 `EXPENSIVE`。
+
+    `LOCAL` —— 文字規則、本機黑名單比對，毫秒級，一律執行。本機檢查的成本低到
+    不值得為它設計跳過邏輯，且全部執行能得到完整的訊號圖像，對消融實驗有利。
+
+    `EXPENSIVE` —— RDAP、LLM 等外部呼叫，延遲與費用高數個數量級，可被短路。
+
+    階段由檢查自報而非由 registry 指定 —— 檢查自己知道它貴不貴。
+    已知風險：標錯就防不住（把 LLM 標成 `LOCAL` 會使它永遠不被短路）。
+    """
+
+    LOCAL = "local"
+    EXPENSIVE = "expensive"
 
 
 class Check(Protocol):
@@ -36,6 +53,7 @@ class Check(Protocol):
     """
 
     name: str
+    stage: Stage
 
     def __call__(self, req: Request, doc: Document) -> list[CheckResult]: ...
 
@@ -61,7 +79,7 @@ class CheckRegistry:
         self._disabled: set[str] = set()
 
     def register(self, check: Check) -> None:
-        """加入一個檢查。名稱重複時拋 `ValueError`。"""
+        """加入一個檢查。介面不符時拋 `TypeError`，名稱重複時拋 `ValueError`。"""
         name = getattr(check, "name", None)
         if not isinstance(name, str) or not name:
             raise TypeError(
@@ -71,6 +89,12 @@ class CheckRegistry:
             raise TypeError(
                 f"檢查必須可呼叫，簽章為 (req, doc) -> list[CheckResult]，"
                 f"{name!r} 不符合 Check 介面"
+            )
+        stage = getattr(check, "stage", None)
+        if not isinstance(stage, Stage):
+            raise TypeError(
+                f"檢查必須具備 Stage 型別的 stage 屬性（LOCAL 或 EXPENSIVE），"
+                f"{name!r} 的 stage 為 {stage!r}"
             )
         if name in self._checks:
             raise ValueError(f"檢查名稱重複：{name!r} 已註冊於此 registry")

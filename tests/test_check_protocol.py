@@ -2,7 +2,7 @@
 
 import pytest
 
-from scam_guard.check import CheckRegistry
+from scam_guard.check import CheckRegistry, Stage
 from scam_guard.types import CheckResult, Message, Request
 
 
@@ -12,6 +12,7 @@ def solicit_otp(req: Request, doc: object) -> list[CheckResult]:
 
 
 solicit_otp.name = "solicit_otp"  # type: ignore[attr-defined]
+solicit_otp.stage = Stage.LOCAL  # type: ignore[attr-defined]
 
 
 def no_signal(req: Request, doc: object) -> list[CheckResult]:
@@ -20,12 +21,14 @@ def no_signal(req: Request, doc: object) -> list[CheckResult]:
 
 
 no_signal.name = "no_signal"  # type: ignore[attr-defined]
+no_signal.stage = Stage.LOCAL  # type: ignore[attr-defined]
 
 
 class UrlCheck:
     """類別形式的檢查 —— 一則訊息含三個 URL 時各產一筆結果。"""
 
     name = "url"
+    stage = Stage.LOCAL
 
     def __call__(self, req: Request, doc: object) -> list[CheckResult]:
         return [
@@ -45,6 +48,7 @@ class TimingOutCheck:
     """依賴外部服務的檢查：自行吞例外並記錄，回傳空陣列。"""
 
     name = "domain_age"
+    stage = Stage.EXPENSIVE
 
     def __init__(self) -> None:
         self.failures: list[str] = []
@@ -95,11 +99,32 @@ def test_register_rejects_object_without_name() -> None:
 def test_register_rejects_non_callable() -> None:
     class NotCallable:
         name = "not_callable"
+        stage = Stage.LOCAL
 
     registry = CheckRegistry()
 
     with pytest.raises(TypeError, match="可呼叫"):
         registry.register(NotCallable())  # type: ignore[arg-type]
+
+
+def test_register_rejects_missing_or_invalid_stage() -> None:
+    class NoStage:
+        name = "no_stage"
+
+        def __call__(self, req: Request, doc: object) -> list[CheckResult]:
+            return []
+
+    class BadStage(NoStage):
+        name = "bad_stage"
+        stage = "local"
+
+    registry = CheckRegistry()
+
+    with pytest.raises(TypeError, match="stage"):
+        registry.register(NoStage())  # type: ignore[arg-type]
+
+    with pytest.raises(TypeError, match="stage"):
+        registry.register(BadStage())  # type: ignore[arg-type]
 
 
 def test_register_rejects_duplicate_name() -> None:
