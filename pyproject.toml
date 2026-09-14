@@ -36,9 +36,17 @@ select = ["E", "F", "TID"]
 "fastapi".msg = "架構界線違規：介面層模組不得在 scam_guard/ 內 import，HTTP 層請放在 api/"
 "linebot".msg = "架構界線違規：介面層模組不得在 scam_guard/ 內 import，LINE 相關程式碼請放在 adapters/"
 "telegram".msg = "架構界線違規：介面層模組不得在 scam_guard/ 內 import，Telegram 相關程式碼請放在 adapters/"
+# 網路 I/O 的界線。scam_guard/ 是偵測核心（純函式、讀本機檔案），對外取資料一律
+# 放在 tools/。擋的是最順手的三個入口，擋不住 socket、http.client 或 subprocess
+# 叫 curl —— 這是提醒機制不是沙箱，繞過它需要刻意。
+"urllib.request".msg = "架構界線違規：scam_guard/ 不做 I/O，網路取得請放在 tools/"
+"requests".msg = "架構界線違規：scam_guard/ 不做 I/O，網路取得請放在 tools/"
+"httpx".msg = "架構界線違規：scam_guard/ 不做 I/O，網路取得請放在 tools/"
 
 # 介面層自身當然要 import 介面層模組，豁免之。新增介面層目錄時須同步更新此清單。
 [tool.ruff.lint.per-file-ignores]
 "api/*" = ["TID251"]
 "adapters/*" = ["TID251"]
 "app.py" = ["TID251"]
+# tools/ 是網路 I/O 的唯一容身處，豁免上方的 urllib.request / requests / httpx。
+"tools/*" = ["TID251"]
