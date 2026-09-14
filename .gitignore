@@ -216,3 +216,16 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- scam-guard 專案特有 ---
+# 資料集：Cofacts 為 CC BY-SA 4.0，衍生資料需同授權並附來源 URI，不直接入庫
+data/
+*.jsonl
+
+# 模型權重（EmbeddingGemma ONNX 約 197MB）
+models/
+
+# 實驗中間產物
+*.npy
+.understand-anything/intermediate/
+.understand-anything/tmp/

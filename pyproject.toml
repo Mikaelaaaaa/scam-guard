@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scam-guard"
+version = "0.1.0"
+description = "台灣中文詐騙訊息偵測"
+requires-python = ">=3.11"
+# 此 change 不引入任何執行期依賴。
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[tool.setuptools.packages.find]
+include = ["scam_guard*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "TID"]
+
+# 架構界線：scam_guard/ 偵測核心不得 import 介面層模組。
+# Python 沒有 Go 的循環 import 保護，此處以 lint 規則補上。
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"gradio".msg = "架構界線違規：介面層模組不得在 scam_guard/ 內 import，Gradio 相關程式碼請放在 app.py"
+"fastapi".msg = "架構界線違規：介面層模組不得在 scam_guard/ 內 import，HTTP 層請放在 api/"
+"linebot".msg = "架構界線違規：介面層模組不得在 scam_guard/ 內 import，LINE 相關程式碼請放在 adapters/"
+"telegram".msg = "架構界線違規：介面層模組不得在 scam_guard/ 內 import，Telegram 相關程式碼請放在 adapters/"
+
+# 介面層自身當然要 import 介面層模組，豁免之。新增介面層目錄時須同步更新此清單。
+[tool.ruff.lint.per-file-ignores]
+"api/*" = ["TID251"]
+"adapters/*" = ["TID251"]
+"app.py" = ["TID251"]
