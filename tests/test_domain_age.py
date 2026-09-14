@@ -23,6 +23,7 @@ from scam_guard.pipeline import SKIPPED, detect
 from scam_guard.types import CheckResult, Message, Request, ScamType
 from scam_guard.url import utc_today
 from scam_guard.url_check import load_tables
+from scam_guard.weights import load_weights
 from tests.test_blocklist_store import psl_of
 
 SHORTENERS = frozenset(load_tables().shorteners)
@@ -62,11 +63,11 @@ class RecordingLookup:
 class HardCheck:
     """一個必定命中硬證據的本機檢查，用來觸發 `detect()` 的短路。"""
 
-    name = "fake_hard"
+    name = "url_blocklist"
     stage = Stage.LOCAL
 
     def __call__(self, req: Request, doc: Document) -> list[CheckResult]:
-        return [CheckResult(name=self.name, hit=True, weight=1.0, detail="測試用硬證據", hard=True)]
+        return [CheckResult(name=self.name, hit=True, detail="測試用硬證據", hard=True)]
 
 
 def known(domain: str, days: int) -> DomainAge:
@@ -90,7 +91,7 @@ def imported_roots(source: str) -> set[str]:
 
 
 def run(text: str, lookup: RecordingLookup, **kwargs: object) -> list[CheckResult]:
-    check = DomainAgeCheck(lookup, psl_of(), SHORTENERS, weight=1.0, **kwargs)
+    check = DomainAgeCheck(lookup, psl_of(), SHORTENERS, **kwargs)
     req = Request.from_text(text)
     return check(req, build_document(req.messages))
 
@@ -205,8 +206,8 @@ def test_hard_hit_short_circuits_before_any_lookup() -> None:
     lookup = RecordingLookup({})
     registry = CheckRegistry()
     registry.register(HardCheck())
-    register_domain_age_check(registry, psl_of(), SHORTENERS, weight=1.0, lookup=lookup)
-    verdict = detect(Request.from_text("請點 https://evil.com/a 領取"), registry)
+    register_domain_age_check(registry, psl_of(), SHORTENERS, lookup=lookup)
+    verdict = detect(Request.from_text("請點 https://evil.com/a 領取"), registry, load_weights())
     assert lookup.calls == []
     assert [r.detail for r in verdict.checks if r.name == "domain_age"] == [SKIPPED]
 
@@ -228,8 +229,10 @@ def test_core_imports_neither_net_nor_any_network_library() -> None:
 
 def test_without_lookup_the_check_is_not_registered_and_detect_still_works() -> None:
     registry = CheckRegistry()
-    register_domain_age_check(registry, psl_of(), SHORTENERS, weight=1.0)
+    register_domain_age_check(registry, psl_of(), SHORTENERS)
     assert [c.name for c in registry.enabled()] == []
-    verdict = detect(Request(messages=[Message(text="請點 https://evil.com/a 領取")]), registry)
+    verdict = detect(
+        Request(messages=[Message(text="請點 https://evil.com/a 領取")]), registry, load_weights()
+    )
     assert verdict.checks == []
     assert verdict.scam_probability is None

@@ -93,4 +93,4 @@ select = ["E", "F", "TID"]
 # 少了這一段，`pip install .`（非 `-e`）之後檔案不存在 —— 而這種錯在可編輯安裝下
 # 不會出現，只在正式安裝時出現。
 [tool.setuptools.package-data]
-"scam_guard.tables" = ["*.json"]
+"scam_guard.tables" = ["*.json", "*.toml"]

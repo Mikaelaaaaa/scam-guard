@@ -23,7 +23,7 @@
 東西：極性要求、接收者集合、豁免條件、語境前提是**邏輯**不是資料，寫進 YAML
 會長出一個半殘的 DSL，而本專案的 CI（`ruff check` 與 `pytest`）不看 YAML，
 一個拼錯的極性欄位會安靜地變成預設值。權重是另一回事 —— 那是純量資料，
-由 `add-weight-table` 的 `weights.yaml` 承接。
+由 `add-weight-table` 的 `weights.toml` 承接。
 """
 
 import re
@@ -44,21 +44,11 @@ RELATIONSHIP_RULE = "relationship_building"
 改名時 import 會壞掉，而字面字串不會。
 """
 
-HARD_WEIGHT = 2.5
-"""Tier-A（硬證據）的**佔位**權重。"""
-
-WEAK_WEIGHT = 0.6
-"""Tier-B（弱訊號）與降級後的**佔位**權重。
-
-`weight` 在此階段只有兩個值，這是刻意的。現在沒有任何資料可以說 `solicit_otp`
-比 `safe_account` 重或輕 —— 測試集要到 `add-testset` 才存在。編出二十一個有差異
-的數字等於憑空製造一份看起來像實測結果的東西。兩個值誠實地表達「此刻只知道分兩層」。
-
-兩個數字取自 `tests/test_pipeline.py` 既有的 `hard_hit()` / `weak_hit()`，
-沿用是為了不在 repo 裡多一組來源不明的假數字。
-**承載判定資訊的欄位是 `hard`，不是 `weight`**；`add-weight-table` 落地後
-規則 MUST NOT 保留硬編碼的權重。
-"""
+# 規則不攜帶權重。承載判定資訊的欄位是 `hard`，而權重由 `(name, hard)` 於
+# `weights.toml` 查得（`add-weight-table`）：Tier-A 命中取 `weight_hard`、
+# Tier-B 與自帶碼豁免降級後取 `weight_soft`。表中這兩個值目前仍是
+# `basis = "placeholder"` 的 `2.5` 與 `0.6` —— 現在沒有任何資料可以說
+# `solicit_otp` 比 `safe_account` 重或輕，測試集要到 `add-testset` 才存在。
 
 SELF_DIRECTED = frozenset(
     {
@@ -367,7 +357,6 @@ class SpeechActRule:
                 CheckResult(
                     name=self.name,
                     hit=True,
-                    weight=HARD_WEIGHT if hard else WEAK_WEIGHT,
                     detail=_detail(
                         self.summary,
                         self.fact if self.hard else "",
@@ -488,7 +477,6 @@ class RelationshipRule:
                     CheckResult(
                         name=self.name,
                         hit=True,
-                        weight=WEAK_WEIGHT,
                         detail="關係經營：自我揭露、情感承諾與通道轉移中的兩類出現在不同句子",
                         evidence=hit_coords,
                         scam_types=[],

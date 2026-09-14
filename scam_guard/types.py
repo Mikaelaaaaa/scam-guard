@@ -35,7 +35,7 @@ LLM 的 prompt 也是逐則編號的，要它回報全域序號等於要它跨�
 class ScamType(Enum):
     """詐騙類型的唯一詞彙來源。訊號層、計分層、LLM 層與介面層皆用此列舉表達類型。
 
-    成員名為英文識別字，供 `weights.yaml` 的 key 與程式碼引用；值為 165 打詐儀錶板
+    成員名為英文識別字，供 `weights.toml` 的 key 與程式碼引用；值為 165 打詐儀錶板
     `CaseTitle` 的中文原文，供 LLM prompt 的可選值與呈現層直接顯示 ——
     因此不需要另一張顯示名稱對照表。
 
@@ -178,6 +178,14 @@ class Request:
 class CheckResult:
     """單一檢查的輸出。一個檢查可產出多筆（例：訊息中的三個 URL 各一筆）。
 
+    **此型別 MUST NOT 攜帶權重欄位。** 權重由 `(name, hard)` 於
+    `scam_guard/tables/weights.toml` 查得（見 `scam_guard.weights`）。
+    檢查自帶權重會產生第二個真相來源：計分層若讀它，權重表就只是一份文件，
+    而規則作者寫下的任何數值都不會有任何地方報錯；計分層若不讀它，
+    它就是一個沒有消費者的欄位。此外，消融實驗要掃描一個權重值時，
+    讀本型別的欄位意味著每掃一個值都要重建 registry 並重跑全部檢查，
+    讀表則只要拿同一組 `CheckResult` 重算一次算術。
+
     `detail` 為自由字串而非結構化欄位 —— 不同檢查的「實際數字」形狀差太多
     （相似度是兩個浮點數、網域年齡是天數、黑名單命中根本沒有數字），
     強行結構化會產生大量 `None` 欄位。形式如 `"0.87/0.85"`、
@@ -217,11 +225,16 @@ class CheckResult:
     判定標準由 `add-confidence` 的 spec 明確定義。此旗標供信心值計算與
     pipeline 的短路判斷使用，不是「有多確定」的分數 —— 檢查作者能可靠
     判斷的粒度是「這是硬證據嗎」，不是自陳信心。
+
+    `hard` 同時是**權重的第二個鍵**：`weights.toml` 以 `(name, hard)` 查表，
+    True 取 `weight_hard`、False 取 `weight_soft`。這使自帶碼豁免與黑名單的
+    兩級比對不需要檢查自己帶數字，代價是一條規則把 `hard` 標錯時後果從
+    「短路錯了」變成「短路錯了**且**權重錯了」。交叉檢查在載入層：
+    一個宣告 `hard_capable = false` 的訊號回報 `hard=True` 時查表拋例外。
     """
 
     name: str
     hit: bool
-    weight: float
     detail: str
     evidence: list[Coord] = field(default_factory=list)
     scam_types: list[ScamType] = field(default_factory=list)

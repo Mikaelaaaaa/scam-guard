@@ -22,7 +22,7 @@
   「詐騙可能性 0.9」。代價是一次對外可見的誤判，而誤判率是強制驗收指標。
 
 兩者相差好幾個數量級。高 recall、低 precision 是刻意的取捨。
-**但這個推論有前提：它只在 LLM 掛載時成立**，見 `QUOTE_WEIGHT`。
+**但這個推論有前提：它只在 LLM 掛載時成立**，見 `NAME` 之後關於負權重的註解。
 """
 
 import re
@@ -43,22 +43,12 @@ import `rules`，registry 由呼叫端組裝），但那是一個隨時可能被
 而 Python 沒有循環 import 的保護。測試比 import 弱，但代價只有一行。
 """
 
-QUOTE_WEIGHT = -1.5
-"""**負**權重 —— 純規則模式下對宣導文的唯一保護，且是**佔位值**。
-
-純規則模式（尚未掛 LLM，或 `add-ablation` 刻意關閉）下 registry 裡沒有任何
-`Stage.EXPENSIVE` 檢查，否決短路之後什麼都不會發生 —— `expensive` 是空 list，
-跑不跑都一樣。而 `rule-signals` 這個 PR 的定位正是 baseline，
-一個在 baseline 上沒有效果的檢查等於承認 baseline 完全無法處理宣導文。
-
-`-1.5` 與 Tier-A 的 `2.5`、Tier-B 的 `0.6` 在同一個 log-odds 尺度上，
-量級介於兩者之間：「一條 Tier-A 命中加上引述命中，淨值仍為正但不足以直接定讞」。
-
-**已知限制要誠實講**：一則命中三條 Tier-A 的宣導文（同群組取 max 後為 `2.5`）
-加上 `-1.5` 淨值仍為正 `1.0` —— 負權重擋不住多條 Tier-A 同時命中的宣導文，
-而那恰恰是宣導文的特徵。`add-ablation` 應把這件事量出來寫進報告，
-不要以「規則系統誤判率低」的籠統說法帶過。
-"""
+# 引述的負權重（`-1.5`）不寫在本模組：權重由 `(name, hard)` 於 `weights.toml`
+# 查得（`add-weight-table`），本規則不需要知道任何數值。原本記在此處的已知限制
+# 由 `add-score-compute` 接手並取代 —— 一則命中多條 Tier-A 的宣導文（同群組取
+# max 後為 `2.5`）加上 `-1.5` 淨值仍為正 `1.0`，負權重擋不住它。處置改為兩段式：
+# 無硬證據時負權重照常入和，有硬證據時負權重不入和、改標記為訊號矛盾，
+# 交由信心層拒答。
 
 QUOTE_CATEGORY = "引號"
 ATTRIBUTION_CATEGORY = "來源歸屬"
@@ -297,7 +287,6 @@ class QuotationCheck:
             CheckResult(
                 name=self.name,
                 hit=True,
-                weight=QUOTE_WEIGHT,
                 detail=(
                     f"命中 {len(ordered)} 類引述標記：{'、'.join(ordered)}；"
                     f"具體標記：{'、'.join(markers)}"

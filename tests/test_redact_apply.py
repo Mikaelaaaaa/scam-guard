@@ -10,6 +10,7 @@ from scam_guard.normalize import SENTENCE_END, Document, build_document
 from scam_guard.pipeline import detect
 from scam_guard.redact import PLACEHOLDERS, RedactedText, redact_document
 from scam_guard.types import CheckResult, Message, Request
+from scam_guard.weights import load_weights
 
 SIX_SENTENCES = (
     "您好。這是第二句！第三句？第四句;第五句。身分證A123456789，手機0912345678，請盡快回覆。"
@@ -146,7 +147,7 @@ def test_url_in_the_same_sentence_survives_intact() -> None:
 def test_detect_attaches_a_complete_projection() -> None:
     req = Request(messages=[Message(text="身分證A123456789。請盡快回覆。")])
 
-    verdict = detect(req, CheckRegistry())
+    verdict = detect(req, CheckRegistry(), load_weights())
 
     doc = build_document(req.messages)
     assert len(verdict.redacted.sentences) == len(doc.sentences)
@@ -158,15 +159,15 @@ def test_projection_is_complete_even_when_short_circuited() -> None:
     registry = CheckRegistry()
     registry.register(
         FakeCheck(
-            "blocklist",
+            "url_blocklist",
             Stage.LOCAL,
-            [CheckResult(name="blocklist", hit=True, weight=2.5, detail="命中清單", hard=True)],
+            [CheckResult(name="url_blocklist", hit=True, detail="命中清單", hard=True)],
         )
     )
-    registry.register(FakeCheck("llm", Stage.EXPENSIVE, []))
+    registry.register(FakeCheck("domain_age", Stage.EXPENSIVE, []))
     req = Request(messages=[Message(text="身分證A123456789。請盡快回覆。")])
 
-    verdict = detect(req, registry)
+    verdict = detect(req, registry, load_weights())
 
     assert len(verdict.redacted.sentences) == 2
     assert "<TW_ID>" in verdict.redacted.sentences[0]

@@ -21,6 +21,9 @@ import pytest
 from scam_guard.check import CheckRegistry
 from scam_guard.pipeline import detect
 from scam_guard.types import Request, Verdict
+from scam_guard.weights import load_weights
+
+TABLE = load_weights()
 
 DEV_SAMPLE = Path(__file__).resolve().parent.parent / "data" / "dev_sample.jsonl"
 
@@ -48,7 +51,7 @@ def test_dev_sample_runs_through_detect() -> None:
     with DEV_SAMPLE.open(encoding="utf-8") as stream:
         for line in stream:
             record = json.loads(line)
-            verdict = detect(Request.from_text(record["text"]), registry)
+            verdict = detect(Request.from_text(record["text"]), registry, TABLE)
             assert isinstance(verdict, Verdict)
             assert len(verdict.checks) == expected_checks
             count += 1

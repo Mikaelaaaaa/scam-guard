@@ -54,13 +54,6 @@ from scam_guard.normalize import INVISIBLE, URL_PATTERN, Document
 from scam_guard.rules.speech_act import SELF_DIRECTED, TIER_A_RULES
 from scam_guard.types import CheckResult, Coord, Request
 
-EVASION_WEIGHT = 0.6
-"""全部規避訊號共用的**佔位**權重，與 Tier-B 相同。
-
-規避是關於發訊者的意圖，不指向任何詐騙類型，所以它永遠不是硬證據 ——
-`hard=False`、`scam_types=[]`。由 `add-weight-table` 取代。
-"""
-
 INVISIBLE_NAMES: dict[str, str] = {
     "\u200b": "零寬空格",
     "\u200c": "零寬非連字",
@@ -318,11 +311,14 @@ class EvasionCheck:
     stage: Stage = Stage.LOCAL
 
     def _result(self, detail: str, evidence: list[Coord]) -> CheckResult:
-        """規避訊號的固定輸出形狀：非硬證據、不指向類型、佔位權重。"""
+        """規避訊號的固定輸出形狀：非硬證據、不指向類型。
+
+        規避是關於發訊者的意圖，不指向任何詐騙類型，所以它永遠不是硬證據。
+        權重由 `weights.toml` 以 `(name, hard)` 查得，本層不攜帶數值。
+        """
         return CheckResult(
             name=self.name,
             hit=True,
-            weight=EVASION_WEIGHT,
             detail=detail,
             evidence=evidence,
             scam_types=[],

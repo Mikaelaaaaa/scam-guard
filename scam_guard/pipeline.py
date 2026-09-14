@@ -1,9 +1,14 @@
 """檢查執行流程與短路規則 —— 系統的單一入口。"""
 
 from scam_guard.check import Check, CheckRegistry, Stage
+from scam_guard.confidence import compute_confidence
 from scam_guard.normalize import DEFAULT_LIMITS, Document, Limits, build_document
 from scam_guard.redact import redact_document
+from scam_guard.render import choose_actions, render_evidence
+from scam_guard.scoring import compute_score
+from scam_guard.type_resolve import resolve_type
 from scam_guard.types import CheckResult, Request, Verdict
+from scam_guard.weights import WeightTable
 
 QUOTATION_CHECK = "quotation"
 """引述偵測的檢查名稱。命中時否決短路 —— 見 `detect()` 的說明。"""
@@ -21,7 +26,7 @@ def _run(check: Check, req: Request, doc: Document) -> list[CheckResult]:
     results = check(req, doc)
     if results:
         return results
-    return [CheckResult(name=check.name, hit=False, weight=0.0, detail=NOT_HIT)]
+    return [CheckResult(name=check.name, hit=False, detail=NOT_HIT)]
 
 
 def _skipped(check: Check) -> CheckResult:
@@ -29,12 +34,13 @@ def _skipped(check: Check) -> CheckResult:
 
     消融實驗需要這個區別 —— 「跑了沒訊號」與「根本沒跑」是兩件事。
     """
-    return CheckResult(name=check.name, hit=False, weight=0.0, detail=SKIPPED)
+    return CheckResult(name=check.name, hit=False, detail=SKIPPED)
 
 
 def detect(
     req: Request,
     registry: CheckRegistry,
+    table: WeightTable,
     *,
     short_circuit: bool = True,
     limits: Limits = DEFAULT_LIMITS,
@@ -78,12 +84,27 @@ def detect(
     遮蔽結果在最後一個 `Check` 回傳之前**根本不存在**，檢查在時間上不可能讀到它，
     也不可能把它當成輸入。短路時也照常產出 —— 少跑幾個檢查不影響投影的完整性。
 
-    ⚠️ 此階段**不做計分**：`scam_probability` 固定為 `None`、`confidence`
-    為 0.0、`scam_type` / `evidence` / `actions` 為空，皆為佔位值。
-    實際計算屬 `scoring` PR（`add-score-compute`、`add-confidence`、
-    `add-type-resolve`、`add-verdict-render`）。在那之前接上 API 只會得到
-    「無法判定」，不會得到無意義的數字。
+    `table` 為必填且無預設值：一個有預設表的 `detect()` 會讓呼叫端在沒有表的
+    情況下跑出一個看起來正常的結果。**組裝階段就以它驗證 registry** ——
+    註冊了一個未登錄於表中的檢查時在這裡拋例外，而不是延後到第一次查表；
+    延後的話，一個沒人命中的新規則可以在表外活很久。
+
+    `Verdict` 四個欄位的來源：
+
+    - `scam_probability` —— 計分層的機率，但**信心低於門檻時為 `None`**。
+      拒答的理由是依據不足，不是計分尚未實作；`confidence` 一律填實際值，
+      低於門檻時亦然，使呼叫端看得到系統為什麼閉嘴。
+    - `confidence` —— 信心層的值（`add-confidence`）
+    - `scam_type` —— 類型判定層的結果，可為 `None`（`add-type-resolve`）。
+      類型衝突 MUST NOT 降低 `confidence`：`confidence` 的對象是「是不是詐騙」，
+      不是「是哪一種」。
+    - `evidence` / `actions` —— 呈現層的結果（`add-verdict-render`）。
+      完全無訊號時兩者皆為空陣列 —— 對一則「明天見」提出行動建議是製造焦慮。
+
+    `Verdict.checks` 不因上面任何一層而被摘要或過濾：呈現層只決定「預設顯示
+    哪幾行」，UI 要展開就自己去讀完整的 `checks`。
     """
+    table.validate_against(registry)
     doc: Document = build_document(req.messages, limits)
 
     checks = registry.enabled()
@@ -100,12 +121,17 @@ def detect(
         for check in expensive:
             results.extend(_run(check, req, doc))
 
+    score = compute_score(results, table)
+    confidence = compute_confidence(results, doc, score.contradicted, table)
+    abstains = confidence < table.threshold("confidence_floor")
+    resolution = resolve_type(results, table)
+
     return Verdict(
-        scam_probability=None,
-        confidence=0.0,
-        scam_type=None,
-        evidence=[],
-        actions=[],
+        scam_probability=None if abstains else score.probability,
+        confidence=confidence,
+        scam_type=resolution.scam_type,
+        evidence=render_evidence(results, score, doc, table),
+        actions=choose_actions(results, score, abstains, table),
         checks=results,
         redacted=redact_document(doc),
     )

@@ -146,13 +146,11 @@ class DomainAgeCheck:
         psl: PublicSuffixList,
         shortener_domains: Iterable[str],
         *,
-        weight: float,
         threshold_days: int = DEFAULT_THRESHOLD_DAYS,
     ) -> None:
         self._lookup = lookup
         self._psl = psl
         self._shortener_domains = frozenset(shortener_domains)
-        self._weight = weight
         self._threshold_days = threshold_days
 
     def __call__(self, req: Request, doc: Document) -> list[CheckResult]:
@@ -176,7 +174,6 @@ class DomainAgeCheck:
                 CheckResult(
                     name=self.name,
                     hit=True,
-                    weight=self._weight,
                     detail=(f"網域 {domain} 註冊於 {days} 天前（{age.registered_on.isoformat()}）"),
                     evidence=coords_of(urls),
                     scam_types=[ScamType.PHISHING_LINK],
@@ -191,7 +188,6 @@ def register_domain_age_check(
     psl: PublicSuffixList,
     shortener_domains: Iterable[str],
     *,
-    weight: float,
     lookup: DomainAgeLookup | None = None,
     threshold_days: int = DEFAULT_THRESHOLD_DAYS,
 ) -> None:
@@ -205,6 +201,9 @@ def register_domain_age_check(
     所以預設組裝下 `detect()` 全程不連網。注入它是一個顯式的決定，
     而那個決定的後果 MUST 出現在使用者可見的說明中 ——
     啟用後，訊息中連結的網域會被送到該網域的註冊局。
+
+    檢查不接收權重：權重由 `(name, hard)` 於 `weights.toml` 查得
+    （`add-weight-table`），檢查本身不需要知道任何數值。
     """
     if lookup is None:
         return
@@ -213,7 +212,6 @@ def register_domain_age_check(
             lookup,
             psl,
             shortener_domains,
-            weight=weight,
             threshold_days=threshold_days,
         )
     )

@@ -59,7 +59,7 @@ def run(check, *texts: str):
 
 
 def test_shortener_reports_unknown_destination(tables: Tables, psl: PublicSuffixList) -> None:
-    check = UrlShortenerCheck(tables, psl, weight=1.0)
+    check = UrlShortenerCheck(tables, psl)
     (result,) = run(check, "包裹配送失敗 reurl.cc/2xY3z 請更新地址")
     assert result.hit is True
     assert result.hard is False
@@ -70,14 +70,14 @@ def test_shortener_reports_unknown_destination(tables: Tables, psl: PublicSuffix
 
 def test_shortener_granularity_is_per_url(tables: Tables, psl: PublicSuffixList) -> None:
     """`reurl.cc/aaa` 與 `reurl.cc/bbb` 是兩個不同的目的地。"""
-    check = UrlShortenerCheck(tables, psl, weight=1.0)
+    check = UrlShortenerCheck(tables, psl)
     results = run(check, "reurl.cc/aaa 與 reurl.cc/bbb")
     assert len(results) == 2
 
 
 def test_legitimate_shortener_is_not_a_scam_signal(tables: Tables, psl: PublicSuffixList) -> None:
     """`lin.ee` 是 LINE 自己的短網址服務。命中表達的是證據不足。"""
-    check = UrlShortenerCheck(tables, psl, weight=1.0)
+    check = UrlShortenerCheck(tables, psl)
     (result,) = run(check, "請加入官方帳號 https://lin.ee/xxxx")
     assert result.scam_types == []
     assert result.hard is False
@@ -98,7 +98,7 @@ def test_shortener_check_has_no_network_call() -> None:
 
 
 def test_high_ratio_gtld_hits(tables: Tables, psl: PublicSuffixList) -> None:
-    check = UrlTldRiskCheck(tables, psl, weight=1.0)
+    check = UrlTldRiskCheck(tables, psl)
     (result,) = run(check, "https://win-prize.icu/a")
     assert result.hit is True
     assert result.hard is False
@@ -111,7 +111,7 @@ def test_high_ratio_gtld_hits(tables: Tables, psl: PublicSuffixList) -> None:
 @pytest.mark.parametrize("text", ["https://a.com/x", "https://a.com.tw/x", "https://a.cc/x"])
 def test_common_taiwanese_tlds_do_not_hit(text: str, tables: Tables, psl: PublicSuffixList) -> None:
     """`.com` 是絕對數量榜首但比率最低；`.tw` 與 `.cc` 是 ccTLD，刻意不收。"""
-    check = UrlTldRiskCheck(tables, psl, weight=1.0)
+    check = UrlTldRiskCheck(tables, psl)
     assert run(check, text) == []
 
 
@@ -123,12 +123,12 @@ def test_known_service_domains_do_not_hit(tables: Tables, psl: PublicSuffixList)
         baseline_tld=tables.baseline_tld,
         baseline_value=tables.baseline_value,
     )
-    check = UrlTldRiskCheck(risky_shortener, psl, weight=1.0)
+    check = UrlTldRiskCheck(risky_shortener, psl)
     assert run(check, "https://known.icu/a") == []
 
 
 def test_tld_risk_granularity_is_per_domain(tables: Tables, psl: PublicSuffixList) -> None:
-    check = UrlTldRiskCheck(tables, psl, weight=1.0)
+    check = UrlTldRiskCheck(tables, psl)
     (result,) = run(check, "看 https://x.icu/a 好嗎?或 https://x.icu/b 呢?還有 https://x.icu/c")
     assert len(result.evidence) == 3
 
@@ -142,28 +142,28 @@ def test_tld_risk_table_excludes_cctlds_and_extension_like_tlds(tables: Tables) 
 
 
 def test_ip_literal_hits(psl: PublicSuffixList) -> None:
-    check = UrlHostShapeCheck(psl, weight=1.0)
+    check = UrlHostShapeCheck(psl)
     (result,) = run(check, "請登入 http://192.0.2.1/login")
     assert result.hit is True
     assert "IP 位址" in result.detail
 
 
 def test_userinfo_names_the_real_host(psl: PublicSuffixList) -> None:
-    check = UrlHostShapeCheck(psl, weight=1.0)
+    check = UrlHostShapeCheck(psl)
     (result,) = run(check, "https://post.gov.tw@evil.com/")
     assert "evil.com" in result.detail
     assert "使用者資訊" in result.detail
 
 
 def test_idna_failure_hits(psl: PublicSuffixList) -> None:
-    check = UrlHostShapeCheck(psl, weight=1.0)
+    check = UrlHostShapeCheck(psl)
     (result,) = run(check, f"https://{'中' * 60}.com/a")
     assert "IDNA" in result.detail
 
 
 def test_cyrillic_lookalike_hits(psl: PublicSuffixList) -> None:
     """`аpple.com` 的首字是西里爾 U+0430。"""
-    check = UrlHostShapeCheck(psl, weight=1.0)
+    check = UrlHostShapeCheck(psl)
     (result,) = run(check, "https://аpple.com/login")
     assert "混用" in result.detail
     assert "西里爾" in result.detail
@@ -171,7 +171,7 @@ def test_cyrillic_lookalike_hits(psl: PublicSuffixList) -> None:
 
 def test_cjk_host_does_not_hit_mixed_scripts(psl: PublicSuffixList) -> None:
     """中日韓與拉丁混用在台灣是合法且常見的，刻意不命中。"""
-    check = UrlHostShapeCheck(psl, weight=1.0)
+    check = UrlHostShapeCheck(psl)
     assert run(check, "https://中国.com/a") == []
 
 
@@ -183,7 +183,7 @@ def test_mixed_scripts_is_judged_per_label() -> None:
 
 def test_host_shape_results_are_never_hard(psl: PublicSuffixList) -> None:
     """精確度高但罕見 —— 短路省下的成本極少，一次誤判卻要付出整個 LLM 層。"""
-    check = UrlHostShapeCheck(psl, weight=1.0)
+    check = UrlHostShapeCheck(psl)
     results = run(check, "http://192.0.2.1/a 與 https://post.gov.tw@evil.com/")
     assert results
     assert all(result.hard is False for result in results)

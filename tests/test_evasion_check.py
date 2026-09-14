@@ -4,7 +4,6 @@ from scam_guard.check import CheckRegistry, Stage
 from scam_guard.normalize import INVISIBLE, build_document
 from scam_guard.rules.evasion import (
     EVASION_CHECKS,
-    EVASION_WEIGHT,
     HOMOPHONE_VARIANTS,
     INVISIBLE_NAMES,
     MAX_GAP,
@@ -219,7 +218,6 @@ def test_output_shape_is_uniform() -> None:
             for result in run(check, text):
                 assert result.hard is False
                 assert result.scam_types == []
-                assert result.weight == EVASION_WEIGHT == 0.6
 
 
 def test_evidence_is_never_empty_and_always_resolves() -> None:
