@@ -1,6 +1,7 @@
 """檢查執行流程與短路規則 —— 系統的單一入口。"""
 
-from scam_guard.check import Check, CheckRegistry, Document, Stage
+from scam_guard.check import Check, CheckRegistry, Stage
+from scam_guard.normalize import DEFAULT_LIMITS, Document, Limits, build_document
 from scam_guard.types import CheckResult, Request, Verdict
 
 QUOTATION_CHECK = "quotation"
@@ -30,11 +31,33 @@ def _skipped(check: Check) -> CheckResult:
     return CheckResult(name=check.name, hit=False, weight=0.0, detail=SKIPPED)
 
 
-def detect(req: Request, registry: CheckRegistry, *, short_circuit: bool = True) -> Verdict:
+def detect(
+    req: Request,
+    registry: CheckRegistry,
+    *,
+    short_circuit: bool = True,
+    limits: Limits = DEFAULT_LIMITS,
+) -> Verdict:
     """系統唯一的偵測入口。依序執行已啟用的檢查，回傳 `Verdict`。
 
-    registry 由呼叫端傳入而非用模組層級的全域 —— 全域讓測試要操作全域狀態，
-    且無法同時跑兩組不同設定，而消融實驗正需要這個。
+    **正規化在任何檢查之前執行，且一次呼叫只執行一次**，所有檢查共用同一個
+    `Document` 實例。由 `detect()` 而非各檢查自行呼叫 `build_document()`：
+    成本不必乘上 N 是次要理由，致命的理由是座標會不一致 —— 若某個檢查用不同的
+    `limits` 正規化，它的訊息序號與丟棄則數就與其他檢查不同，而 `evidence`
+    座標是跨檢查共用的語言。座標系必須有唯一的產生者。
+
+    `Document` 的座標與 `req.messages` 的索引對齊：座標為 `(m, s)` 時
+    `req.messages[m]` 就是該句所屬的訊息，需要 `sent_at` 的軌跡檢查因此
+    不需要另一張對照表。
+
+    registry 與 `limits` 皆由呼叫端傳入而非用模組層級的全域 —— 全域讓測試要
+    操作全域狀態，且無法同時跑兩組不同設定，而消融實驗正需要這個
+    （`add-ablation` 要掃「前文長度對準確率的影響」，掃的就是 `limits`）。
+
+    正規化結果為空（貼圖、純圖片、只有空白的訊息）**不中斷流程**：檢查照常
+    全部執行、`Verdict.checks` 照常有完整記錄、輸出仍為「無法判定」。
+    提前回傳會讓 `Verdict.checks` 變空，而消融實驗依賴「每個檢查都有記錄」
+    這個不變式。
 
     執行順序為先全部 `LOCAL`、再視短路結果決定是否執行 `EXPENSIVE`。
     短路的三條規則：
@@ -55,9 +78,7 @@ def detect(req: Request, registry: CheckRegistry, *, short_circuit: bool = True)
     `add-type-resolve`、`add-verdict-render`）。在那之前接上 API 只會得到
     「無法判定」，不會得到無意義的數字。
     """
-    # `Document` 屬 `add-text-normalize`，正規化尚未實作，此處傳 `None`。
-    # 該 change 落地後改為在此呼叫 normalize(req)。
-    doc: Document = None
+    doc: Document = build_document(req.messages, limits)
 
     checks = registry.enabled()
     local = [c for c in checks if c.stage is Stage.LOCAL]

@@ -229,3 +229,6 @@ models/
 *.npy
 .understand-anything/intermediate/
 .understand-anything/tmp/
+
+# openspec 文件不進版控（規劃資料，operator-local）
+openspec/

@@ -4,14 +4,10 @@
 """
 
 from enum import Enum
-from typing import Any, Protocol, TypeAlias
+from typing import Protocol
 
+from scam_guard.normalize import Document
 from scam_guard.types import CheckResult, Request
-
-# `Document` 為正規化與切句後的結果，屬 `add-text-normalize`，此時尚未實作。
-# 暫以別名佔位（而非建立臨時實作或 import 不存在的模組）。該 change 落地後
-# 改為 `if TYPE_CHECKING: from scam_guard.normalize import Document`。
-Document: TypeAlias = Any
 
 
 class Stage(Enum):
@@ -35,6 +31,10 @@ class Check(Protocol):
 
     同時接收 `req` 與 `doc` 的理由：多數檢查只需要 `doc`（已正規化、已切句），
     但少數需要 `req`（通道特徵需要 `sender`、軌跡判斷需要 `sent_at`）。
+    兩者的索引是對齊的：`doc.coords` 中的訊息序號就是 `req.messages` 的索引。
+
+    `doc` 由 `detect()` 產出並在一次呼叫中共用，檢查**不需要自行正規化** ——
+    座標系必須有唯一的產生者，否則兩個檢查回報的 `(3, 0)` 可能指向不同的句子。
 
     回傳 `list` 而非單一結果，使一個檢查可產出多個訊號 —— 訊息含三個 URL 時，
     URL 檢查應對每個各產一筆，各有自己的 `detail` 與 `evidence`。

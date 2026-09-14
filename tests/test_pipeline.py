@@ -1,8 +1,11 @@
 """`detect()` 主流程與短路規則。"""
 
+from datetime import datetime
+
 from scam_guard.check import CheckRegistry, Stage
+from scam_guard.normalize import Document, Limits
 from scam_guard.pipeline import NOT_HIT, SKIPPED, detect
-from scam_guard.types import CheckResult, Message, Request
+from scam_guard.types import CheckResult, Coord, Message, Request
 
 
 class FakeCheck:
@@ -13,9 +16,11 @@ class FakeCheck:
         self.stage = stage
         self.results = results
         self.calls = 0
+        self.docs: list[Document] = []
 
-    def __call__(self, req: Request, doc: object) -> list[CheckResult]:
+    def __call__(self, req: Request, doc: Document) -> list[CheckResult]:
         self.calls += 1
+        self.docs.append(doc)
         return list(self.results)
 
 
@@ -177,3 +182,155 @@ def test_disabled_check_is_not_executed() -> None:
 
     assert evasion.calls == 0
     assert [r.name for r in checks] == ["solicit_otp"]
+
+
+class CoordCheck:
+    """回報指定座標的假檢查，同時保留它當時看到的 `Document`。"""
+
+    stage = Stage.LOCAL
+
+    def __init__(self, name: str, coord: Coord) -> None:
+        self.name = name
+        self.coord = coord
+        self.doc: Document | None = None
+
+    def __call__(self, req: Request, doc: Document) -> list[CheckResult]:
+        self.doc = doc
+        return [
+            CheckResult(
+                name=self.name,
+                hit=True,
+                weight=1.5,
+                detail=f"命中：{doc.text_at(self.coord)}",
+                evidence=[self.coord],
+            )
+        ]
+
+
+class SentAtCheck:
+    """由座標回查 `req.messages` 取得該則訊息的時間。"""
+
+    name = "trajectory"
+    stage = Stage.LOCAL
+
+    def __init__(self) -> None:
+        self.seen: list[datetime | None] = []
+
+    def __call__(self, req: Request, doc: Document) -> list[CheckResult]:
+        self.seen = [req.messages[message_index].sent_at for message_index, _ in doc.coords]
+        return []
+
+
+def a_conversation(count: int) -> Request:
+    return Request(messages=[Message(text=f"第 {i} 則訊息") for i in range(count)])
+
+
+def test_checks_receive_a_document_not_none() -> None:
+    registry = CheckRegistry()
+    check = FakeCheck("blocklist", Stage.LOCAL, [])
+    registry.register(check)
+
+    detect(a_request(), registry)
+
+    assert isinstance(check.docs[0], Document)
+    assert check.docs[0].sentences == ("您的包裹待領取 http://a.example",)
+
+
+def test_all_checks_share_one_document_instance() -> None:
+    registry = CheckRegistry()
+    checks = [FakeCheck(name, Stage.LOCAL, []) for name in ("a", "b", "c")]
+    for check in checks:
+        registry.register(check)
+
+    detect(a_request(), registry)
+
+    first = checks[0].docs[0]
+    assert all(check.docs[0] is first for check in checks)
+
+
+def test_same_coordinate_resolves_to_the_same_sentence_across_checks() -> None:
+    registry = CheckRegistry()
+    first = CoordCheck("rule_a", (0, 1))
+    second = CoordCheck("rule_b", (0, 1))
+    registry.register(first)
+    registry.register(second)
+
+    verdict = detect(Request.from_text("在嗎？我是你朋友"), registry)
+
+    assert first.doc is second.doc
+    assert [r.evidence for r in verdict.checks] == [[(0, 1)], [(0, 1)]]
+    assert first.doc.text_at((0, 1)) == "我是你朋友"
+
+
+def test_default_limits_are_applied_when_not_given() -> None:
+    registry = CheckRegistry()
+    check = FakeCheck("blocklist", Stage.LOCAL, [])
+    registry.register(check)
+
+    detect(a_conversation(101), registry)
+
+    assert check.docs[0].truncated is True
+    assert check.docs[0].dropped_messages == 1
+
+
+def test_smaller_limits_truncate_the_document_the_checks_receive() -> None:
+    registry = CheckRegistry()
+    check = FakeCheck("blocklist", Stage.LOCAL, [])
+    registry.register(check)
+
+    detect(a_conversation(10), registry, limits=Limits(max_messages=3))
+
+    doc = check.docs[0]
+    assert doc.truncated is True
+    assert doc.dropped_messages == 7
+    assert doc.coords[0] == (7, 0)
+
+
+def test_blank_messages_do_not_interrupt_the_pipeline() -> None:
+    registry = CheckRegistry()
+    rule = FakeCheck("solicit_otp", Stage.LOCAL, [])
+    llm = FakeCheck("llm", Stage.EXPENSIVE, [])
+    registry.register(rule)
+    registry.register(llm)
+
+    verdict = detect(Request(messages=[Message(text="   "), Message(text="")]), registry)
+
+    assert rule.calls == 1
+    assert llm.calls == 1
+    assert [r.name for r in verdict.checks] == ["solicit_otp", "llm"]
+    assert rule.docs[0].sentences == ()
+
+
+def test_empty_document_without_hits_yields_no_probability() -> None:
+    registry = CheckRegistry()
+    registry.register(FakeCheck("solicit_otp", Stage.LOCAL, []))
+
+    verdict = detect(Request.from_text("   "), registry)
+
+    assert verdict.scam_probability is None
+
+
+def test_check_can_read_sent_at_through_the_coordinate() -> None:
+    sent_at = datetime(2026, 9, 14, 10, 0, 0)
+    registry = CheckRegistry()
+    check = SentAtCheck()
+    registry.register(check)
+
+    detect(
+        Request(messages=[Message(text="在嗎？"), Message(text="明天匯款", sent_at=sent_at)]),
+        registry,
+    )
+
+    assert check.seen == [None, sent_at]
+
+
+def test_end_to_end_evidence_coordinate_resolves_to_the_raw_sentence() -> None:
+    registry = CheckRegistry()
+    check = CoordCheck("solicit_otp", (0, 1))
+    registry.register(check)
+
+    verdict = detect(Request.from_text("您好。請提供簡訊驗證碼１２３"), registry)
+
+    coord = verdict.checks[0].evidence[0]
+    assert check.doc.raw_at(coord) == "請提供簡訊驗證碼１２３"
+    assert check.doc.text_at(coord) == "請提供簡訊驗證碼123"
