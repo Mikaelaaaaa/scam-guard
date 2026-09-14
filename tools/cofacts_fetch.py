@@ -115,7 +115,8 @@ query FetchArticles($filter: ListArticleFilter, $after: String) {
 代價：DESC 排序下抓取期間新增的文章排在游標之前，本趟看不到，因此
 `len(records) < totalCount` 是**正常**結果，`totalCount` 不能拿來斷言完整性
 （拿它斷言會製造假警報）。完整性靠三條確定性的檢查撐住：游標必須前進、
-`id` 不得重複、終止條件必須是空頁或達到 `--limit`。
+`id` 不得重複、終止條件必須是空頁、達到 `--limit`、或取得的筆數達到第一頁的
+`totalCount`（見 `fetch_selector`：把池子抓完之後 API 會回一個哨兵游標）。
 
 **刻意不取 `pageInfo`** —— 它給的是整份篩選結果的首尾游標，不是本頁的，
 拿它分頁會原地打轉。不取回來就不會有人誤用（見 `_collect_page`）。
@@ -288,6 +289,22 @@ def _collect_page(
     if next_cursor == cursor:
         raise CofactsFetchError(f"第 {page} 頁的游標未前進，仍為 {next_cursor!r}；分頁無法繼續")
 
+    return (
+        _records(edges, label, fetched_at, seen, remaining, page),
+        next_cursor,
+        listing["totalCount"],
+    )
+
+
+def _records(
+    edges: list,
+    label: str,
+    fetched_at: str,
+    seen: set[str],
+    remaining: int | None,
+    page: int,
+) -> list[dict]:
+    """把一頁的 edges 轉成落地紀錄。重複的 article id 即中止。"""
     records: list[dict] = []
     for edge in edges:
         if remaining is not None and len(records) >= remaining:
@@ -301,19 +318,18 @@ def _collect_page(
             )
         seen.add(record["id"])
         records.append(record)
-    return records, next_cursor, listing["totalCount"]
+    return records
 
 
-def _resume_hint(label: str, out_path: Path, cursor: str | None) -> str:
+def _resume_hint(command: str, cursor: str | None) -> str:
     """失敗訊息附上的命令，可直接複製貼回命令列。
 
     續抓是**明確指定的**，不是自動 fallback —— 人看到錯誤、人決定續抓、人貼游標。
     系統沒有在任何地方靜默地改變行為。
     """
-    command = f"  python -m tools.cofacts_fetch --label {label} --out {out_path}"
     if cursor is None:
-        return f"整趟抓取中止。重跑命令：\n{command}"
-    return f"整趟抓取中止。續抓命令（自本頁的起始游標接續）：\n{command} --after {cursor}"
+        return f"整趟抓取中止。重跑命令：\n  {command}"
+    return f"整趟抓取中止。續抓命令（自本頁的起始游標接續）：\n  {command} --after {cursor}"
 
 
 def fetch(label: str, out_path: Path, limit: int | None = None, after: str | None = None) -> int:
@@ -326,12 +342,52 @@ def fetch(label: str, out_path: Path, limit: int | None = None, after: str | Non
     寫入端沒有前一趟的記憶，要擋就得先讀回整個檔案。去重由
     `tools.message_filter` 在讀取時做，成本在那裡趨近於零。
     """
-    selector = _selector(label)
+    return fetch_selector(
+        _selector(label),
+        label,
+        out_path,
+        f"python -m tools.cofacts_fetch --label {label} --out {out_path}",
+        limit=limit,
+        after=after,
+    )
+
+
+def fetch_selector(
+    selector: dict,
+    label: str,
+    out_path: Path,
+    resume_command: str,
+    *,
+    limit: int | None = None,
+    after: str | None = None,
+) -> int:
+    """以一組**顯式傳入**的選取條件走完分頁。`fetch()` 是它的具名 selector 版本。
+
+    第二個消費者是 `tools/eval/build_testset.py`：測試集的三個 Cofacts 子集各有
+    自己的 selector（定義於 `tools/eval/selectors.py`，因為 selector 是那份
+    資料集的定義），但分頁、游標前進檢查、重複 id 偵測與失敗訊息只該有一份實作。
+
+    `resume_command` 由呼叫端提供，因為失敗訊息裡那行命令必須是**呼叫端自己**
+    的命令 —— 印一行指向本模組的續抓指令給一個用別組 selector 的呼叫端，
+    是一個看起來有幫助但貼上去會失敗的訊息。
+
+    **抓到第一頁回報的 `totalCount` 為止即停止。** 這一條是把整個池子抓完之後
+    實測出來的：7,113 筆抓完（第 71 頁只有 13 筆）之後，該頁最後一個 edge 的
+    游標是 `Wy05MjIzMzcyMDM2ODU0Nzc2MDAwLDM0NTYwXQ==`，解碼後含
+    `-9223372036854776000`（`Long.MIN_VALUE` 附近的哨兵值），拿它續抓時後端以
+    `parse_exception: failed to parse date field` 回錯。開發期只抓六頁，
+    這個邊界從未被觸及。
+
+    目標值取**第一頁**的 `totalCount` 而不是每頁重讀：DESC 排序下，抓取期間
+    新增的文章排在游標之前，本趟本來就看不到它們，而 `totalCount` 會把它們算進去 ——
+    每頁重讀會讓終止條件追著一個永遠達不到的數字跑。
+    """
     fetched_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     seen: set[str] = set()
     total = 0
     page = 0
     cursor = after
+    pool_size: int | None = None
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("a" if after else "w", encoding="utf-8") as stream:
@@ -343,7 +399,7 @@ def fetch(label: str, out_path: Path, limit: int | None = None, after: str | Non
                 )
             except CofactsFetchError as error:
                 raise CofactsFetchError(
-                    f"{error}\n{_resume_hint(label, out_path, cursor)}"
+                    f"{error}\n{_resume_hint(resume_command, cursor)}"
                 ) from error
 
             for record in records:
@@ -356,9 +412,13 @@ def fetch(label: str, out_path: Path, limit: int | None = None, after: str | Non
                 file=sys.stderr,
             )
 
+            if pool_size is None:
+                pool_size = total_count
             if next_cursor is None:
                 break
             if limit is not None and total >= limit:
+                break
+            if total >= pool_size:
                 break
             cursor = next_cursor
             page += 1

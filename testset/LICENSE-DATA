@@ -1,0 +1,32 @@
+本目錄（`testset/`）的內容適用 Creative Commons 姓名標示-相同方式分享 4.0
+國際 (CC BY-SA 4.0)，與 repo 根目錄 `LICENSE` 的 MIT 授權**不同**。
+
+    repo 的 MIT 只涵蓋程式碼。本目錄不是程式碼。
+
+## 為什麼即使不含內文也要聲明
+
+本目錄只含**公開識別字**（Cofacts 的 article id）、子集名稱與內容的 SHA-256
+摘要，沒有任何一個位元組是 Cofacts 的文字內容。嚴格說，一串識別字與一串雜湊
+是否構成 CC BY-SA 意義下的衍生資料是可爭議的。
+
+聲明的成本是一個檔案，爭議的成本不是。`add-cofacts-fetch` 已經寫過
+「把 CC BY-SA 的衍生資料放進 MIT repo 是授權衝突」；本目錄的處置是那個論證的
+直接延伸，不是一條新規則。
+
+## 姓名標示
+
+資料來源：Cofacts 真的假的 — 轉傳訊息查證（https://cofacts.tw/）
+授權條款：CC BY-SA 4.0（https://creativecommons.org/licenses/by-sa/4.0/deed.zh_TW）
+
+逐則的姓名標示由重建後的 `source_uri` 欄位滿足，格式為
+`https://cofacts.tw/article/<id>`，讀者點得進原始查核頁面。
+
+## 訊息內容不在此目錄
+
+重建出來的內文一律寫入 `data/testset/`，該路徑被 `.gitignore` 忽略
+（第 222 行的 `data/` 無前導斜線，在任何深度生效），並由建立流程以
+`git check-ignore` 實測驗證，不以目視確認 `.gitignore` 取代。
+
+重建方式：
+
+    python -m tools.eval.build_testset rebuild
