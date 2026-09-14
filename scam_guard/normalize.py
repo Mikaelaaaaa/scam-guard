@@ -331,6 +331,11 @@ class Document:
         previous_sentence = -1
         for coord in self.coords:
             message_index, sentence_index = coord
+            # 值域先於順序檢查：`previous_message` 的哨兵是 -1，若不先擋下負數，
+            # 訊息序號 -1 會通過遞增檢查，而 `req.messages[-1]` 在 Python 中會
+            # 安靜地指向最後一則訊息——證據指錯訊息且無人報告。
+            if message_index < 0 or sentence_index < 0:
+                raise ValueError(f"座標分量不可為負：{coord}")
             if message_index < previous_message:
                 raise ValueError(
                     f"座標的訊息序號必須遞增：{coord} 出現在訊息 {previous_message} 之後"
@@ -346,6 +351,8 @@ class Document:
             previous_message = message_index
             previous_sentence = sentence_index
 
+        if self.dropped_messages < 0:
+            raise ValueError(f"丟棄則數不可為負：dropped_messages={self.dropped_messages}")
         if self.truncated != (self.dropped_messages > 0):
             raise ValueError(
                 f"截斷旗標與丟棄則數必須一致：truncated={self.truncated}、"
@@ -373,7 +380,14 @@ class Document:
         return self.raw_sentences[self.index_of(coord)]
 
     def message_range(self, message_index: int) -> range:
-        """某則訊息全部句子的扁平索引範圍。該則未產生句子時為空 `range`。"""
+        """某則訊息全部句子的扁平索引範圍。該則未產生句子時為空 `range`。
+
+        負序號視為呼叫端算錯而拋例外，理由同 `index_of()`。非負但不存在的序號
+        仍回傳空 `range`——`Document` 不持有請求總則數，分辨不了「不存在」與
+        「存在但無句子」。
+        """
+        if message_index < 0:
+            raise ValueError(f"訊息序號不可為負：message_index={message_index}")
         positions = [i for i, coord in enumerate(self.coords) if coord[0] == message_index]
         if not positions:
             return range(0)

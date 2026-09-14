@@ -146,3 +146,25 @@ def test_coordinate_points_back_at_the_original_message() -> None:
 
     assert req.messages[coord[0]].sent_at == sent_at
     assert doc.text_at(coord) == "明天匯款"
+
+
+def test_negative_coordinate_components_are_rejected() -> None:
+    """訊息序號 -1 會讓 `req.messages[-1]` 安靜指向最後一則訊息。"""
+    with pytest.raises(ValueError, match="不可為負"):
+        Document(
+            sentences=("一", "二"),
+            raw_sentences=("一", "二"),
+            coords=((-1, 0), (-1, 1)),
+        )
+
+
+def test_negative_dropped_messages_is_rejected() -> None:
+    with pytest.raises(ValueError, match="丟棄則數不可為負"):
+        Document(sentences=(), raw_sentences=(), coords=(), dropped_messages=-3)
+
+
+def test_message_range_rejects_negative_index() -> None:
+    doc = Document(sentences=("一",), raw_sentences=("一",), coords=((0, 0),))
+
+    with pytest.raises(ValueError, match="訊息序號不可為負"):
+        doc.message_range(-1)
