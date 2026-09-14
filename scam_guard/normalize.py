@@ -9,6 +9,7 @@
 使正規化後的任意區間可映回原文的對應片段。
 """
 
+import re
 import unicodedata
 from dataclasses import dataclass
 
@@ -163,3 +164,100 @@ def normalize_text(raw: str) -> NormalizedText:
         offsets[0] = 0
     offsets.append(total)
     return NormalizedText(raw=raw, text="".join(chars), offsets=tuple(offsets))
+
+
+# 切句分隔符，寫成**正規化後**的形狀 —— NFKC 已把全形 `！？；` 收斂為 ASCII
+# `!?;`，中文句號維持 `。`。
+#
+# 刻意不含三者：
+#
+# - ASCII `.` —— 網址、小數與英文縮寫都用它。
+# - `,` 與 `、` —— 單位是「句子」，不是子句。需要子句精度的規則在句內自行再切，
+#   見 `split_sentences()` 的說明。
+SENTENCE_END = "。!?;"
+
+# 網址的最小詞法遮罩。落在遮罩內的分隔符不切句 ——
+# `https://x.cc/a?id=1;v=2` 含 `?` 與 `;`，切開會產生三個沒有意義的片段，
+# 而 `add-url-check` 拿到的會是半截網址。
+#
+# 這不是網址抽取（那屬 `add-url-extract`），只是「哪裡不可以切」的判定，
+# 純詞法、不需要黑名單、不需要網路。已知代價：`\S+` 會吃掉緊接在網址後的中文
+# （`https://x.cc/a點擊領取` 整段視為網址而不切），後果是句子變長而非切錯，
+# 方向是「寧可少切不可切壞」。
+URL_PATTERN = re.compile(r"https?://\S+|www\.\S+")
+
+
+def _protected_spans(text: str) -> list[tuple[int, int]]:
+    """回傳不可切區間 `[start, end)` 的清單，依出現順序排列。"""
+    return [(m.start(), m.end()) for m in URL_PATTERN.finditer(text)]
+
+
+def _is_protected(pos: int, spans: list[tuple[int, int]]) -> bool:
+    return any(start <= pos < end for start, end in spans)
+
+
+def _strip_span(text: str, a: int, b: int) -> tuple[int, int]:
+    """回傳去除前後空白後的區間。整段皆為空白時回傳 `a >= b` 的空區間。"""
+    while a < b and text[a].isspace():
+        a += 1
+    while b > a and text[b - 1].isspace():
+        b -= 1
+    return a, b
+
+
+def split_sentences(norm: NormalizedText) -> list[tuple[str, str]]:
+    """把正規化後的文字切成句子，回傳 `(正規化片段, 原文片段)` 序對的清單。
+
+    句子編號（此清單的索引）是本系統的**共用座標系**：規則層說「第 2 句命中」、
+    LLM 回報 `evidence_sentence_ids`、呈現層把第 2 句秀給使用者，三方必須指到
+    同一個東西。因此切句規則簡單到可以完整列舉，不含任何統計模型。
+
+    切句在**正規化後**的文字上做，原文片段由 `NormalizedText.raw_span()` 映回，
+    而不是對原文再切一次 —— 正規化把 `｡` 收斂成 `。` 之後才成為分隔符，
+    對原文再切會產生長度不一致的兩份結果，而索引一旦對不起來就失去意義。
+
+    行為：句末標點保留在句子內（`?` 本身是言語行為的訊號）；換行是斷點但不納入
+    句子；僅由空白組成的片段整段略過，不產生空句；未以分隔符結尾的尾段仍成句。
+
+    **句內的逗號與頓號保留**，這是刻意的。`add-speech-act-rules` 需要子句級的
+    否定範疇（「您的驗證碼是 123456，請勿告訴他人」是正當的 OTP 簡訊，
+    唯一能擋掉它的是「請勿」），而以字元距離視窗界定否定範疇會出錯
+    （「請不要在任何情況下告訴任何人」中兩者相隔 9 字）。解法是規則在句子內部
+    自行以逗號與頓號再切成子句、在子句內判定否定範疇，**但回報的 `evidence`
+    仍是句子座標** —— 座標系維持粗粒度，跨層的共用語言不變。
+    詳見 `openspec/changes/add-split-sentences/design.md`。
+    """
+    text = norm.text
+    spans = _protected_spans(text)
+
+    bounds: list[tuple[int, int]] = []
+    total = len(text)
+    start = 0
+    i = 0
+    while i < total:
+        ch = text[i]
+        if _is_protected(i, spans):
+            i += 1
+            continue
+        if ch in SENTENCE_END:
+            # 連續的分隔符整段併入同一句（`快點！！！` 是一句，不是三句）——
+            # 否則後兩個驚嘆號會各自成為一個只有標點的句子。
+            end = i + 1
+            while end < total and text[end] in SENTENCE_END and not _is_protected(end, spans):
+                end += 1
+            bounds.append((start, end))
+            start = end
+            i = end
+            continue
+        if ch == "\n":
+            bounds.append((start, i))
+            start = i + 1
+        i += 1
+    bounds.append((start, total))
+
+    sentences: list[tuple[str, str]] = []
+    for raw_start, raw_end in bounds:
+        a, b = _strip_span(text, raw_start, raw_end)
+        if a < b:
+            sentences.append((text[a:b], norm.raw_span(a, b)))
+    return sentences
