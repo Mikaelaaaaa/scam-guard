@@ -4,7 +4,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from scam_guard.types import CheckResult, Verdict
+from scam_guard.types import CheckResult, ScamType, Verdict
 
 
 def test_check_result_with_all_fields() -> None:
@@ -14,7 +14,7 @@ def test_check_result_with_all_fields() -> None:
         weight=1.8,
         detail="0.87/0.85",
         evidence=[(0, 3), (0, 4)],
-        scam_types=["釣魚網站"],
+        scam_types=[ScamType.PHISHING_LINK],
         hard=True,
     )
 
@@ -23,7 +23,7 @@ def test_check_result_with_all_fields() -> None:
     assert result.weight == 1.8
     assert result.detail == "0.87/0.85"
     assert result.evidence == [(0, 3), (0, 4)]
-    assert result.scam_types == ["釣魚網站"]
+    assert result.scam_types == [ScamType.PHISHING_LINK]
     assert result.hard is True
 
 
@@ -45,6 +45,27 @@ def test_hit_without_evidence_is_legal() -> None:
 
     assert result.hit is True
     assert result.evidence == []
+
+
+def test_check_result_may_carry_multiple_scam_types() -> None:
+    """一條話術同時可能屬兩種類型，收斂由 add-type-resolve 負責。"""
+    result = CheckResult(
+        name="advance_fee",
+        hit=True,
+        weight=1.5,
+        detail="領獎前需先繳手續費",
+        scam_types=[ScamType.FAKE_PRIZE, ScamType.FAKE_LOAN],
+    )
+
+    assert result.scam_types == [ScamType.FAKE_PRIZE, ScamType.FAKE_LOAN]
+
+
+def test_hit_without_scam_types_is_legal() -> None:
+    """規避偵測這類訊號指示可疑，但不指向特定類型。"""
+    result = CheckResult(name="evasion", hit=True, weight=0.6, detail="字元間插入零寬空格")
+
+    assert result.hit is True
+    assert result.scam_types == []
 
 
 def test_check_result_defaults_are_empty_and_not_shared() -> None:
@@ -72,6 +93,21 @@ def test_verdict_scam_probability_can_be_none() -> None:
     assert verdict.confidence == 0.05
 
 
+def test_verdict_scam_type_is_a_vocabulary_member() -> None:
+    """呈現層取成員的值即得 165 原文，不需要另一張顯示名稱對照表。"""
+    verdict = Verdict(
+        scam_probability=0.87,
+        confidence=0.9,
+        scam_type=ScamType.FAKE_AUTHORITY,
+        evidence=["要求匯入監管帳戶（我國法制不存在此類帳戶）"],
+        actions=["不要照做，撥打 165 查證"],
+        checks=[],
+    )
+
+    assert verdict.scam_type is ScamType.FAKE_AUTHORITY
+    assert verdict.scam_type.value == "假檢警/假冒公務機關"
+
+
 def test_verdict_keeps_unhit_checks() -> None:
     checks = [
         CheckResult(
@@ -85,7 +121,7 @@ def test_verdict_keeps_unhit_checks() -> None:
     verdict = Verdict(
         scam_probability=0.87,
         confidence=0.9,
-        scam_type="假檢警",
+        scam_type=ScamType.FAKE_AUTHORITY,
         evidence=["要求匯入監管帳戶（我國法制不存在此類帳戶）"],
         actions=["不要照做，撥打 165 查證"],
         checks=checks,
