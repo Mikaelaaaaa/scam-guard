@@ -4,7 +4,11 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
+from scam_guard.redact import RedactedText
 from scam_guard.types import CheckResult, ScamType, Verdict
+
+EMPTY_REDACTED = RedactedText(sentences=[], coords=[], counts={})
+"""空的可記錄投影，供不關心投影內容的 `Verdict` 建構使用。"""
 
 
 def test_check_result_with_all_fields() -> None:
@@ -87,6 +91,7 @@ def test_verdict_scam_probability_can_be_none() -> None:
         evidence=[],
         actions=[],
         checks=[],
+        redacted=EMPTY_REDACTED,
     )
 
     assert verdict.scam_probability is None
@@ -102,6 +107,7 @@ def test_verdict_scam_type_is_a_vocabulary_member() -> None:
         evidence=["要求匯入監管帳戶（我國法制不存在此類帳戶）"],
         actions=["不要照做，撥打 165 查證"],
         checks=[],
+        redacted=EMPTY_REDACTED,
     )
 
     assert verdict.scam_type is ScamType.FAKE_AUTHORITY
@@ -125,6 +131,7 @@ def test_verdict_keeps_unhit_checks() -> None:
         evidence=["要求匯入監管帳戶（我國法制不存在此類帳戶）"],
         actions=["不要照做，撥打 165 查證"],
         checks=checks,
+        redacted=EMPTY_REDACTED,
     )
 
     assert len(verdict.checks) == 5
@@ -146,6 +153,7 @@ def test_verdict_is_immutable() -> None:
         evidence=[],
         actions=[],
         checks=[],
+        redacted=EMPTY_REDACTED,
     )
 
     with pytest.raises(FrozenInstanceError):

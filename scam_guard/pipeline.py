@@ -2,6 +2,7 @@
 
 from scam_guard.check import Check, CheckRegistry, Stage
 from scam_guard.normalize import DEFAULT_LIMITS, Document, Limits, build_document
+from scam_guard.redact import redact_document
 from scam_guard.types import CheckResult, Request, Verdict
 
 QUOTATION_CHECK = "quotation"
@@ -72,6 +73,11 @@ def detect(
     3. `short_circuit=False` 時全部執行，供消融實驗分析「LLM 在黑名單
        已命中的情況下會說什麼」這類問題。
 
+    **可記錄投影（`Verdict.redacted`）於全部檢查之後產出，一次呼叫只產出一次。**
+    這個順序不是效能考量，是「規則層與 URL 層讀未遮蔽文字」的結構性保證：
+    遮蔽結果在最後一個 `Check` 回傳之前**根本不存在**，檢查在時間上不可能讀到它，
+    也不可能把它當成輸入。短路時也照常產出 —— 少跑幾個檢查不影響投影的完整性。
+
     ⚠️ 此階段**不做計分**：`scam_probability` 固定為 `None`、`confidence`
     為 0.0、`scam_type` / `evidence` / `actions` 為空，皆為佔位值。
     實際計算屬 `scoring` PR（`add-score-compute`、`add-confidence`、
@@ -101,6 +107,7 @@ def detect(
         evidence=[],
         actions=[],
         checks=results,
+        redacted=redact_document(doc),
     )
 
 
