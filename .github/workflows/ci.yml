@@ -16,12 +16,44 @@ jobs:
 
       # 必須含 demo extra：`tests/test_gradio_demo.py` 以 `importorskip("gradio")`
       # 開頭，少了它整個檔案會被安靜跳過，而 skipped 不會讓 CI 變紅。
+      #
+      # 必須含 llm extra，理由相同：`tests/test_llm_grammar.py` 以
+      # `importorskip("llama_cpp")` 開頭。`--extra-index-url` 是作者維護的
+      # 預編譯 wheel index；少了它 pip 會拿 PyPI 上的 sdist 並編譯數分鐘。
       - name: Install
-        run: pip install -e ".[dev,demo]"
+        run: |
+          pip install --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu \
+            -e ".[dev,demo,llm]"
 
       - name: Lint
         run: ruff check .
 
+      # `tests/test_llm_grammar.py` 用**真正的** llama.cpp grammar 引擎驗證
+      # 18 個中文值的兩層引號，而那需要一份 vocab，也就是需要模型檔
+      # （`LlamaGrammar.from_string()` 在 0.3.35 不做任何解析，
+      # 見 `openspec/changes/add-llm-schema/design.md` 的實作驗證一節）。
+      # revision 釘住 commit sha，理由與 `llm_runtime/model.py` 相同：
+      # 模型檔變了之後 grammar 的行為可能跟著變，而沒有任何地方會報告它變了。
+      - name: Cache model
+        uses: actions/cache@v4
+        with:
+          path: ~/models
+          key: gguf-f9c28bcd85737ffc5aef028638d3341d49869c27
+
+      - name: Fetch model
+        run: |
+          mkdir -p ~/models
+          test -s ~/models/gemma-3-1b-it-Q4_K_M.gguf || curl -fL \
+            -o ~/models/gemma-3-1b-it-Q4_K_M.gguf \
+            https://huggingface.co/ggml-org/gemma-3-1b-it-GGUF/resolve/f9c28bcd85737ffc5aef028638d3341d49869c27/gemma-3-1b-it-Q4_K_M.gguf
+
       # 退出碼 5 表示沒有收集到任何測試，此階段視為通過。
       - name: Test
-        run: pytest || [ $? -eq 5 ]
+        run: SCAM_GUARD_GGUF="$HOME/models/gemma-3-1b-it-Q4_K_M.gguf" pytest || [ $? -eq 5 ]
+
+      # skipped 不會讓 CI 變紅，所以「最重要的那一檔有沒有真的跑」要單獨問一次。
+      - name: Grammar tests must not be skipped
+        run: |
+          SCAM_GUARD_GGUF="$HOME/models/gemma-3-1b-it-Q4_K_M.gguf" \
+            pytest tests/test_llm_grammar.py -rs | tee /tmp/grammar.log
+          ! grep -q "SKIPPED" /tmp/grammar.log

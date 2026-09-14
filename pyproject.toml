@@ -47,6 +47,18 @@ api = [
     "uvicorn>=0.30",
 ]
 
+# LLM 層的執行期依賴。`scam_guard/` 的 `dependencies` 維持 `[]` ——
+# 核心只產生 prompt 與 grammar 這兩段字串，推論引擎的實際呼叫在 `llm_runtime/`，
+# 而核心的 import 圖裡沒有那個節點，所以未安裝此 extra 時零個 `try: import`。
+#
+# ⚠️ PyPI 上的 `llama-cpp-python` 0.3.35 **只有 sdist**（74.9 MB），`pip install`
+# 會在安裝時編譯 C++。作者維護的預編譯 wheel index 是
+# `https://abetlen.github.io/llama-cpp-python/whl/cpu`，安裝指令要帶
+# `--extra-index-url`；那是一個第三方託管的 GitHub Pages，掛掉時安裝會落回編譯。
+llm = [
+    "llama-cpp-python>=0.3.35",
+]
+
 [tool.setuptools.packages.find]
 include = ["scam_guard*"]
 
