@@ -1,7 +1,9 @@
 """字元層正規化與原文位置對映。
 
-此模組不 import 專案內任何模組（含 `types.py`），只依賴標準庫 ——
-正規化是最底層的關注點，它不需要知道訊息、請求或檢查的存在。
+此模組除了 `scam_guard.types`（契約載體，本身也只依賴標準庫）之外
+不 import 專案內任何模組 —— 正規化是最底層的關注點，它不需要知道
+檢查、註冊表或流程的存在。import 方向是單向的：`check.py` → `normalize.py`
+→ `types.py`。
 
 正規化的核心限制是**不可逆性必須被補償**：拆字、全形半形混用、零寬字元插入
 本身就是規避偵測要抓的東西，也是要呈現給使用者看的東西，而正規化會消滅它們。
@@ -11,7 +13,10 @@
 
 import re
 import unicodedata
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+
+from scam_guard.types import Coord, Message
 
 # 不可見字元 —— 以顯式清單列舉而非以 Unicode 類別（`Cf`）判定。
 # 類別判定涵蓋面更廣，但清單不可見：沒有人能在 review 時說出它到底刪了什麼，
@@ -261,3 +266,123 @@ def split_sentences(norm: NormalizedText) -> list[tuple[str, str]]:
         if a < b:
             sentences.append((text[a:b], norm.raw_span(a, b)))
     return sentences
+
+
+@dataclass(frozen=True)
+class Document:
+    """檢查層唯一的文字輸入：請求中**全部訊息**的正規化與切句結果。
+
+    涵蓋全部訊息而非僅 `latest`，因為假投資與假交友（合計約 29% 的案件）的
+    判斷依據本質上是跨訊息的 —— 前面數十則在建立信任，後面才要錢。
+    若只含 `latest`，系統在結構上就說不出這條軌跡。
+
+    三個平行序列**等長且索引一一對應**：
+
+    - `sentences` —— 正規化後，**規則比對與 LLM 輸入用**
+    - `raw_sentences` —— 原文對應片段，**呈現給使用者用**
+    - `coords` —— 每句的 `(訊息序號, 訊息內句子序號)`，見 `types.Coord`
+
+    呈現一律取 `raw_sentences` / `raw_at()`：正規化會改變顯示形狀
+    （`㈱` 展開成 `(株)`、全形數字變半形），而規避痕跡（拆字、零寬字元）
+    只存在於原文。規則與 LLM 一律取 `sentences` / `text_at()`。
+
+    扁平而非巢狀（每則一個子物件）：規則層的主要動作是「掃過全部句子找訊號」，
+    巢狀會逼每個規則寫雙層迴圈，而雙層迴圈裡最容易把內層索引當成全域索引用。
+    訊息邊界不是遺失而是可推導，由 `message_range()` 提供。
+
+    不重複 `sender` 與 `sent_at` —— 索引已與 `Request` 對齊，要用就查
+    `req.messages[m]`。重複儲存等於有兩個真相來源。
+
+    序列以 `tuple` 儲存：`frozen=True` 只擋欄位重新賦值，擋不住 list 的就地修改，
+    而檢查之間的隔離靠不可變性保證。
+    """
+
+    sentences: Sequence[str]
+    raw_sentences: Sequence[str]
+    coords: Sequence[Coord]
+    truncated: bool = False
+    dropped_messages: int = 0
+    _index: dict[Coord, int] = field(init=False, repr=False, compare=False, default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "sentences", tuple(self.sentences))
+        object.__setattr__(self, "raw_sentences", tuple(self.raw_sentences))
+        object.__setattr__(self, "coords", tuple(self.coords))
+
+        if len(self.sentences) != len(self.raw_sentences):
+            raise ValueError(
+                f"正規化句子與原文片段必須等長：len(sentences)={len(self.sentences)}、"
+                f"len(raw_sentences)={len(self.raw_sentences)}"
+            )
+        if len(self.coords) != len(self.sentences):
+            raise ValueError(
+                f"座標數必須等於句子數：len(coords)={len(self.coords)}、"
+                f"len(sentences)={len(self.sentences)}"
+            )
+
+        previous_message = -1
+        previous_sentence = -1
+        for coord in self.coords:
+            message_index, sentence_index = coord
+            if message_index < previous_message:
+                raise ValueError(
+                    f"座標的訊息序號必須遞增：{coord} 出現在訊息 {previous_message} 之後"
+                )
+            if message_index == previous_message:
+                if sentence_index != previous_sentence + 1:
+                    raise ValueError(
+                        f"同一則訊息內的句子序號必須連續：{coord} 的前一個句子序號為 "
+                        f"{previous_sentence}"
+                    )
+            elif sentence_index != 0:
+                raise ValueError(f"每則訊息的句子序號必須自 0 起算：{coord}")
+            previous_message = message_index
+            previous_sentence = sentence_index
+
+        object.__setattr__(self, "_index", {coord: i for i, coord in enumerate(self.coords)})
+
+    def index_of(self, coord: Coord) -> int:
+        """座標對應的扁平索引。無效座標拋 `KeyError`。
+
+        無效座標代表產生它的檢查算錯了，是程式錯誤 —— 回傳 `None` 會讓錯誤的
+        證據安靜地變成「沒有證據」，而少一條依據不會有人發現。
+        """
+        if coord not in self._index:
+            raise KeyError(f"座標不存在於此 Document：{coord}")
+        return self._index[coord]
+
+    def text_at(self, coord: Coord) -> str:
+        """座標對應的正規化句子，供規則比對與 LLM 使用。"""
+        return self.sentences[self.index_of(coord)]
+
+    def raw_at(self, coord: Coord) -> str:
+        """座標對應的原文片段，供呈現給使用者。"""
+        return self.raw_sentences[self.index_of(coord)]
+
+    def message_range(self, message_index: int) -> range:
+        """某則訊息全部句子的扁平索引範圍。該則未產生句子時為空 `range`。"""
+        positions = [i for i, coord in enumerate(self.coords) if coord[0] == message_index]
+        if not positions:
+            return range(0)
+        return range(positions[0], positions[-1] + 1)
+
+
+def build_document(messages: Sequence[Message]) -> Document:
+    """對每則訊息正規化與切句，扁平累積成一個 `Document`。
+
+    訊息序號採用**輸入序列中的位置**，使 `doc.coords[i] == (m, s)` 時
+    `messages[m]` 就是該句所屬的訊息。未產生任何句子的訊息（貼圖、純空白）
+    被略過，但不影響後續訊息的序號。
+
+    全部訊息皆無文字內容時回傳三個序列皆空的 `Document`，這是合法值而非錯誤。
+    """
+    sentences: list[str] = []
+    raw_sentences: list[str] = []
+    coords: list[Coord] = []
+    for message_index, message in enumerate(messages):
+        pairs = split_sentences(normalize_text(message.text))
+        for sentence_index, (text, raw) in enumerate(pairs):
+            sentences.append(text)
+            raw_sentences.append(raw)
+            coords.append((message_index, sentence_index))
+    return Document(sentences=sentences, raw_sentences=raw_sentences, coords=coords)

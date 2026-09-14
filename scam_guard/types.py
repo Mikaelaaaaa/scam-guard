@@ -6,6 +6,21 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import TypeAlias
+
+Coord: TypeAlias = tuple[int, int]
+"""證據座標 `(原始訊息序號, 訊息內句子序號)`，兩者皆從 0 起算。
+
+**訊息序號**是該訊息在**原始 `Request`** 中的位置，不因上下文截斷而位移 ——
+丟掉最舊的 3 則之後，保留下來的第一則其訊息序號仍是 3。這讓 `Document` 與
+`Request` 的索引直接對齊：座標為 `(m, s)` 時，`req.messages[m]` 就是該句所屬的
+訊息，需要 `sent_at` 的軌跡檢查因此不需要另一張對照表。
+
+**句子序號是訊息內的，不是全域的。** 這是最容易被實作反的地方。若它是全域序號，
+第一個分量就成了冗餘資訊，兩個座標退化成一個；而且全域序號會因截斷而整體位移
+（原本的第 30 句變成第 12 句），同一則訊息在兩次請求中的編號就不同。
+LLM 的 prompt 也是逐則編號的，要它回報全域序號等於要它跨訊息做加法。
+"""
 
 
 @dataclass(frozen=True)
