@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from importlib import resources
 from typing import Iterable
 
+from scam_guard.allowlist import RankAllowlist
 from scam_guard.blocklist import BlocklistStore, Entry
 from scam_guard.check import CheckRegistry, Stage
 from scam_guard.normalize import Document
@@ -247,25 +248,67 @@ class UrlBlocklistCheck:
     **誠實揭露：** 176455 的 83,323 筆全部是**已被停止 DNS 解析**的網域，
     使用者點進去多半已經打不開。這不減損訊號價值（訊息仍是詐騙，依據仍成立），
     但命中代表「這是一波已被處理過的詐騙」，不代表「你現在有立即危險」。
+
+    **選配的 `allowlist`（Tranco 排名白名單）只收窄這一個檢查，分三種情形。**
+    它不產生 `CheckResult`、不帶權重、不進入信心值計算 —— 它唯一能做的事
+    是讓這個檢查少產一筆結果，或把一筆結果的 `hard` 由 `True` 改為 `False`。
+    這是三種可能作法裡唯一**不可能讓分數變高**也**不可能讓其他層的證據被
+    抵銷**的一種；一個能扣分的白名單會從防守元件變成攻擊面。
     """
 
     name = "url_blocklist"
     stage = Stage.LOCAL
 
-    def __init__(self, store: BlocklistStore, psl: PublicSuffixList, tables: Tables) -> None:
+    def __init__(
+        self,
+        store: BlocklistStore,
+        psl: PublicSuffixList,
+        tables: Tables,
+        *,
+        allowlist: RankAllowlist | None = None,
+    ) -> None:
         self._store = store
         self._psl = psl
         self._known_services = tables.known_service_domains
         sources = store.manifest["sources"]
         self._titles = {dataset_id: meta["title"] for dataset_id, meta in sources.items()}
+        self._allowlist = allowlist
 
     def __call__(self, req: Request, doc: Document) -> list[CheckResult]:
         results = []
         for domain, urls in group_by_registrable_domain(extract_urls(doc, self._psl)).items():
             hosts = {url.host for url in urls}
             exact = [entry for host in sorted(hosts) for entry in self._store.by_host(host)]
+            rank = self._allowlist.rank(domain) if self._allowlist is not None else None
             if exact:
-                results.append(self._result(domain, urls, tuple(exact), hard=True))
+                # 情形三：被通報的主機**就是**該可註冊網域本身 → 黑名單贏。
+                # 黑名單是第一方機關對整個網站的直接指控，而 Tranco 排名量的是
+                # 流量；一個有流量的詐騙網站仍然是詐騙網站（實測前一百萬名內
+                # 含 `e-visacan.com`、`welove777.com`）。把「哪邊贏」交給排名，
+                # 等於用流量推翻法律程序。
+                #
+                # 情形二：命中的主機全部是白名單網域的**子網域** → 降 `hard`。
+                # 黑名單的鍵是主機，而平台上攻擊者的單位是路徑（實測獨立釣魚
+                # 樣本 41.7% 的 URL 帶非平凡路徑），「這個主機被通報過」不足以
+                # 指認任何一個具體頁面，而 `hard=True` 會短路掉整個 LLM 層。
+                # 降 `hard` 不刪結果：訊號仍在、依據仍寫、LLM 照跑。
+                apex_hit = any(entry.host == domain for entry in exact)
+                downgraded = rank is not None and not apex_hit
+                results.append(
+                    self._result(
+                        domain,
+                        urls,
+                        tuple(exact),
+                        hard=not downgraded,
+                        suffix=self._allowlist_suffix(domain, rank) if downgraded else "",
+                    )
+                )
+                continue
+            if rank is not None:
+                # 第一級：可註冊網域在白名單上時不做網域層比對。
+                # 與下面的 `known_service_domains` 完全同形，只是把那份人工
+                # 清單換成資料驅動的版本 —— 一個共用平台上的鄰居不能證明
+                # 這個連結有問題。
                 continue
             if domain in self._known_services:
                 # 可註冊網域是已知的共用服務時**不做網域層比對**。
@@ -277,8 +320,31 @@ class UrlBlocklistCheck:
                 continue
             neighbours = self._store.by_registrable_domain(domain)
             if neighbours:
-                results.append(self._result(domain, urls, neighbours, hard=False))
+                observed = "、".join(sorted(hosts))
+                results.append(
+                    self._result(
+                        domain,
+                        urls,
+                        neighbours,
+                        hard=False,
+                        suffix=(
+                            f"。訊息中的主機為 {observed}，"
+                            f"與被通報的主機不同，同屬可註冊網域 {domain}"
+                        ),
+                    )
+                )
         return results
+
+    def _allowlist_suffix(self, domain: str, rank: int | None) -> str:
+        """白名單造成降級時的依據文案。
+
+        寫的是**可查證的事實**（確切名次與清單 ID），不是「知名網站」
+        「可信網域」這類形容詞 —— 後者無法被反駁，也無法在半年後複驗。
+        """
+        list_id = self._allowlist.manifest["list_id"] if self._allowlist is not None else ""
+        return (
+            f"。可註冊網域 {domain} 為 Tranco 清單 {list_id} 第 {rank} 名，被通報的主機為其子網域"
+        )
 
     def _result(
         self,
@@ -287,6 +353,7 @@ class UrlBlocklistCheck:
         entries: tuple[Entry, ...],
         *,
         hard: bool,
+        suffix: str,
     ) -> CheckResult:
         scam_types: list[ScamType] = []
         for entry in entries:
@@ -301,21 +368,19 @@ class UrlBlocklistCheck:
         return CheckResult(
             name=self.name,
             hit=True,
-            detail=self._detail(domain, urls, entries, hard=hard),
+            detail=self._detail(entries) + suffix,
             evidence=coords_of(urls),
             scam_types=scam_types,
             hard=hard,
         )
 
-    def _detail(
-        self,
-        domain: str,
-        urls: list[ExtractedUrl],
-        entries: tuple[Entry, ...],
-        *,
-        hard: bool,
-    ) -> str:
-        """依據是事實陳述，不用「可疑」「危險」這類形容詞。"""
+    def _detail(self, entries: tuple[Entry, ...]) -> str:
+        """依據是事實陳述，不用「可疑」「危險」這類形容詞。
+
+        比對層級與白名單造成的補充說明由呼叫端以 `suffix` 帶入 ——
+        兩者是不同的事實（「主機不同但同網域」與「這個網域是大平台」），
+        不能由同一個 `hard` 旗標推導出來。
+        """
         parts = []
         for entry in entries:
             title = self._titles[entry.source] if entry.source in self._titles else entry.source
@@ -323,11 +388,7 @@ class UrlBlocklistCheck:
             if entry.nature is not None:
                 piece += f"，網站性質：{entry.nature}"
             parts.append(piece)
-        detail = "；".join(parts)
-        if not hard:
-            observed = "、".join(sorted({url.host for url in urls}))
-            detail += f"。訊息中的主機為 {observed}，與被通報的主機不同，同屬可註冊網域 {domain}"
-        return detail
+        return "；".join(parts)
 
 
 class UrlShortenerCheck:
@@ -709,17 +770,32 @@ def register_url_checks(
     tables: Tables,
     *,
     store: BlocklistStore | None = None,
+    allowlist: RankAllowlist | None = None,
 ) -> None:
     """把 URL 層的檢查註冊進 registry。
 
     **未提供 `store` 時不註冊 `url_blocklist`** —— 不註冊一個永遠不命中的空檢查，
     否則「沒有訊號」與「沒有資料」在 `Verdict.checks` 裡看起來一模一樣。
 
+    **`allowlist` 未提供時 `url_blocklist` 的行為與白名單落地前完全相同。**
+    白名單不是 `Check`，`CheckRegistry.disable()` 關不掉它 —— 把它包成 `Check`
+    只為了能被 `disable()`，會逼它產出一個「這個網域很紅」的 `hit=True` 結果
+    進入 `Verdict.checks`，而下游會把它誤用為負面證據。
+    `add-ablation` 的對照方式因此是以相同資料註冊兩組檢查，
+    一組帶白名單、一組不帶；兩次執行完全獨立，不會有殘留狀態。
+
+    白名單只影響 `url_blocklist`，其餘四個檢查不接收它 —— 逐項理由見
+    `add-tranco-allowlist` 的 design，簡言之：`url_shortener` 報的是證據不足
+    （抑制它會讓信心值把「沒有訊號」誤讀為「乾淨」，而 `bit.ly` 實測排第 118
+    名）、`url_brand` 的跨層比對正是抓「寄生在高排名網站上的釣魚」那條規則、
+    `url_host_shape` 判的是主機字串本身的形狀、`url_tld_risk` 已有自己的
+    「已知服務不觸發」規則且前 1,000 名內高風險 gTLD 實測為 0。
+
     檢查不接收權重：權重由 `(name, hard)` 於 `weights.toml` 查得
     （`add-weight-table`），檢查本身不需要知道任何數值。
     """
     if store is not None:
-        registry.register(UrlBlocklistCheck(store, psl, tables))
+        registry.register(UrlBlocklistCheck(store, psl, tables, allowlist=allowlist))
     registry.register(UrlShortenerCheck(tables, psl))
     registry.register(UrlTldRiskCheck(tables, psl))
     registry.register(UrlHostShapeCheck(psl))
