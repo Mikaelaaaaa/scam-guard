@@ -1,0 +1,109 @@
+{
+  "_note": [
+    "已知的公開短網址服務。命中時的意義是『目的地未知』，不是『這是詐騙』——",
+    "短網址本身完全合法，lin.ee 是 LINE 自己的。",
+    "",
+    "**已知且無解的缺口：詐騙者自架的轉址器不會在這份清單上**，而那正是最該抓的",
+    "情形。這份清單只涵蓋公開的短網址服務。",
+    "",
+    "系統不展開短網址，三個理由：(1) 請求送到的是詐騙者控制的伺服器，它會學到",
+    "我們的 IP、這個連結仍在流通、有人在檢查它；(2) 一次性連結會被燒掉，我們的",
+    "展開請求可能就是『那一次』；(3) 同一個短網址可以對不同來源回不同目的地，",
+    "展開得到的答案不保證是使用者會看到的答案。",
+    "",
+    "標註 observed_in_sample 的項目是在 dev-data 的 Cofacts 樣本（1,199 則）中",
+    "實際出現過的，括號內為出現次數。"
+  ],
+  "shorteners": [
+    {
+      "domain": "reurl.cc",
+      "service": "reurl.cc，台灣最常用的免費短網址服務",
+      "source": "https://reurl.cc/ ；observed_in_sample: Cofacts 樣本 28 次",
+      "verified_on": "2026-09-14"
+    },
+    {
+      "domain": "lihi.cc",
+      "service": "Lihi 短網址（台灣，行銷追蹤用）",
+      "source": "https://lihi.cc/",
+      "verified_on": "2026-09-14"
+    },
+    {
+      "domain": "lihi1.com",
+      "service": "Lihi 短網址的另一個網域",
+      "source": "https://lihi.cc/",
+      "verified_on": "2026-09-14"
+    },
+    {
+      "domain": "pse.is",
+      "service": "Lihi 旗下短網址服務（台灣）",
+      "source": "https://lihi.cc/ ；observed_in_sample: Cofacts 樣本 1 次",
+      "verified_on": "2026-09-14"
+    },
+    {
+      "domain": "lin.ee",
+      "service": "LINE 官方短網址（LINE 官方帳號、LIFF 連結）",
+      "source": "https://linecorp.com/ ；observed_in_sample: Cofacts 樣本 23 次",
+      "verified_on": "2026-09-14"
+    },
+    {
+      "domain": "0rz.tw",
+      "service": "0rz.tw，台灣早期的短網址服務",
+      "source": "https://0rz.tw/",
+      "verified_on": "2026-09-14"
+    },
+    {
+      "domain": "ppt.cc",
+      "service": "ppt.cc，台灣常用的短網址與圖床服務",
+      "source": "https://ppt.cc/",
+      "verified_on": "2026-09-14"
+    },
+    {
+      "domain": "bit.ly",
+      "service": "Bitly，全球最大的短網址服務",
+      "source": "https://bitly.com/ ；observed_in_sample: Cofacts 樣本 6 次",
+      "verified_on": "2026-09-14"
+    },
+    {
+      "domain": "tinyurl.com",
+      "service": "TinyURL",
+      "source": "https://tinyurl.com/ ；observed_in_sample: Cofacts 樣本 7 次",
+      "verified_on": "2026-09-14"
+    },
+    {
+      "domain": "is.gd",
+      "service": "is.gd 短網址服務",
+      "source": "https://is.gd/ ；observed_in_sample: Cofacts 樣本 10 次",
+      "verified_on": "2026-09-14"
+    },
+    {
+      "domain": "tiny.cc",
+      "service": "Tiny.cc 短網址服務",
+      "source": "https://tiny.cc/ ；observed_in_sample: Cofacts 樣本 1 次",
+      "verified_on": "2026-09-14"
+    },
+    {
+      "domain": "t.co",
+      "service": "X（Twitter）的自動短網址",
+      "source": "https://help.x.com/ ；t.co 由平台自動套用於所有外部連結",
+      "verified_on": "2026-09-14"
+    },
+    {
+      "domain": "youtu.be",
+      "service": "YouTube 的官方短網址",
+      "source": "https://www.youtube.com/ ；observed_in_sample: Cofacts 樣本 5 次",
+      "verified_on": "2026-09-14"
+    },
+    {
+      "domain": "page.link",
+      "service": "Firebase Dynamic Links，各家 App 自建的短連結（樣本中為 ynews.page.link）",
+      "source": "https://firebase.google.com/docs/dynamic-links ；observed_in_sample: Cofacts 樣本 8 次",
+      "verified_on": "2026-09-14"
+    },
+    {
+      "domain": "twm5g.co",
+      "service": "台灣大哥大的官方短網址網域",
+      "source": "observed_in_sample: Cofacts 樣本 4 次，指向 taiwanmobile.com 的行銷頁",
+      "verified_on": "2026-09-14"
+    }
+  ]
+}

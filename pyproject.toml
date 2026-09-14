@@ -50,3 +50,9 @@ select = ["E", "F", "TID"]
 "app.py" = ["TID251"]
 # tools/ 是網路 I/O 的唯一容身處，豁免上方的 urllib.request / requests / httpx。
 "tools/*" = ["TID251"]
+
+# 對照表（TLD 風險、短網址、品牌）是人工整理的內容，必須進版控並隨套件安裝。
+# 少了這一段，`pip install .`（非 `-e`）之後檔案不存在 —— 而這種錯在可編輯安裝下
+# 不會出現，只在正式安裝時出現。
+[tool.setuptools.package-data]
+"scam_guard.tables" = ["*.json"]
