@@ -136,6 +136,26 @@ HELP_CHANNELS = frozenset(
 漏一個詞是漏報，多收一個泛稱是誤報 —— 在沒有樣本可以決定之前，選擇漏報。
 """
 
+IMPERATIVE = frozenset({"請", "麻煩", "煩請", "務必", "速", "儘速", "盡快", "立即", "立刻", "趕快"})
+"""祈使標記 —— 接收者缺席時的**降級**命中條件，不是 `hard` 的替代品。
+
+要求子句內有自向接收者，會漏掉索取類最常見的幾種講法：
+
+    請把驗證碼告訴我        ← 有「我」，命中
+    請提供驗證碼           ← 沒有接收者，原本完全不命中
+    麻煩提供一下驗證碼       ← 同上
+
+而「請提供驗證碼」在真實詐騙訊息裡比「請把驗證碼告訴我」常見。接收者要求
+壓誤判的代價，是把每一種沒有明寫接收者的索取一起排除掉了。
+
+降級而非直接命中，是因為 `hard=True` 會觸發短路、跳過 LLM，
+而合法簡訊幾乎一定滿足兩者之一：自己附上了碼，或帶否定極性的警告。
+祈使標記本身不足以排除「客服打來請你唸驗證碼」這類真實誤判，
+所以這條路徑一律 `hard=False`、走 Tier-B 權重，把判斷交給後面幾層。
+
+spec 的受益者判定只約束 `hard=True` 的命中，這條路徑不違反它。
+"""
+
 CODE_EXEMPT_RULES = frozenset({"solicit_otp", "secrecy_demand"})
 """受自帶碼豁免影響的規則。
 
@@ -195,6 +215,13 @@ def has_self_contained_code(doc: Document, message_index: int) -> str | None:
     return None
 
 
+class Match(Enum):
+    """命中的強度。`WEAK` 是接收者缺席但有祈使標記的降級路徑，見 `IMPERATIVE`。"""
+
+    FULL = "full"
+    WEAK = "weak"
+
+
 class Polarity(Enum):
     """規則**要求**的極性。
 
@@ -208,7 +235,9 @@ class Polarity(Enum):
     REQUIRE_NEGATIVE = "negative"
 
 
-def _detail(summary: str, fact: str, code: str | None, single_clause: bool) -> str:
+def _detail(
+    summary: str, fact: str, code: str | None, single_clause: bool, no_receiver: bool
+) -> str:
     """組裝 `CheckResult.detail`。
 
     `detail` MUST 為具體的事實陳述，MUST NOT 為「話術可疑」這類形容 ——
@@ -223,6 +252,8 @@ def _detail(summary: str, fact: str, code: str | None, single_clause: bool) -> s
         parts.append(f"事實：{fact}")
     if code is not None:
         parts.append(f"訊息內已含 {len(code)} 位數字 {code}，自帶碼豁免成立，降級為弱訊號")
+    if no_receiver:
+        parts.append("子句內未出現接收者，僅憑祈使標記命中，降級為弱訊號")
     if single_clause:
         parts.append("本句未切出子句，否定範疇涵蓋全句")
     return "；".join(parts)
@@ -273,29 +304,39 @@ class SpeechActRule:
                 f"以投資話術 + 關係經營合成：name={self.name!r}"
             )
 
-    def _matches_clause(self, sentence: str, clause: tuple[int, int]) -> bool:
-        """四元組是否在此子句內全部滿足。"""
+    def _matches_clause(self, sentence: str, clause: tuple[int, int]) -> Match | None:
+        """四元組在此子句內的滿足程度。未命中回傳 `None`。
+
+        接收者缺席但子句帶祈使標記時回傳 `Match.WEAK` —— 見 `IMPERATIVE`。
+        """
         start, end = clause
         if self.objects and not _contains_any(sentence, start, end, self.objects):
-            return False
-        if self.receivers and not _contains_any(sentence, start, end, self.receivers):
-            return False
+            return None
         if _contains_any(sentence, start, end, OTHER_DIRECTED):
-            return False
+            return None
         want_negated = self.polarity is Polarity.REQUIRE_NEGATIVE
-        return any(
+        if not any(
             is_negated(sentence, clause, position) == want_negated
             for position in _predicate_positions(sentence, clause, self.predicates)
-        )
+        ):
+            return None
+        if not self.receivers or _contains_any(sentence, start, end, self.receivers):
+            return Match.FULL
+        if want_negated or not _contains_any(sentence, start, end, IMPERATIVE):
+            return None
+        return Match.WEAK
 
-    def _matches(self, sentence: str) -> bool | None:
-        """句子是否命中。命中時回傳「本句是否只有一個子句」，未命中時回傳 `None`。"""
+    def _matches(self, sentence: str) -> tuple[Match, bool] | None:
+        """句子是否命中。命中時回傳（強度，本句是否只有一個子句），未命中回傳 `None`。"""
         if self.context and not _contains_any(sentence, 0, len(sentence), self.context):
             return None
         clauses = split_clauses(sentence)
-        if not any(self._matches_clause(sentence, clause) for clause in clauses):
+        strengths = [self._matches_clause(sentence, clause) for clause in clauses]
+        hit = [item for item in strengths if item is not None]
+        if not hit:
             return None
-        return len(clauses) <= 1
+        strength = Match.FULL if Match.FULL in hit else Match.WEAK
+        return strength, len(clauses) <= 1
 
     def __call__(self, req: Request, doc: Document) -> list[CheckResult]:
         """逐句比對，命中的句子**依訊息分組**，每則訊息產出一筆 `CheckResult`。
@@ -306,21 +347,22 @@ class SpeechActRule:
 
         未命中時回傳空陣列，不回傳 `hit=False` 的佔位結果（`add-check-protocol`）。
         """
-        matches: list[tuple[Coord, bool]] = []
+        matches: list[tuple[Coord, Match, bool]] = []
         for coord, sentence in zip(doc.coords, doc.sentences):
-            single_clause = self._matches(sentence)
-            if single_clause is not None:
-                matches.append((coord, single_clause))
+            matched = self._matches(sentence)
+            if matched is not None:
+                matches.append((coord, matched[0], matched[1]))
         if not matches:
             return []
 
         results: list[CheckResult] = []
-        for message_index in sorted({coord[0] for coord, _ in matches}):
+        for message_index in sorted({coord[0] for coord, _, _ in matches}):
             in_message = [item for item in matches if item[0][0] == message_index]
             code = None
             if self.name in CODE_EXEMPT_RULES:
                 code = has_self_contained_code(doc, message_index)
-            hard = self.hard and code is None
+            full = any(strength is Match.FULL for _, strength, _ in in_message)
+            hard = self.hard and code is None and full
             results.append(
                 CheckResult(
                     name=self.name,
@@ -330,9 +372,10 @@ class SpeechActRule:
                         self.summary,
                         self.fact if self.hard else "",
                         code,
-                        any(single for _, single in in_message),
+                        any(single for _, _, single in in_message),
+                        not full,
                     ),
-                    evidence=[coord for coord, _ in in_message],
+                    evidence=[coord for coord, _, _ in in_message],
                     scam_types=list(self.scam_types),
                     hard=hard,
                 )

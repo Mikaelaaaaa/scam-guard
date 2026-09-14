@@ -281,7 +281,9 @@ COUNTEREXAMPLES: tuple[tuple[str, str, bool], ...] = (
     # `True` 代表這是已知且被接受的誤判方向 —— design 逐條標註過它們，
     # 而防詐宣導文那幾條正是 `add-quotation-check` 存在的理由（引述命中會否決短路）。
     ("solicit_otp", "請把剛才簡訊的驗證碼念給我，我幫您完成掛失", True),
-    ("solicit_card_secret", "請提供信用卡號與有效期限以保留訂位", False),
+    # 合法訂位簡訊。祈使降級路徑（IMPERATIVE）放寬接收者要求後由未命中轉為命中，
+    # 但為弱訊號（hard=False、Tier-B 權重），不觸發短路，交由引述層與 LLM 承接。
+    ("solicit_card_secret", "請提供信用卡號與有效期限以保留訂位", True),
     ("solicit_bank_credentials", "這是模擬釣魚信，請勿提供網銀密碼給我", False),
     ("deliver_bank_instrument", "媽，把存摺寄給我，我幫你去辦", True),
     ("atm_operation", "他會叫你去 ATM 解除分期，千萬不要去", True),
@@ -289,7 +291,8 @@ COUNTEREXAMPLES: tuple[tuple[str, str, bool], ...] = (
     ("secrecy_demand", "請勿將驗證碼告知他人", False),
     ("remote_control_tool", "請安裝 TeamViewer 我幫你看一下", True),
     ("prepay_to_receive", "租屋需先付兩個月押金", False),
-    ("seller_verification", "蝦皮官方提醒:賣家認證請至 App 內完成", False),
+    # 平台官方提醒。祈使降級路徑放寬接收者要求後由未命中轉為命中，但為弱訊號。
+    ("seller_verification", "蝦皮官方提醒:賣家認證請至 App 內完成", True),
     ("guaranteed_return", "有人說保證獲利，那是詐騙", True),
     ("romance_pretext", "我下週出差，機票錢先幫我墊一下", False),
     ("identity_docs", "租屋簽約時房東會要求提供身分證影本", True),
@@ -434,3 +437,31 @@ def test_rules_need_no_expensive_checks() -> None:
     alone = detect(Request.from_text(text), rules_only).checks
 
     assert [r for r in paired if r.name != "llm"] == alone
+
+
+IMPERATIVE_SOLICITATIONS: tuple[str, ...] = (
+    "請提供驗證碼",
+    "麻煩提供一下驗證碼",
+    "請告知驗證碼",
+)
+
+
+def test_imperative_solicitation_hits_without_an_explicit_receiver() -> None:
+    """「請提供驗證碼」在真實詐騙訊息裡比「請把驗證碼告訴我」常見。"""
+    for text in IMPERATIVE_SOLICITATIONS:
+        results = run("solicit_otp", text)
+        assert results, f"祈使索取未命中：{text}"
+        assert not results[0].hard, f"祈使路徑不得為硬證據：{text}"
+        assert "僅憑祈使標記命中" in results[0].detail
+
+
+def test_explicit_receiver_still_produces_hard_evidence() -> None:
+    results = run("solicit_otp", "請把驗證碼告訴我")
+
+    assert results and results[0].hard
+
+
+def test_imperative_path_does_not_override_protective_phrasing() -> None:
+    """他向保護語句即使帶祈使標記也不得命中。"""
+    assert not run("solicit_otp", "請勿將驗證碼告知他人")
+    assert not run("solicit_otp", "請不要在任何情況下告訴任何人")
