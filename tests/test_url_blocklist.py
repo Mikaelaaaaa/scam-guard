@@ -11,7 +11,12 @@ from scam_guard.pipeline import SKIPPED, detect
 from scam_guard.types import Message, Request, ScamType
 from scam_guard.url import PublicSuffixList
 from scam_guard.url_check import UrlBlocklistCheck, load_tables, register_url_checks
-from tests.test_blocklist_store import PSL_WITH_EXAMPLE, days_ago, write_snapshot
+from tests.test_blocklist_store import (
+    GOVERNMENT_MAX_AGE,
+    PSL_WITH_EXAMPLE,
+    days_ago,
+    write_snapshot,
+)
 from scam_guard.weights import load_weights
 
 TABLE = load_weights()
@@ -67,7 +72,7 @@ def psl_fixture() -> PublicSuffixList:
 @pytest.fixture(name="check")
 def check_fixture(tmp_path: Path, psl: PublicSuffixList) -> UrlBlocklistCheck:
     directory = write_snapshot(tmp_path, ENTRIES, **{"176455": {"data_through": days_ago(10)}})
-    store = BlocklistStore.load(directory, psl, max_age_days=60)
+    store = BlocklistStore.load(directory, psl, max_age_days=GOVERNMENT_MAX_AGE)
     return UrlBlocklistCheck(store, psl, load_tables())
 
 
@@ -101,7 +106,7 @@ def test_path_difference_still_matches_exactly(check: UrlBlocklistCheck) -> None
 def test_160055_maps_to_fake_investment(tmp_path: Path, psl: PublicSuffixList) -> None:
     entries = ({**ENTRIES[1], "host": "bet.example", "url": "bet.example"},)
     directory = write_snapshot(tmp_path, entries)
-    store = BlocklistStore.load(directory, psl, max_age_days=60)
+    store = BlocklistStore.load(directory, psl, max_age_days=GOVERNMENT_MAX_AGE)
     (result,) = UrlBlocklistCheck(store, psl, load_tables())(
         Request(messages=[Message(text="https://bet.example/x")]),
         build_document([Message(text="https://bet.example/x")]),

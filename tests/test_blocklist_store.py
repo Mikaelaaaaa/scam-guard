@@ -63,6 +63,13 @@ DEFAULT_ENTRIES = (
 )
 
 
+# 三份政府資料的門檻。160055 為 retired，不需要門檻也不得被要求。
+GOVERNMENT_MAX_AGE = {"176455": 60, "165027": 60}
+
+# 給「這條測試要驗的不是新鮮度」的那些測試用，避免固定日期的構造資料隨時間過期。
+RELAXED_MAX_AGE = {"176455": 100_000, "165027": 100_000}
+
+
 def write_snapshot(
     directory: Path,
     entries: tuple[dict[str, object], ...] = DEFAULT_ENTRIES,
@@ -84,12 +91,18 @@ def write_snapshot(
         ),
     }
     for dataset_id, override in source_overrides.items():
-        sources[dataset_id] = {**sources[dataset_id], **override}
+        # 未登記的 dataset_id 視為新增一個來源（多來源快照的測試用），
+        # 已登記的則是改造既有來源。
+        base = (
+            sources[dataset_id]
+            if dataset_id in sources
+            else _source(dataset_id, days_ago(1), "second", False, "")
+        )
+        sources[dataset_id] = {**base, **override}
     manifest = {
         "entries_file": ENTRIES_FILENAME,
         "entries_sha256": sha256(payload).hexdigest(),
         "fetched_at": f"{utc_today().isoformat()}T00:00:00+00:00",
-        "license": "政府資料開放授權條款-第 1 版",
         "sources": sources,
     }
     (directory / MANIFEST_FILENAME).write_text(
@@ -109,13 +122,21 @@ def _source(
         "unique_host_count": 1,
         "data_through": data_through,
         "data_through_granularity": granularity,
+        "data_through_source": "parsed_from_content",
         "retired": retired,
         "retired_reason": reason,
+        "redistributable": True,
+        "domain_level_matching": True,
+        "license": "政府資料開放授權條款-第 1 版",
+        "license_verified_on": "2026-09-14",
+        "license_note": "",
     }
 
 
 def store_of(tmp_path: Path, **kwargs: object) -> BlocklistStore:
-    return BlocklistStore.load(write_snapshot(tmp_path, **kwargs), psl_of(), max_age_days=60)
+    return BlocklistStore.load(
+        write_snapshot(tmp_path, **kwargs), psl_of(), max_age_days=GOVERNMENT_MAX_AGE
+    )
 
 
 # --- 載入是顯式動作 -------------------------------------------------------
@@ -141,7 +162,7 @@ def test_max_age_days_is_required(tmp_path: Path) -> None:
 def test_stale_source_raises_and_names_it(tmp_path: Path) -> None:
     write_snapshot(tmp_path, **{"176455": {"data_through": days_ago(400)}})
     with pytest.raises(ValueError) as excinfo:
-        BlocklistStore.load(tmp_path, psl_of(), max_age_days=60)
+        BlocklistStore.load(tmp_path, psl_of(), max_age_days=GOVERNMENT_MAX_AGE)
     message = str(excinfo.value)
     assert "176455" in message
     assert days_ago(400) in message
@@ -155,7 +176,7 @@ def test_fresh_download_with_stale_content_still_raises(tmp_path: Path) -> None:
     """
     write_snapshot(tmp_path, **{"165027": {"data_through": days_ago(270)}})
     with pytest.raises(ValueError, match="165027"):
-        BlocklistStore.load(tmp_path, psl_of(), max_age_days=60)
+        BlocklistStore.load(tmp_path, psl_of(), max_age_days=GOVERNMENT_MAX_AGE)
 
 
 def test_retired_source_does_not_block_loading(tmp_path: Path) -> None:
@@ -175,19 +196,19 @@ def test_sha256_mismatch_raises(tmp_path: Path) -> None:
     manifest["entries_sha256"] = "0" * 64
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
     with pytest.raises(ValueError, match="sha256"):
-        BlocklistStore.load(directory, psl_of(), max_age_days=60)
+        BlocklistStore.load(directory, psl_of(), max_age_days=GOVERNMENT_MAX_AGE)
 
 
 def test_missing_snapshot_names_the_fetch_command(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match="tools.fetch_blocklist"):
-        BlocklistStore.load(tmp_path, psl_of(), max_age_days=60)
+        BlocklistStore.load(tmp_path, psl_of(), max_age_days=GOVERNMENT_MAX_AGE)
 
 
 def test_entry_missing_host_raises_with_line_number(tmp_path: Path) -> None:
     entries = ({"url": "x", "source": "176455", "first_seen": "a", "last_seen": "b"},)
     directory = write_snapshot(tmp_path, entries)
     with pytest.raises(ValueError) as excinfo:
-        BlocklistStore.load(directory, psl_of(), max_age_days=60)
+        BlocklistStore.load(directory, psl_of(), max_age_days=GOVERNMENT_MAX_AGE)
     assert "host" in str(excinfo.value)
     assert "第 1 行" in str(excinfo.value)
 
@@ -195,7 +216,7 @@ def test_entry_missing_host_raises_with_line_number(tmp_path: Path) -> None:
 def test_zero_entries_raises(tmp_path: Path) -> None:
     directory = write_snapshot(tmp_path, ())
     with pytest.raises(ValueError, match="總筆數為 0"):
-        BlocklistStore.load(directory, psl_of(), max_age_days=60)
+        BlocklistStore.load(directory, psl_of(), max_age_days=GOVERNMENT_MAX_AGE)
 
 
 # --- 查詢 -----------------------------------------------------------------
@@ -254,11 +275,11 @@ def test_site_created_on_is_preserved(tmp_path: Path) -> None:
 def test_registrable_domain_index_follows_the_supplied_psl(tmp_path: Path) -> None:
     """換一份把 `other.com` 列為 PRIVATE 後綴的 PSL，索引隨之改變。"""
     directory = write_snapshot(tmp_path)
-    default_store = BlocklistStore.load(directory, psl_of(), max_age_days=60)
+    default_store = BlocklistStore.load(directory, psl_of(), max_age_days=GOVERNMENT_MAX_AGE)
     assert default_store.by_registrable_domain("other.com")
 
     private_psl = psl_of(PSL_WITH_EXAMPLE.replace("wixsite.com", "wixsite.com\nother.com"))
-    reloaded = BlocklistStore.load(directory, private_psl, max_age_days=60)
+    reloaded = BlocklistStore.load(directory, private_psl, max_age_days=GOVERNMENT_MAX_AGE)
     assert reloaded.by_registrable_domain("other.com") == ()
     assert reloaded.by_registrable_domain("a1.other.com")
 
@@ -279,7 +300,9 @@ def test_lookup_is_a_hash_lookup(tmp_path: Path) -> None:
         }
         for index in range(130_000)
     )
-    store = BlocklistStore.load(write_snapshot(tmp_path, entries), psl_of(), max_age_days=60)
+    store = BlocklistStore.load(
+        write_snapshot(tmp_path, entries), psl_of(), max_age_days=GOVERNMENT_MAX_AGE
+    )
     assert store.entry_count == 130_000
     started = time.perf_counter()
     for index in range(10_000):

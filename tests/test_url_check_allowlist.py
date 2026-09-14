@@ -25,7 +25,12 @@ from scam_guard.url_check import (
     register_url_checks,
 )
 from tests.test_allowlist_store import write_snapshot as write_allowlist
-from tests.test_blocklist_store import PSL_WITH_EXAMPLE, days_ago
+from tests.test_blocklist_store import (
+    GOVERNMENT_MAX_AGE,
+    PSL_WITH_EXAMPLE,
+    RELAXED_MAX_AGE,
+    days_ago,
+)
 from tests.test_blocklist_store import write_snapshot as write_blocklist
 
 # `google.com`：平台被它的使用者連累（`play.google.com` 實測在 160055 上）。
@@ -81,7 +86,7 @@ def store_fixture(tmp_path: Path, psl: PublicSuffixList) -> BlocklistStore:
     directory = write_blocklist(
         tmp_path / "blocklist", BLOCKLIST_ENTRIES, **{"176455": {"data_through": days_ago(10)}}
     )
-    return BlocklistStore.load(directory, psl, max_age_days=60)
+    return BlocklistStore.load(directory, psl, max_age_days=GOVERNMENT_MAX_AGE)
 
 
 def run(check, *texts: str) -> list[CheckResult]:
@@ -141,7 +146,7 @@ def test_subdomain_parasite_is_not_let_through(
     """
     entries = ({**BLOCKLIST_ENTRIES[0], "host": "sites.google.com", "url": "sites.google.com/v"},)
     directory = write_blocklist(tmp_path / "parasite", entries)
-    parasite_store = BlocklistStore.load(directory, psl, max_age_days=100_000)
+    parasite_store = BlocklistStore.load(directory, psl, max_age_days=RELAXED_MAX_AGE)
     text = "https://sites.google.com/view/xxx-phishing"
     (with_allowlist,) = run(blocklist_check(parasite_store, psl, allowlist), text)
     (without,) = run(blocklist_check(parasite_store, psl, None), text)
@@ -166,7 +171,7 @@ def test_exact_hit_off_the_allowlist_stays_hard(
 ) -> None:
     entries = ({**BLOCKLIST_ENTRIES[0], "host": "evil.com", "url": "evil.com/a"},)
     directory = write_blocklist(tmp_path / "off", entries)
-    off_store = BlocklistStore.load(directory, psl, max_age_days=100_000)
+    off_store = BlocklistStore.load(directory, psl, max_age_days=RELAXED_MAX_AGE)
     (result,) = run(blocklist_check(off_store, psl, allowlist), "https://evil.com/login")
     assert result.hard is True
 

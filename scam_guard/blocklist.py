@@ -43,10 +43,16 @@ SOURCE_MANIFEST_FIELDS = (
     "unique_host_count",
     "data_through",
     "data_through_granularity",
+    "data_through_source",
     "retired",
     "retired_reason",
+    "redistributable",
+    "domain_level_matching",
+    "license",
+    "license_verified_on",
+    "license_note",
 )
-MANIFEST_FIELDS = ("entries_file", "entries_sha256", "fetched_at", "license", "sources")
+MANIFEST_FIELDS = ("entries_file", "entries_sha256", "fetched_at", "sources")
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,13 +127,25 @@ class BlocklistStore:
         path: str | Path,
         psl: PublicSuffixList,
         *,
-        max_age_days: int,
+        max_age_days: dict[str, int],
+        require_redistributable: bool = True,
     ) -> "BlocklistStore":
-        """自本機快照目錄載入。`max_age_days` 為必填的僅限關鍵字參數。
+        """自本機快照目錄載入。兩個參數都在保護同一件事：呼叫端必須為每個決定負責。
 
-        **沒有預設值**，這是「禁止臆測性 fallback」在資料新鮮度上的直接套用：
-        三個資料集的宣告更新頻率都是「不定期更新」，所以沒有任何一個數字
-        可以從公告推出來 —— 預設值會假裝我們知道一件我們不知道的事。
+        **`max_age_days` 為逐 source 的對應表，必填、無預設值。**
+        原本是一個數字，三份政府資料共用它是合理的簡化 —— 它們的宣告更新頻率
+        都是「不定期更新」。加入一個小時級的社群 feed 之後這個簡化**兩個方向
+        同時壞掉**：沿用 60 天，一份 59 天前、宣稱「這些網址現在還線上」的快照
+        會通過檢查；改成 2 天，粒度本來就是月的 176455 會讓系統拒絕啟動。
+        對應表 MUST 涵蓋每一個非 `retired` 的 source，缺任何一個即拋例外並指名。
+
+        **`require_redistributable` 預設 `True`。** manifest 中任一 source 標記為
+        不可對第三方顯示時拋例外。這不是臆測性 fallback ——「沒有明說可以公開」
+        與「不可以公開」在這裡是同一件事，而預設值選的是嚴格的那一邊；
+        真正的 fallback 是預設放行。要跑離線評測時呼叫端顯式傳 `False`，
+        而那一行程式碼本身就是一份紀錄：誰在什麼地方決定了這件事。
+        不用「分成兩個快照目錄」代替：那會把安全性建立在部署參數上，
+        `--data-dir` 打錯時沒有任何錯誤訊息。
 
         **超過門檻拋例外，不是印警告。** 一份過期的黑名單不是「稍微差一點的
         黑名單」，它對最近數月的新網域**系統性地全部漏掉**。要降級的話，
@@ -161,6 +179,8 @@ class BlocklistStore:
                 f"黑名單快照的 sha256 與 manifest 不符：檔案為 {digest}、"
                 f"manifest 為 {manifest['entries_sha256']}"
             )
+        _check_sources(manifest["sources"], manifest_path)
+        _check_redistributable(manifest["sources"], require_redistributable)
         _check_freshness(manifest["sources"], max_age_days)
         entries = _parse_entries(raw.decode("utf-8"), entries_path)
         if not entries:
@@ -191,33 +211,64 @@ class BlocklistStore:
         return self._by_domain.get(domain, ())
 
 
-def _check_freshness(sources: object, max_age_days: int) -> None:
-    """逐 source 以 `data_through` 判定新鮮度，`retired` 者跳過。
-
-    錯誤訊息必須**指名道姓** —— 「黑名單過期」這種訊息會讓人重跑取得程式
-    然後發現沒用（那個 source 根本不會再更新了）。
-    """
+def _check_sources(sources: object, manifest_path: Path) -> None:
+    """`sources` 的結構與每個 source 的必要欄位。"""
     if not isinstance(sources, dict) or not sources:
         raise ValueError(f"黑名單 manifest 的 sources 必須為非空物件，實為 {sources!r}")
-    today = utc_today()
     for dataset_id, meta in sources.items():
         if not isinstance(meta, dict):
             raise ValueError(f"黑名單 manifest 的 sources[{dataset_id!r}] 必須為物件")
         for field in SOURCE_MANIFEST_FIELDS:
             if field not in meta:
                 raise ValueError(
-                    f"黑名單 manifest 的 sources[{dataset_id!r}] 缺少欄位 {field!r}，"
-                    f"實際欄位為 {sorted(meta)}"
+                    f"黑名單 manifest 的 sources[{dataset_id!r}] 缺少欄位 {field!r}："
+                    f"{manifest_path}，實際欄位為 {sorted(meta)}。"
+                    f"舊版快照缺這些欄位是預期的，請重新執行取得程式"
                 )
+
+
+def _check_redistributable(sources: dict, require_redistributable: bool) -> None:
+    """授權不允許對第三方顯示的 source 預設擋在載入這一步。
+
+    擋在這裡而不是寫在文件裡提醒操作者：文件沒有強制力，而本系統的產出是
+    **給使用者看的**判斷依據 —— 一句「此網址在某某清單上」就是
+    「display ... a portion of the information ... to a third party」。
+    """
+    if require_redistributable:
+        for dataset_id, meta in sources.items():
+            if not meta["redistributable"]:
+                raise ValueError(
+                    f"黑名單快照含不可對第三方顯示的資料集 {dataset_id}："
+                    f"{meta['license']}；{meta['license_note']}。"
+                    f"面向使用者的部署 MUST NOT 載入它；"
+                    f"離線評測請顯式傳 require_redistributable=False"
+                )
+
+
+def _check_freshness(sources: dict, max_age_days: dict[str, int]) -> None:
+    """逐 source 以自己的 `data_through` 與自己的門檻判定，`retired` 者跳過。
+
+    錯誤訊息必須**指名道姓** —— 「黑名單過期」這種訊息會讓人重跑取得程式
+    然後發現沒用（那個 source 根本不會再更新了）。
+    """
+    today = utc_today()
+    for dataset_id, meta in sources.items():
         if meta["retired"]:
             continue
+        if dataset_id not in max_age_days:
+            raise ValueError(
+                f"max_age_days 未涵蓋資料集 {dataset_id}：快照中的非 retired 資料集為 "
+                f"{sorted(k for k, v in sources.items() if not v['retired'])}、"
+                f"實際提供的為 {sorted(max_age_days)}"
+            )
+        threshold = max_age_days[dataset_id]
         data_through = parse_iso_date(meta["data_through"], f"sources[{dataset_id!r}].data_through")
         age_days = (today - data_through).days
-        if age_days > max_age_days:
+        if age_days > threshold:
             raise ValueError(
                 f"黑名單過期：資料集 {dataset_id} 的 data_through 為 "
                 f"{data_through.isoformat()}、距今 {age_days} 天、"
-                f"max_age_days 為 {max_age_days}。請重新執行 `{FETCH_COMMAND}`"
+                f"max_age_days 為 {threshold}。請重新執行 `{FETCH_COMMAND}`"
             )
 
 
