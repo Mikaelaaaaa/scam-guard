@@ -71,6 +71,14 @@ class Entry:
 
     `site_created_on`（詐騙網站創建日期）**只有 165027 有**。
     它是本機就有的網域年齡資料，那 1,574 個主機不需要任何對外查詢。
+
+    `target`（被冒用的品牌）**只有 PhishTank 有**，與 `nature` 平行，
+    **同為不透明字串**。`nature` 是被冒用的產業、`target` 是被冒用的品牌，
+    兩者都是自由文字，都只用於依據文案，都 MUST NOT 被映射為 `ScamType`。
+    `target` 另有一條 `nature` 沒有的禁令：**MUST NOT 被用來自動擴充
+    `brands.json`**。品牌表對每一筆的保證是「官方網域逐一實查、附 `source`
+    與 `verified_on`」，自動灌入會讓一個擁有者不明的網域被列成官方網域 ——
+    那等於替它開一張白名單。
     """
 
     host: str
@@ -80,6 +88,7 @@ class Entry:
     last_seen: str
     nature: str | None = None
     site_created_on: str | None = None
+    target: str | None = None
 
 
 class BlocklistStore:
@@ -98,10 +107,25 @@ class BlocklistStore:
         psl: PublicSuffixList,
     ) -> None:
         self._manifest = manifest
+        sources = manifest["sources"]
         by_host: dict[str, list[Entry]] = {}
         by_domain: dict[str, list[Entry]] = {}
         for entry in entries:
+            if entry.source not in sources:
+                raise ValueError(
+                    f"快照中的紀錄其 source 不在 manifest 的 sources 中："
+                    f"source={entry.source!r}、host={entry.host!r}，"
+                    f"manifest 登記的為 {sorted(sources)}"
+                )
             by_host.setdefault(entry.host, []).append(entry)
+            # **只有標記 `domain_level_matching` 的 source 進網域層索引。**
+            # 165 的形態是一個詐騙者窮舉自己網域下的子網域（實測
+            # `word1018.shop` 有 3,006 個），網域層比對抓得到它；國際釣魚 feed
+            # 的形態相反，大量寄生在共用平台上（實測當日 300 筆的 OpenPhish
+            # 樣本裡 `godaddysites.com` 一個網域佔 12 筆，而 PSL 沒收它）。
+            # 讓它們參與網域層比對，等於讓該平台的每一個合法使用者命中黑名單。
+            if not sources[entry.source]["domain_level_matching"]:
+                continue
             # 可註冊網域在**載入時**以傳入的 PSL 算，不讀快照裡預算好的值 ——
             # 寫進快照就同時綁住了黑名單版本與 PSL 版本，而兩者更新週期不同。
             # PSL 新增一條 PRIVATE 後綴之後，舊快照裡的可註冊網域就是錯的，
@@ -207,6 +231,9 @@ class BlocklistStore:
 
         **與 `by_host()` 分開回答**，兩者強度不同，而 store 不該替 `url_check`
         決定強度。
+
+        **只含 manifest 標記 `domain_level_matching` 的 source。**
+        `by_host()` 不受此限制 —— 全部 source 都參與精確比對。
         """
         return self._by_domain.get(domain, ())
 
@@ -273,9 +300,17 @@ def _check_freshness(sources: dict, max_age_days: dict[str, int]) -> None:
 
 
 def _parse_entries(text: str, source_path: Path) -> tuple[Entry, ...]:
-    """逐行解析 JSON Lines。缺 `host` 或 `source` 的紀錄拋例外並指出行號。"""
+    """逐行解析 JSON Lines。缺 `host` 或 `source` 的紀錄拋例外並指出行號。
+
+    **以 `"\\n"` 切行，不用 `str.splitlines()`。** JSON Lines 的定義是以 `\\n`
+    分隔，而 `splitlines()` 還會在 `\\v`、`\\f`、`\\x85`、`U+2028`、`U+2029`
+    處切開 —— 偏偏 `json.dumps(ensure_ascii=False)` 不跳脫後三者。
+    這不是假想：PhishTank 2026-09-15 的 online-valid 裡有一筆
+    （`phish_id=9410877`）的 URL 內含 `U+2028`，用 `splitlines()` 讀會把那一行
+    切成兩半，然後在一個與真正原因毫無關係的地方拋 JSON 解析錯誤。
+    """
     entries: list[Entry] = []
-    for line_number, line in enumerate(text.splitlines(), start=1):
+    for line_number, line in enumerate(text.split("\n"), start=1):
         if not line.strip():
             continue
         record = json.loads(line)
@@ -298,6 +333,7 @@ def _parse_entries(text: str, source_path: Path) -> tuple[Entry, ...]:
                 site_created_on=(
                     record["site_created_on"] if "site_created_on" in record else None
                 ),
+                target=record["target"] if "target" in record else None,
             )
         )
     return tuple(entries)

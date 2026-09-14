@@ -66,6 +66,10 @@ DEFAULT_ENTRIES = (
 # 三份政府資料的門檻。160055 為 retired，不需要門檻也不得被要求。
 GOVERNMENT_MAX_AGE = {"176455": 60, "165027": 60}
 
+# `\u2028`（LINE SEPARATOR）以跳脫字元寫出，不寫成字面字元 ——
+# 一個看不見的字元放在原始碼裡，被編輯器吃掉時不會有人發現。
+LINE_SEPARATOR_URL = "https://trzsute.zapier.app/eng\u2028https://trexzor.example/usen"
+
 # 給「這條測試要驗的不是新鮮度」的那些測試用，避免固定日期的構造資料隨時間過期。
 RELAXED_MAX_AGE = {"176455": 100_000, "165027": 100_000}
 
@@ -133,9 +137,13 @@ def _source(
     }
 
 
-def store_of(tmp_path: Path, **kwargs: object) -> BlocklistStore:
+def store_of(
+    tmp_path: Path,
+    entries: tuple[dict[str, object], ...] = DEFAULT_ENTRIES,
+    **kwargs: object,
+) -> BlocklistStore:
     return BlocklistStore.load(
-        write_snapshot(tmp_path, **kwargs), psl_of(), max_age_days=GOVERNMENT_MAX_AGE
+        write_snapshot(tmp_path, entries, **kwargs), psl_of(), max_age_days=GOVERNMENT_MAX_AGE
     )
 
 
@@ -262,6 +270,7 @@ def test_entries_carry_no_verdict_fields(tmp_path: Path) -> None:
         "last_seen",
         "nature",
         "site_created_on",
+        "target",
     }
     assert not any(isinstance(getattr(entry, name), ScamType) for name in fields)
 
@@ -309,3 +318,26 @@ def test_lookup_is_a_hash_lookup(tmp_path: Path) -> None:
         store.by_host(f"h{index}.bulk.example")
     average_ms = (time.perf_counter() - started) * 1000 / 10_000
     assert average_ms < 0.1, average_ms
+
+
+def test_url_containing_a_unicode_line_separator_is_one_record(tmp_path: Path) -> None:
+    """JSON Lines 以 `\\n` 分隔，而 `str.splitlines()` 還會在 `U+2028` 切開。
+
+    不是假想：PhishTank 2026-09-15 的 online-valid 裡有一筆
+    （`phish_id=9410877`）的 URL 內含 `U+2028`。`json.dumps(ensure_ascii=False)`
+    不跳脫它，用 `splitlines()` 讀會把那一行切成兩半，
+    然後在一個與真正原因毫無關係的地方拋 `JSONDecodeError`。
+    """
+    entries = DEFAULT_ENTRIES + (
+        {
+            "host": "trzsute.zapier.app",
+            "url": LINE_SEPARATOR_URL,
+            "source": "176455",
+            "first_seen": "2026-08",
+            "last_seen": "2026-08",
+            "nature": "金融保險",
+        },
+    )
+    store = store_of(tmp_path, entries=entries)
+    (entry,) = store.by_host("trzsute.zapier.app")
+    assert entry.url == LINE_SEPARATOR_URL

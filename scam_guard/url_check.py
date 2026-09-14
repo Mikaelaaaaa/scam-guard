@@ -49,6 +49,45 @@ SOURCE_SCAM_TYPES: dict[str, ScamType] = {
     "176455": ScamType.PHISHING_LINK,
     "160055": ScamType.FAKE_INVESTMENT,
     "165027": ScamType.PHISHING_LINK,
+    # 兩個國際釣魚 feed。**被冒用的品牌不影響類型** —— `ScamType` 的來源是
+    # 165 的案類，而冒充 PayPal、Netflix 或任何一家的登入頁在那個體系裡
+    # 都是釣魚。PhishTank 的 `target` 因此只進依據文案。
+    "phishtank": ScamType.PHISHING_LINK,
+    "openphish": ScamType.PHISHING_LINK,
+}
+
+# 哪些 source 的**主機精確命中**夠格標 `hard=True`。
+#
+# `hard=True` 會短路掉整個 LLM 層，所以它的門檻是「已走完法律程序的第一方事實」
+# ——機關具名、依法聲請停止解析。社群驗證不夠格，三個實測理由：
+# 驗證所需票數依投票者歷史浮動（官方 FAQ 明說），無法從資料判斷某一筆的強度；
+# feed 報的單位是完整 URL 而我們比對的單位是主機，在共用主機上指認不到具體頁面
+# （實測當日樣本 41.7% 的 URL 帶非平凡路徑）；`online-valid` 是高速流動的集合
+# （75,856 筆線上 / 4,296,942 筆歷來驗證，即 1.8%），成員資格每小時都在失效。
+SOURCE_HARD_EVIDENCE: dict[str, bool] = {
+    "176455": True,
+    "160055": True,
+    "165027": True,
+    "phishtank": False,
+    "openphish": False,
+}
+
+# 依據文案的事實陳述，**逐 source 分流**。
+#
+# 分流的理由不是風格，是兩類來源陳述的事實**方向相反**：176455 的 83,323 筆
+# 全部是已被停止 DNS 解析的網域（點進去多半已打不開），而 PhishTank 的公開
+# 下載檔只含 `online=yes` 的紀錄，報的是「該站在驗證當時仍在線上」。
+# 用同一句話講會誤導，而誤導的方向是「不要點」與「已經沒事了」的差別。
+#
+# 國際 feed 的句子把時間點放在句中而不是句尾，且 MUST NOT 寫成
+# 「此網站目前仍在運作」——快照是一個時間點的照片，「仍在線上」這句話的
+# 有效期是 `data_through` 而不是現在。
+SOURCE_STATEMENTS: dict[str, str] = {
+    "176455": "{host} 於 {date} 列入 {title}",
+    "160055": "{host} 於 {date} 列入 {title}",
+    "165027": "{host} 於 {date} 列入 {title}",
+    "phishtank": "{host} 於 {date} 經 {title} 驗證為釣魚網址，且在該時點仍在線上",
+    "openphish": "{host} 於 {date} 出現在 {title}",
 }
 
 # 混合文字系統的判定範圍。完整的 UTS #39 Restriction Level 需要完整的 script
@@ -83,6 +122,29 @@ DEFAULT_LONG_LABEL_DISTANCE = 2
 # `ltn.com.tw`（自由時報）在 Cofacts 樣本中誤判 14 次。
 # 三個字元差一個字元代表三分之一的字串不同 —— 那不是「近似拼寫」，是巧合。
 DEFAULT_MIN_LABEL_LENGTH_FOR_DISTANCE = 5
+
+
+def is_hard_evidence(source: str) -> bool:
+    """該 source 的主機精確命中是否夠格標 `hard=True`。未登記的 source 拋例外。"""
+    if source not in SOURCE_HARD_EVIDENCE:
+        raise ValueError(
+            f"黑名單紀錄的 source 不在硬證據對照表中：source={source!r}，"
+            f"已知的為 {sorted(SOURCE_HARD_EVIDENCE)}"
+        )
+    return SOURCE_HARD_EVIDENCE[source]
+
+
+def statement_of(source: str) -> str:
+    """該 source 的依據句型。未登記的 source 拋例外，不套用一個通用句型 ——
+
+    通用句型會讓「已遭停止解析」與「驗證當時仍在線上」講成同一件事。
+    """
+    if source not in SOURCE_STATEMENTS:
+        raise ValueError(
+            f"黑名單紀錄的 source 不在依據句型對照表中：source={source!r}，"
+            f"已知的為 {sorted(SOURCE_STATEMENTS)}"
+        )
+    return SOURCE_STATEMENTS[source]
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,12 +356,15 @@ class UrlBlocklistCheck:
                 # 降 `hard` 不刪結果：訊號仍在、依據仍寫、LLM 照跑。
                 apex_hit = any(entry.host == domain for entry in exact)
                 downgraded = rank is not None and not apex_hit
+                # 國際釣魚 feed 的命中一律不是硬證據，不論比對是否為精確命中。
+                # 一個主機同時出現在政府名單與 feed 時，政府那一筆仍然成立。
+                eligible = any(is_hard_evidence(entry.source) for entry in exact)
                 results.append(
                     self._result(
                         domain,
                         urls,
                         tuple(exact),
-                        hard=not downgraded,
+                        hard=eligible and not downgraded,
                         suffix=self._allowlist_suffix(domain, rank) if downgraded else "",
                     )
                 )
@@ -377,6 +442,12 @@ class UrlBlocklistCheck:
     def _detail(self, entries: tuple[Entry, ...]) -> str:
         """依據是事實陳述，不用「可疑」「危險」這類形容詞。
 
+        句型**逐 source 取自 `SOURCE_STATEMENTS`**：176455 說的是「已遭停止
+        解析」、PhishTank 說的是「驗證當時仍在線上」，兩者方向相反。
+
+        同一主機出現在多個 source 時**逐筆寫出各自的來源與日期，不擇一捨棄**
+        ——兩句都是事實，不需要仲裁。
+
         比對層級與白名單造成的補充說明由呼叫端以 `suffix` 帶入 ——
         兩者是不同的事實（「主機不同但同網域」與「這個網域是大平台」），
         不能由同一個 `hard` 旗標推導出來。
@@ -384,9 +455,14 @@ class UrlBlocklistCheck:
         parts = []
         for entry in entries:
             title = self._titles[entry.source] if entry.source in self._titles else entry.source
-            piece = f"{entry.host} 於 {entry.last_seen} 列入 {title}"
+            piece = statement_of(entry.source).format(
+                host=entry.host, date=entry.last_seen, title=title
+            )
             if entry.nature is not None:
                 piece += f"，網站性質：{entry.nature}"
+            if entry.target is not None:
+                # 被冒用的品牌只進文案，不進 `scam_types`、不進 `brands.json`。
+                piece += f"，冒用品牌：{entry.target}"
             parts.append(piece)
         return "；".join(parts)
 
