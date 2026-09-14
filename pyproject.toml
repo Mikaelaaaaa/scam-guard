@@ -43,6 +43,8 @@ demo = [
 api = [
     "fastapi>=0.115",
     "pydantic>=2.0",
+    # 跑起來需要一個 ASGI server，fastapi 不含它。
+    "uvicorn>=0.30",
 ]
 
 [tool.setuptools.packages.find]
