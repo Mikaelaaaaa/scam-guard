@@ -5,12 +5,12 @@ from scam_guard.normalize import normalize_text, split_sentences
 ZWSP = "​"
 
 
-def split(raw: str) -> list[tuple[str, str]]:
+def split(raw: str) -> list[tuple[str, str, tuple[int, ...]]]:
     return split_sentences(normalize_text(raw))
 
 
 def texts(raw: str) -> list[str]:
-    return [text for text, _ in split(raw)]
+    return [text for text, _, _ in split(raw)]
 
 
 def test_period_splits() -> None:
@@ -69,18 +69,19 @@ def test_normalized_and_raw_sentences_have_the_same_length() -> None:
     sentences = split("第一句。第二句！第三句？尾段")
 
     assert len(sentences) == 4
-    assert all(len(pair) == 2 for pair in sentences)
+    assert all(len(item) == 3 for item in sentences)
+    assert all(len(offsets) == len(text) + 1 for text, _, offsets in sentences)
 
 
 def test_raw_sentence_keeps_zero_width_characters() -> None:
-    text, raw = split(f"驗{ZWSP}證碼是多少？")[0]
+    text, raw, _ = split(f"驗{ZWSP}證碼是多少？")[0]
 
     assert text == "驗證碼是多少?"
     assert raw == f"驗{ZWSP}證碼是多少？"
 
 
 def test_raw_sentence_keeps_the_original_punctuation_writing() -> None:
-    text, raw = split("在嗎｡")[0]
+    text, raw, _ = split("在嗎｡")[0]
 
     assert text == "在嗎。"
     assert raw == "在嗎｡"
@@ -110,5 +111,5 @@ def test_raw_fragment_keeps_boundary_whitespace_and_zero_width() -> None:
     """句子邊界上的空白與零寬字元是規避痕跡，原文片段不得去除。"""
     sentences = split(f"你好。 {ZWSP}驗證碼")
 
-    assert [text for text, _ in sentences] == ["你好。", "驗證碼"]
-    assert [raw for _, raw in sentences] == ["你好。", f" {ZWSP}驗證碼"]
+    assert [text for text, _, _ in sentences] == ["你好。", "驗證碼"]
+    assert [raw for _, raw, _ in sentences] == ["你好。", f" {ZWSP}驗證碼"]
