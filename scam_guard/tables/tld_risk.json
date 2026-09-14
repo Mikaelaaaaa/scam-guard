@@ -1,0 +1,103 @@
+{
+  "_note": [
+    "高風險 gTLD 清單。入選依據是**每萬網域的釣魚分數**，不是惡意網域的絕對數量——",
+    "以絕對數量排，2026 年 5-7 月的榜首是 .com（283,895 筆），而 .com 顯然不是",
+    "高風險 TLD，它只是很大。Interisle Phishing Landscape 2025 給了正確的尺度：",
+    ".COM 的每萬網域分數是 29.6，新 gTLD 整體是 203.6。",
+    "",
+    "門檻定為 .com 的十倍（296 分），不是憑感覺挑前 N 名——有一個參考點就不需要",
+    "憑空給數字。",
+    "",
+    "**只收 gTLD，ccTLD 全部不收。** 兩個理由：(1) 沒有可比的比率——Spamhaus 的",
+    "ccTLD 榜用的是 Bad Reputation Score（惡意／觀測數的比值乘上加權因子），",
+    "與 Interisle 的『每萬註冊網域』不是同一個尺度，放在同一條門檻下比是錯的。",
+    "(2) 基底率在台灣是反的——Spamhaus 2026-09-13 的 ccTLD 榜上 .tw 排第 9",
+    "（14,015 / 92,483 = 15.2%）、.cc 排第 4，但本系統使用者收到的**合法**訊息裡",
+    ".tw 是最大宗、.cc 承載的是 reurl.cc 這個台灣最常用的短網址服務。",
+    "全球統計說的是『全世界的 .tw 網域裡有多少是壞的』，我們需要的是",
+    "『台灣使用者收到的 .tw 連結裡有多少是壞的』——不是同一個問題。",
+    "這是一次明知的召回損失，不是遺漏。",
+    "",
+    "**.zip 與 .mov 不進清單。** 2023 年 Google Registry 開放這兩個 TLD 時引發",
+    "大量批評，但 2026 年的數字不支持那個恐慌：.zip 沒有出現在 Interisle 2026",
+    "報告的任何一張表，Spamhaus 即時分數排第 39。.mov 在 Interisle 2026 排第 10，",
+    "但那是**新註冊**的比率（2,570 筆中 1,371 筆惡意），與本清單使用的每萬網域",
+    "分數不是同一個指標，不能混用。（.zip / .mov 在 url.py 的 EXTENSION_LIKE_TLDS",
+    "裡有位置，但那是避免把檔名誤抽成網域，與風險判定無關，兩者不要混淆。）",
+    "",
+    ".vu（萬那杜，383.9 分）超過門檻但是 ccTLD，依上述理由排除。"
+  ],
+  "baseline": {
+    "tld": "com",
+    "metric": "phishing_domains_per_10k_registrations",
+    "value": 29.6,
+    "as_of": "2025",
+    "source": "Interisle Phishing Landscape 2025"
+  },
+  "threshold_multiple_of_baseline": 10,
+  "tlds": [
+    {
+      "tld": "icu",
+      "metric": "phishing_domains_per_10k_registrations",
+      "value": 835.2,
+      "as_of": "2026-05/2026-07",
+      "source": "Cybercrime Information Center, Phishing Activity by TLD"
+    },
+    {
+      "tld": "cfd",
+      "metric": "phishing_domains_per_10k_registrations",
+      "value": 813.8,
+      "as_of": "2026-05/2026-07",
+      "source": "Cybercrime Information Center, Phishing Activity by TLD"
+    },
+    {
+      "tld": "garden",
+      "metric": "phishing_domains_per_10k_registrations",
+      "value": 774.1,
+      "as_of": "2026-05/2026-07",
+      "source": "Cybercrime Information Center, Phishing Activity by TLD"
+    },
+    {
+      "tld": "help",
+      "metric": "phishing_domains_per_10k_registrations",
+      "value": 571.5,
+      "as_of": "2026-05/2026-07",
+      "source": "Cybercrime Information Center, Phishing Activity by TLD"
+    },
+    {
+      "tld": "cam",
+      "metric": "phishing_domains_per_10k_registrations",
+      "value": 481.1,
+      "as_of": "2026-05/2026-07",
+      "source": "Cybercrime Information Center, Phishing Activity by TLD"
+    },
+    {
+      "tld": "mom",
+      "metric": "phishing_domains_per_10k_registrations",
+      "value": 472.3,
+      "as_of": "2026-05/2026-07",
+      "source": "Cybercrime Information Center, Phishing Activity by TLD"
+    },
+    {
+      "tld": "boats",
+      "metric": "phishing_domains_per_10k_registrations",
+      "value": 458.2,
+      "as_of": "2026-05/2026-07",
+      "source": "Cybercrime Information Center, Phishing Activity by TLD"
+    },
+    {
+      "tld": "xin",
+      "metric": "phishing_domains_per_10k_registrations",
+      "value": 361.5,
+      "as_of": "2026-05/2026-07",
+      "source": "Cybercrime Information Center, Phishing Activity by TLD"
+    },
+    {
+      "tld": "cyou",
+      "metric": "phishing_domains_per_10k_registrations",
+      "value": 301.6,
+      "as_of": "2026-05/2026-07",
+      "source": "Cybercrime Information Center, Phishing Activity by TLD"
+    }
+  ]
+}
