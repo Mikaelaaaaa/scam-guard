@@ -293,6 +293,11 @@ class Document:
     不重複 `sender` 與 `sent_at` —— 索引已與 `Request` 對齊，要用就查
     `req.messages[m]`。重複儲存等於有兩個真相來源。
 
+    `truncated` 與 `dropped_messages` 是截斷痕跡，由 `build_document()` 填值。
+    不變式 `truncated == (dropped_messages > 0)` 在建構時驗證：目前丟棄一律
+    以整則為單位，旗標與則數不可能脫鉤；日後若加入「單則內容截斷」，
+    要改的是 `context-limits` 的 spec，不能靜默地改。
+
     序列以 `tuple` 儲存：`frozen=True` 只擋欄位重新賦值，擋不住 list 的就地修改，
     而檢查之間的隔離靠不可變性保證。
     """
@@ -339,6 +344,12 @@ class Document:
             previous_message = message_index
             previous_sentence = sentence_index
 
+        if self.truncated != (self.dropped_messages > 0):
+            raise ValueError(
+                f"截斷旗標與丟棄則數必須一致：truncated={self.truncated}、"
+                f"dropped_messages={self.dropped_messages}"
+            )
+
         object.__setattr__(self, "_index", {coord: i for i, coord in enumerate(self.coords)})
 
     def index_of(self, coord: Coord) -> int:
@@ -367,22 +378,100 @@ class Document:
         return range(positions[0], positions[-1] + 1)
 
 
-def build_document(messages: Sequence[Message]) -> Document:
-    """對每則訊息正規化與切句，扁平累積成一個 `Document`。
+@dataclass(frozen=True)
+class Limits:
+    """輸入規模的雙上限。**兩個維度控制的是兩件不同的事，都要。**
 
-    訊息序號採用**輸入序列中的位置**，使 `doc.coords[i] == (m, s)` 時
-    `messages[m]` 就是該句所屬的訊息。未產生任何句子的訊息（貼圖、純空白）
-    被略過，但不影響後續訊息的序號。
+    字元數控制**成本**：Cofacts 詐騙訊息長度實測為中位數 83 字元、p90 315、
+    p99 1008、最長 2438 —— 分佈是重尾的，同樣是 100 則，總量可以差到 29 倍
+    （8,300 到 243,800 字元）。只限則數擋不住這個分佈。
+
+    則數控制**座標系的可用性**：50,000 字元可以是 600 則「在嗎」，
+    而 LLM 在 600 個編號單位上的定位錯誤率會明顯上升，`add-llm-validate`
+    會擋掉大量無效證據編號，結果是有成本沒產出。只限字元數擋不住這個。
+
+    ⚠️ 100 則與 50,000 字元**沒有實驗依據**，是從實測分佈推出的合理起點
+    （100 則 × p90 的 315 字元約 31,500，留約 1.6 倍餘裕），不是調過的值。
+    它們是參數不是常數，`add-ablation` 應把它們納入掃描。
+
+    字元數以**正規化後**的長度計算：那才是實際往下游送的文字，
+    而且原文中被移除的零寬字元不該佔用預算 —— 否則塞一萬個零寬字元
+    就能把真正的前文擠掉，那是一個可被利用的規避手法。
+    不以 token 計：tokenizer 綁定特定模型，而偵測核心不知道有沒有 LLM。
+    """
+
+    max_messages: int = 100
+    max_chars: int = 50_000
+
+    def __post_init__(self) -> None:
+        if self.max_messages < 1:
+            raise ValueError(f"max_messages 必須大於等於 1，實為 {self.max_messages}")
+        if self.max_chars < 1:
+            raise ValueError(f"max_chars 必須大於等於 1，實為 {self.max_chars}")
+
+
+DEFAULT_LIMITS = Limits()
+"""系統預設上限。呼叫端可隨時覆寫，消融實驗掃的就是這個參數。"""
+
+
+def _kept_from(normalized: Sequence[NormalizedText], limits: Limits) -> int:
+    """回傳保留區段的起始訊息序號，即被丟棄的則數。
+
+    從最舊往新丟：詐騙的關鍵行為在後面（養套殺的前三十則是閒聊，要錢在最後），
+    保留的必須是最新的一段**連續**訊息 —— 均勻抽樣會在對話中間留下無法察覺的
+    斷點，使 LLM 讀到的時間軸是錯的，而錯誤的時間軸比缺少前文更危險。
+
+    最後一則永遠不丟：丟掉它這次請求就沒有對象了。因此它單則即超過字元上限時，
+    前文全部丟棄、該則完整保留，結果會超出字元上限 —— 這是刻意的取捨，
+    保護的是「不截半則」這條原則。單則一百萬字元的訊息由 HTTP 層的請求大小
+    限制擋（`detect-api`），明確記為別人的責任。
+    """
+    total_messages = len(normalized)
+    if total_messages == 0:
+        return 0
+    start = max(0, total_messages - limits.max_messages)
+    chars = sum(len(item.text) for item in normalized[start:])
+    while chars > limits.max_chars and start < total_messages - 1:
+        chars -= len(normalized[start].text)
+        start += 1
+    return start
+
+
+def build_document(messages: Sequence[Message], limits: Limits = DEFAULT_LIMITS) -> Document:
+    """對每則訊息正規化與切句，套用上限後扁平累積成一個 `Document`。
+
+    訊息序號採用**原始輸入序列中的位置**，不因丟棄而位移，使
+    `doc.coords[i] == (m, s)` 時 `messages[m]` 就是該句所屬的訊息 ——
+    呈現層說「第 38 則訊息」時，說的是使用者實際送出的第 38 則。
+    未產生任何句子的訊息（貼圖、純空白）被略過，但不影響後續訊息的序號。
+
+    丟棄以**整則**為單位，不做句子級或字元級的部分截斷：缺少一整則的後果是
+    資訊少了，留下半則的後果是資訊**錯了**（「我不會叫你匯款到」被截斷在這裡，
+    規則層讀到的是與原意相反的內容）。
+
+    截斷痕跡寫進 `Document` 而非只寫 log —— `add-llm-prompt` 必須在 prompt 中
+    明白告訴模型「前面還有 37 則未提供」，否則模型會把第 38 則當成對話的開頭，
+    推論出「一上來就談投資」這個與事實相反的結論。
 
     全部訊息皆無文字內容時回傳三個序列皆空的 `Document`，這是合法值而非錯誤。
     """
+    normalized = [normalize_text(message.text) for message in messages]
+    dropped_messages = _kept_from(normalized, limits)
+
     sentences: list[str] = []
     raw_sentences: list[str] = []
     coords: list[Coord] = []
-    for message_index, message in enumerate(messages):
-        pairs = split_sentences(normalize_text(message.text))
+    for message_index in range(dropped_messages, len(normalized)):
+        pairs = split_sentences(normalized[message_index])
         for sentence_index, (text, raw) in enumerate(pairs):
             sentences.append(text)
             raw_sentences.append(raw)
             coords.append((message_index, sentence_index))
-    return Document(sentences=sentences, raw_sentences=raw_sentences, coords=coords)
+
+    return Document(
+        sentences=sentences,
+        raw_sentences=raw_sentences,
+        coords=coords,
+        truncated=dropped_messages > 0,
+        dropped_messages=dropped_messages,
+    )
