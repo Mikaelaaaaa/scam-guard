@@ -20,7 +20,10 @@ import app  # noqa: E402
 from scam_guard.check import Check, CheckRegistry, Stage  # noqa: E402
 from scam_guard.normalize import DEFAULT_LIMITS, Document, Limits, build_document  # noqa: E402
 from scam_guard.pipeline import NOT_HIT, SKIPPED, detect  # noqa: E402
+from scam_guard.redact import RedactedText  # noqa: E402
 from scam_guard.types import CheckResult, Message, Request, ScamType, Verdict  # noqa: E402
+
+EMPTY_REDACTED = RedactedText(sentences=[], coords=[], counts={})
 
 EMPTY_VERDICT = Verdict(
     scam_probability=None,
@@ -29,6 +32,7 @@ EMPTY_VERDICT = Verdict(
     evidence=[],
     actions=[],
     checks=[],
+    redacted=EMPTY_REDACTED,
 )
 
 
@@ -40,6 +44,7 @@ def verdict_with(**overrides) -> Verdict:
         "evidence": [],
         "actions": [],
         "checks": [],
+        "redacted": EMPTY_REDACTED,
     }
     fields.update(overrides)
     return Verdict(**fields)

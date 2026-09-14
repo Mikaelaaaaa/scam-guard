@@ -35,6 +35,7 @@ import gradio as gr
 from scam_guard.check import CheckRegistry
 from scam_guard.normalize import DEFAULT_LIMITS, Document, Limits, build_document
 from scam_guard.pipeline import NOT_HIT, SKIPPED, detect
+from scam_guard.redact import redact_document
 from scam_guard.rules.evasion import register_evasion_checks
 from scam_guard.rules.quotation import QuotationCheck
 from scam_guard.rules.speech_act import register_speech_act_rules
@@ -950,6 +951,7 @@ def build_demo() -> gr.Blocks:
         evidence=[],
         actions=[],
         checks=[],
+        redacted=redact_document(empty_document),
     )
     initial_row = render_verdict_row(empty_verdict)
     initial_panel = render_panel(empty_verdict, empty_document, len(REGISTRY.enabled()), None)
