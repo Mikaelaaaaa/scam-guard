@@ -11,6 +11,15 @@ from scam_guard.types import Message, Request
 ZWSP = "​"
 
 
+def trivial_offsets(*sentences: str) -> tuple[tuple[int, ...], ...]:
+    """每句一份一對一的句內偏移，供只關心座標驗證的測試使用。
+
+    定義在 module 層級而非測試內部的巢狀 `def`，且**不得**改成 `Document`
+    的欄位預設值 —— 測試的便利不該變成契約的鬆動。
+    """
+    return tuple(tuple(range(len(sentence) + 1)) for sentence in sentences)
+
+
 def test_all_messages_enter_the_document() -> None:
     doc = build_document(
         [
@@ -106,23 +115,48 @@ def test_document_is_immutable() -> None:
 
 def test_length_mismatch_raises() -> None:
     with pytest.raises(ValueError, match="等長"):
-        Document(sentences=["一", "二"], raw_sentences=["一"], coords=[(0, 0), (0, 1)])
+        Document(
+            sentences=["一", "二"],
+            raw_sentences=["一"],
+            coords=[(0, 0), (0, 1)],
+            sentence_offsets=trivial_offsets("一", "二"),
+        )
 
 
 def test_coord_count_mismatch_raises() -> None:
     with pytest.raises(ValueError, match="座標數"):
-        Document(sentences=["一", "二"], raw_sentences=["一", "二"], coords=[(0, 0)])
+        Document(
+            sentences=["一", "二"],
+            raw_sentences=["一", "二"],
+            coords=[(0, 0)],
+            sentence_offsets=trivial_offsets("一", "二"),
+        )
 
 
 def test_non_increasing_coords_raise() -> None:
     with pytest.raises(ValueError, match="訊息序號必須遞增"):
-        Document(sentences=["一", "二"], raw_sentences=["一", "二"], coords=[(1, 0), (0, 0)])
+        Document(
+            sentences=["一", "二"],
+            raw_sentences=["一", "二"],
+            coords=[(1, 0), (0, 0)],
+            sentence_offsets=trivial_offsets("一", "二"),
+        )
 
     with pytest.raises(ValueError, match="必須連續"):
-        Document(sentences=["一", "二"], raw_sentences=["一", "二"], coords=[(0, 0), (0, 2)])
+        Document(
+            sentences=["一", "二"],
+            raw_sentences=["一", "二"],
+            coords=[(0, 0), (0, 2)],
+            sentence_offsets=trivial_offsets("一", "二"),
+        )
 
     with pytest.raises(ValueError, match="自 0 起算"):
-        Document(sentences=["一", "二"], raw_sentences=["一", "二"], coords=[(0, 0), (1, 1)])
+        Document(
+            sentences=["一", "二"],
+            raw_sentences=["一", "二"],
+            coords=[(0, 0), (1, 1)],
+            sentence_offsets=trivial_offsets("一", "二"),
+        )
 
 
 def test_empty_document_is_legal() -> None:
@@ -131,6 +165,7 @@ def test_empty_document_is_legal() -> None:
     assert list(doc.sentences) == []
     assert list(doc.raw_sentences) == []
     assert list(doc.coords) == []
+    assert list(doc.sentence_offsets) == []
 
 
 def test_coordinate_points_back_at_the_original_message() -> None:
@@ -155,16 +190,28 @@ def test_negative_coordinate_components_are_rejected() -> None:
             sentences=("一", "二"),
             raw_sentences=("一", "二"),
             coords=((-1, 0), (-1, 1)),
+            sentence_offsets=trivial_offsets("一", "二"),
         )
 
 
 def test_negative_dropped_messages_is_rejected() -> None:
     with pytest.raises(ValueError, match="丟棄則數不可為負"):
-        Document(sentences=(), raw_sentences=(), coords=(), dropped_messages=-3)
+        Document(
+            sentences=(),
+            raw_sentences=(),
+            coords=(),
+            sentence_offsets=(),
+            dropped_messages=-3,
+        )
 
 
 def test_message_range_rejects_negative_index() -> None:
-    doc = Document(sentences=("一",), raw_sentences=("一",), coords=((0, 0),))
+    doc = Document(
+        sentences=("一",),
+        raw_sentences=("一",),
+        coords=((0, 0),),
+        sentence_offsets=trivial_offsets("一"),
+    )
 
     with pytest.raises(ValueError, match="訊息序號不可為負"):
         doc.message_range(-1)

@@ -216,8 +216,8 @@ def _strip_span(text: str, a: int, b: int) -> tuple[int, int]:
     return a, b
 
 
-def split_sentences(norm: NormalizedText) -> list[tuple[str, str]]:
-    """把正規化後的文字切成句子，回傳 `(正規化片段, 原文片段)` 序對的清單。
+def split_sentences(norm: NormalizedText) -> list[tuple[str, str, tuple[int, ...]]]:
+    """把正規化後的文字切成句子，回傳 `(正規化片段, 原文片段, 句內偏移對映)` 的清單。
 
     句子編號（此清單的索引）是本系統的**共用座標系**：規則層說「第 2 句命中」、
     LLM 回報 `evidence_sentence_ids`、呈現層把第 2 句秀給使用者，三方必須指到
@@ -237,6 +237,19 @@ def split_sentences(norm: NormalizedText) -> list[tuple[str, str]]:
     自行以逗號與頓號再切成子句、在子句內判定否定範疇，**但回報的 `evidence`
     仍是句子座標** —— 座標系維持粗粒度，跨層的共用語言不變。
     詳見 `openspec/changes/add-split-sentences/design.md`。
+
+    第三個元素是該句的**句內偏移對映**，基準是**該句自己的原文片段**（第二個元素），
+    不是整則訊息的原文、也不是整份請求的原文：`offsets[k]` 是正規化片段第 k 個
+    字元在原文片段中的來源索引，長度為正規化片段長度加一，尾端哨兵等於原文片段
+    的長度。於是 `raw[offsets[a]:offsets[b]]` 是正規化區間 `[a, b)` 的原文內容 ——
+    與 `NormalizedText.raw_span()` 是同一條不變式，只是作用域從整則訊息縮到一句。
+    rebase 到句子之後，映回不需要知道這句屬於哪一則訊息，截斷也就碰不到它。
+
+    回傳三元組而**不**新增 `Sentence` dataclass：這三條不變式必須在
+    `Document.__post_init__` 驗證（`Document` 可被直接建構，測試就是這樣做的），
+    那是唯一繞不過去的位置；多一個 `Sentence.__post_init__` 等於同一組不變式有
+    兩份實作，而兩份遲早會不一致。多序列回傳值的典型誤用（解包順序寫反不拋例外）
+    在這裡不成立 —— 第三個元素是 `tuple[int, ...]`，與前兩個 `str` 換位置會立刻爆。
     """
     text = norm.text
     spans = _protected_spans(text)
@@ -266,13 +279,23 @@ def split_sentences(norm: NormalizedText) -> list[tuple[str, str]]:
         i += 1
     bounds.append((start, total))
 
-    sentences: list[tuple[str, str]] = []
+    sentences: list[tuple[str, str, tuple[int, ...]]] = []
     for raw_start, raw_end in bounds:
         a, b = _strip_span(text, raw_start, raw_end)
         if a < b:
             # 正規化片段去除前後空白，原文片段**不去除**——句子邊界上的空白與
             # 零寬字元本身就是規避痕跡，抹掉它們等於抹掉保留原文的理由。
-            sentences.append((text[a:b], norm.raw_span(raw_start, raw_end)))
+            #
+            # 於是句子的兩端天生不對齊，而偏移在**兩端都吸收**：首項設 0、
+            # 哨兵取未去空白的 `raw_end`。理由是不能讓同一句有兩份原文 ——
+            # 若不吸收，`[0, 句長)` 映回會比原文片段短，於是「這句的原文」
+            # 有兩個答案，而兩個都有人會用。`normalize_text()` 對整則訊息
+            # 做的是同一件事。
+            base = norm.offsets[raw_start]
+            offsets = [norm.offsets[a + k] - base for k in range(b - a)]
+            offsets[0] = 0
+            offsets.append(norm.offsets[raw_end] - base)
+            sentences.append((text[a:b], norm.raw_span(raw_start, raw_end), tuple(offsets)))
     return sentences
 
 
@@ -284,15 +307,30 @@ class Document:
     判斷依據本質上是跨訊息的 —— 前面數十則在建立信任，後面才要錢。
     若只含 `latest`，系統在結構上就說不出這條軌跡。
 
-    三個平行序列**等長且索引一一對應**：
+    四個平行序列**等長且索引一一對應**：
 
     - `sentences` —— 正規化後，**規則比對與 LLM 輸入用**
     - `raw_sentences` —— 原文對應片段，**呈現給使用者用**
     - `coords` —— 每句的 `(訊息序號, 訊息內句子序號)`，見 `types.Coord`
+    - `sentence_offsets` —— 每句的句內偏移對映，**字元層級的定位用**
 
     呈現一律取 `raw_sentences` / `raw_at()`：正規化會改變顯示形狀
     （`㈱` 展開成 `(株)`、全形數字變半形），而規避痕跡（拆字、零寬字元）
     只存在於原文。規則與 LLM 一律取 `sentences` / `text_at()`。
+
+    `sentence_offsets[i]` 的基準是 **`raw_sentences[i]` 這個字串本身**，
+    不是整則訊息的原文：`sentence_offsets[i][k]` 是 `sentences[i][k]` 在
+    `raw_sentences[i]` 中的來源索引。因此 `Document` **不需要**持有各則訊息的
+    完整原文 —— 每一句自己帶著它要的那一小段，`raw_span_at()` 從頭到尾不需要
+    知道這句屬於哪一則訊息。若改成以整則原文為基準，`Document` 就得多一個
+    以訊息序號為索引的結構，而訊息序號採原始 `Request` 位置、會被截斷戳破；
+    rebase 到句子讓那個問題整個不存在。同一份原文也不會被存兩次。
+
+    代價是 `Document` 答不出「這個句內區間在整則訊息原文中的絕對索引」。
+    目前沒有消費者需要它，而且這不是巧合 —— 畫面上的渲染單位就是句子。
+
+    `sentence_offsets` **沒有預設值**：給它 `()` 會表達「有時候沒有偏移」，
+    而那個狀態不存在 —— 沒有偏移的 `Document` 就是壞的 `Document`。
 
     扁平而非巢狀（每則一個子物件）：規則層的主要動作是「掃過全部句子找訊號」，
     巢狀會逼每個規則寫雙層迴圈，而雙層迴圈裡最容易把內層索引當成全域索引用。
@@ -311,12 +349,15 @@ class Document:
 
     `sentences` 與 `raw_sentences` 不出現在 `repr()` 中 —— 兩者都是未遮蔽的
     訊息內容。可寫進 log 的文字只有 `scam_guard.redact.RedactedText`。
-    `repr()` 保留句數與截斷資訊，debug 仍然可用。
+    `sentence_offsets` 同樣不出現：它是指向那些內容的一把尺，而且預設的
+    `repr()` 會印出數萬個整數。`repr()` 保留句數、偏移項數與截斷資訊，
+    debug 仍然可用。
     """
 
     sentences: Sequence[str] = field(repr=False)
     raw_sentences: Sequence[str] = field(repr=False)
     coords: Sequence[Coord] = field(repr=False)
+    sentence_offsets: Sequence[Sequence[int]] = field(repr=False)
     truncated: bool = False
     dropped_messages: int = 0
     _index: dict[Coord, int] = field(init=False, repr=False, compare=False, default_factory=dict)
@@ -325,6 +366,9 @@ class Document:
         object.__setattr__(self, "sentences", tuple(self.sentences))
         object.__setattr__(self, "raw_sentences", tuple(self.raw_sentences))
         object.__setattr__(self, "coords", tuple(self.coords))
+        object.__setattr__(
+            self, "sentence_offsets", tuple(tuple(offsets) for offsets in self.sentence_offsets)
+        )
 
         if len(self.sentences) != len(self.raw_sentences):
             raise ValueError(
@@ -336,6 +380,37 @@ class Document:
                 f"座標數必須等於句子數：len(coords)={len(self.coords)}、"
                 f"len(sentences)={len(self.sentences)}"
             )
+        if len(self.sentence_offsets) != len(self.sentences):
+            raise ValueError(
+                f"句內偏移數必須等於句子數：len(sentence_offsets)="
+                f"{len(self.sentence_offsets)}、len(sentences)={len(self.sentences)}"
+            )
+
+        for i, offsets in enumerate(self.sentence_offsets):
+            sentence = self.sentences[i]
+            if len(offsets) != len(sentence) + 1:
+                raise ValueError(
+                    f"第 {i} 句的句內偏移長度必須為句長加一：len(offsets)={len(offsets)}、"
+                    f"len(sentences[{i}])={len(sentence)}"
+                )
+            for k in range(1, len(offsets)):
+                if offsets[k] < offsets[k - 1]:
+                    raise ValueError(
+                        f"第 {i} 句的句內偏移必須單調不減：offsets[{k - 1}]={offsets[k - 1]}、"
+                        f"offsets[{k}]={offsets[k]}"
+                    )
+            if offsets[-1] != len(self.raw_sentences[i]):
+                raise ValueError(
+                    f"第 {i} 句的句內偏移哨兵必須為原文片段長度："
+                    f"offsets[-1]={offsets[-1]}、len(raw_sentences[{i}])="
+                    f"{len(self.raw_sentences[i])}"
+                )
+            # 首項僅在該句非空時檢查，對齊 `NormalizedText.__post_init__` 對空
+            # `text` 的既有處理：`text` 為空時對映只剩哨兵，首項為 0 與哨兵等於
+            # 原文長度無法同時成立。`split_sentences()` 不產生空句，但 `Document`
+            # 允許被直接以空字串句子建構，那屬 `add-document-type` 的範圍。
+            if sentence and offsets[0] != 0:
+                raise ValueError(f"第 {i} 句的句內偏移首項必須為 0，實為 {offsets[0]}")
 
         previous_message = -1
         previous_sentence = -1
@@ -372,9 +447,10 @@ class Document:
         object.__setattr__(self, "_index", {coord: i for i, coord in enumerate(self.coords)})
 
     def __repr__(self) -> str:
+        offset_entries = sum(len(offsets) for offsets in self.sentence_offsets)
         return (
-            f"Document(sentences={len(self.sentences)}, truncated={self.truncated}, "
-            f"dropped_messages={self.dropped_messages})"
+            f"Document(sentences={len(self.sentences)}, offset_entries={offset_entries}, "
+            f"truncated={self.truncated}, dropped_messages={self.dropped_messages})"
         )
 
     def index_of(self, coord: Coord) -> int:
@@ -394,6 +470,47 @@ class Document:
     def raw_at(self, coord: Coord) -> str:
         """座標對應的原文片段，供呈現給使用者。"""
         return self.raw_sentences[self.index_of(coord)]
+
+    def raw_bounds_at(self, coord: Coord, start: int, end: int) -> tuple[int, int]:
+        """句內半開區間 `[start, end)` 在該句原文片段中的對應區間。
+
+        這是**原語**，`raw_span_at()` 是它上面的一行。兩個方法都要的理由是
+        兩個消費者要的東西不同且不可互換：遮蔽與依據呈現要的是**內容**，
+        在原文上畫底線要的是**位置** —— `<mark>` 該插在哪兩個索引之間這個問題上，
+        片段字串完全沒有用，而拿字串回頭搜位置就是 `find()`，
+        在 NFKC 一對多、多對一與零寬字元插入下必然指錯。
+
+        回傳的索引基準是 `raw_at(coord)`，也就是呈現層實際渲染的那個字串，
+        不需要任何換算。`start == end` 合法，回傳兩個相同的索引。
+
+        無效座標由 `index_of()` 拋 `KeyError`。句內區間越界拋 `ValueError` 且
+        **不截斷至合法範圍**：截斷會把「產生區間的元件算錯了」變成「結果偶爾
+        錯一格」，而後者沒有人會發現。
+        """
+        index = self.index_of(coord)
+        length = len(self.sentences[index])
+        if start < 0:
+            raise ValueError(f"句內起始不可為負：start={start}、coord={coord}")
+        if end > length:
+            raise ValueError(f"句內結束不可超過句長：end={end}、句長={length}、coord={coord}")
+        if start > end:
+            raise ValueError(f"句內起始不可大於結束：start={start}、end={end}、coord={coord}")
+        offsets = self.sentence_offsets[index]
+        return offsets[start], offsets[end]
+
+    def raw_span_at(self, coord: Coord, start: int, end: int) -> str:
+        """句內半開區間 `[start, end)` 對應的原文片段內容。
+
+        驗證只有 `raw_bounds_at()` 一份實作。`start == end` 回傳空字串。
+
+        **不提供對應的 `text_span_at()`** —— `text_at(coord)[start:end]` 已經能用，
+        Python 的字串切片就是正確答案。已知的不對稱：正規化座標的切片是嚴格的
+        （越界拋例外），正規化文字的切片是寬鬆的（`text_at(coord)[0:999]` 安靜地
+        回傳整句）。同一個算錯的區間，走哪條路決定它會不會被發現；要在正規化側
+        標字元位置的呼叫端，應先以本方法驗證區間再做切片。
+        """
+        a, b = self.raw_bounds_at(coord, start, end)
+        return self.raw_at(coord)[a:b]
 
     def message_range(self, message_index: int) -> range:
         """某則訊息全部句子的扁平索引範圍。該則未產生句子時為空 `range`。
@@ -485,7 +602,10 @@ def build_document(messages: Sequence[Message], limits: Limits = DEFAULT_LIMITS)
     明白告訴模型「前面還有 37 則未提供」，否則模型會把第 38 則當成對話的開頭，
     推論出「一上來就談投資」這個與事實相反的結論。
 
-    全部訊息皆無文字內容時回傳三個序列皆空的 `Document`，這是合法值而非錯誤。
+    全部訊息皆無文字內容時回傳四個序列皆空的 `Document`，這是合法值而非錯誤。
+
+    句內偏移與其他三個序列一樣是**扁平的句子索引**，不以訊息序號為鍵 ——
+    因此丟棄最舊的幾則只是讓那幾則不產生句子，沒有任何東西需要位移。
     """
     normalized = [normalize_text(message.text) for message in messages]
     dropped_messages = _kept_from(normalized, limits)
@@ -493,17 +613,20 @@ def build_document(messages: Sequence[Message], limits: Limits = DEFAULT_LIMITS)
     sentences: list[str] = []
     raw_sentences: list[str] = []
     coords: list[Coord] = []
+    sentence_offsets: list[tuple[int, ...]] = []
     for message_index in range(dropped_messages, len(normalized)):
-        pairs = split_sentences(normalized[message_index])
-        for sentence_index, (text, raw) in enumerate(pairs):
+        sentence_items = split_sentences(normalized[message_index])
+        for sentence_index, (text, raw, offsets) in enumerate(sentence_items):
             sentences.append(text)
             raw_sentences.append(raw)
             coords.append((message_index, sentence_index))
+            sentence_offsets.append(offsets)
 
     return Document(
         sentences=sentences,
         raw_sentences=raw_sentences,
         coords=coords,
+        sentence_offsets=sentence_offsets,
         truncated=dropped_messages > 0,
         dropped_messages=dropped_messages,
     )
