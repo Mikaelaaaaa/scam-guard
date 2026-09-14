@@ -15,6 +15,19 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.6",
 ]
+# 選配的 NLP 個資辨識路徑，只供 `pii_nlp/` 使用，`scam_guard/` 不得 import
+# （由下方的 banned-api 強制）。未安裝此 extra 時偵測核心照常運作 ——
+# 那不是靠 try/except，是靠核心的 import 圖裡根本沒有這個節點。
+#
+# ⚠️ 此 extra **目前裝不到 design 想要的東西**，記在這裡而不是只記在 design：
+# PyPI 的 `privacy-filter`（0.1.0，top-level import 名 `privacy_filter`，已實際
+# 安裝驗證）是第三方對**基礎模型** `openai/privacy-filter` 的包裝，走 HuggingFace
+# `pipeline()`；design 要的是 `lianghsun/privacy-filter-tw` 加上 `opf` CLI，
+# 而 `opf` 在 PyPI 上不存在。詳見 `add-pii-recognizers/design.md` 的
+# 「`opf` CLI 契約驗證結果」。
+pii-nlp = [
+    "privacy-filter",
+]
 
 [tool.setuptools.packages.find]
 include = ["scam_guard*"]
@@ -52,6 +65,12 @@ select = ["E", "F", "TID"]
 "smtplib".msg = "架構界線違規：scam_guard/ 不得發出網路請求，取得請放 tools/、請求路徑上的查詢請放 net/"
 "aiohttp".msg = "架構界線違規：scam_guard/ 不得發出網路請求，取得請放 tools/、請求路徑上的查詢請放 net/"
 
+# 選配 NLP 個資辨識的界線。登記的是**實際的 top-level import 名稱**
+# （`privacy_filter`，PyPI 發佈名為 `privacy-filter`，兩者不同），
+# 已以 `pip install` 後 `import privacy_filter` 驗證 ——
+# banned-api 登記錯名稱等於沒有界線，而且是那種寫在設定檔裡看起來很有效的沒有界線。
+"privacy_filter".msg = "架構界線違規：privacy-filter 為選配依賴，不得在 scam_guard/ 內 import，請放在 pii_nlp/"
+
 # 介面層自身當然要 import 介面層模組，豁免之。新增介面層目錄時須同步更新此清單。
 [tool.ruff.lint.per-file-ignores]
 "api/*" = ["TID251"]
@@ -67,6 +86,8 @@ select = ["E", "F", "TID"]
 # 而「scam_guard/ 有沒有 import 網路函式庫」另有一個掃描原始碼的測試守著，
 # 不依賴這條 lint 規則。
 "tests/*" = ["TID251"]
+# pii_nlp/ 是選配 NLP 套件的唯一容身處，與 api/、adapters/ 同層。
+"pii_nlp/*" = ["TID251"]
 
 # 對照表（TLD 風險、短網址、品牌）是人工整理的內容，必須進版控並隨套件安裝。
 # 少了這一段，`pip install .`（非 `-e`）之後檔案不存在 —— 而這種錯在可編輯安裝下
