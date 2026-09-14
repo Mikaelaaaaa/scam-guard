@@ -4,6 +4,7 @@ from scam_guard.check import Check, CheckRegistry, Stage
 from scam_guard.confidence import compute_confidence
 from scam_guard.normalize import DEFAULT_LIMITS, Document, Limits, build_document
 from scam_guard.redact import redact_document
+from scam_guard.render import choose_actions, render_evidence
 from scam_guard.scoring import compute_score
 from scam_guard.type_resolve import resolve_type
 from scam_guard.types import CheckResult, Request, Verdict
@@ -97,7 +98,11 @@ def detect(
     - `scam_type` —— 類型判定層的結果，可為 `None`（`add-type-resolve`）。
       類型衝突 MUST NOT 降低 `confidence`：`confidence` 的對象是「是不是詐騙」，
       不是「是哪一種」。
-    - `evidence` / `actions` —— 尚未接線，由同一個 PR 的 `add-verdict-render` 填入。
+    - `evidence` / `actions` —— 呈現層的結果（`add-verdict-render`）。
+      完全無訊號時兩者皆為空陣列 —— 對一則「明天見」提出行動建議是製造焦慮。
+
+    `Verdict.checks` 不因上面任何一層而被摘要或過濾：呈現層只決定「預設顯示
+    哪幾行」，UI 要展開就自己去讀完整的 `checks`。
     """
     table.validate_against(registry)
     doc: Document = build_document(req.messages, limits)
@@ -125,8 +130,8 @@ def detect(
         scam_probability=None if abstains else score.probability,
         confidence=confidence,
         scam_type=resolution.scam_type,
-        evidence=[],
-        actions=[],
+        evidence=render_evidence(results, score, doc, table),
+        actions=choose_actions(results, score, abstains, table),
         checks=results,
         redacted=redact_document(doc),
     )

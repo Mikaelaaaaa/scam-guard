@@ -560,6 +560,20 @@ basis = "placeholder"
 rationale = "高於地板：截斷降低信心但不單獨造成拒答。截斷只在超過 100 則或 50,000 字元時發生，而保留下來的是**最新**的一段，也就是最可能含關鍵行為的一段，把它當成單獨的拒答理由過重"
 blocked_on = "add-testset"
 
+# ── add-verdict-render ──
+
+[thresholds.max_evidence_lines]
+value = 5
+basis = "placeholder"
+rationale = "Verdict.checks 會膨脹到 30 筆以上，而一則假檢警訊息可能有 6 到 8 筆命中。五行沒有實測依據，只是一個起點；被截掉的部分仍完整保留在 Verdict.checks 裡"
+blocked_on = "clients"
+
+[thresholds.max_actions]
+value = 3
+basis = "placeholder"
+rationale = "建議多到讀不完等於沒有建議。三條沒有實測依據，且可讀性只能由實際介面驗證"
+blocked_on = "clients"
+
 [thresholds.confidence_floor]
 value = 0.40
 basis = "placeholder"

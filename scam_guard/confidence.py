@@ -67,6 +67,16 @@ def _base(results: Sequence[CheckResult], table: WeightTable) -> float:
     return table.threshold("base_no_hit")
 
 
+def truncation_cap_applies(results: Sequence[CheckResult], doc: Document) -> bool:
+    """截斷上限是否生效：前文被丟棄**且**沒有硬證據命中。
+
+    公開而非私有，因為呈現層要用同一個條件決定要不要陳述「前 N 則未納入判斷」。
+    在那裡重寫一次這個條件，兩處會在條件改動時不同步，而不同步的樣子是
+    「信心被壓低但依據沒有說為什麼」—— 使用者看到一個沒有理由的低信心。
+    """
+    return doc.truncated and not any(result.hit and result.hard for result in results)
+
+
 def _caps(
     results: Sequence[CheckResult],
     doc: Document,
@@ -106,7 +116,7 @@ def _caps(
     hits = [result for result in results if result.hit]
     if hits and all(not result.scam_types for result in hits):
         caps.append(table.threshold("cap_unseen_pattern"))
-    if doc.truncated and not any(result.hard for result in hits):
+    if truncation_cap_applies(results, doc):
         caps.append(table.threshold("cap_truncated"))
     return caps
 
