@@ -8,7 +8,7 @@ from scam_guard.types import CheckResult, Message, Request
 
 def solicit_otp(req: Request, doc: object) -> list[CheckResult]:
     """函式形式的檢查 —— 不繼承任何基底類別。"""
-    return [CheckResult(name="solicit_otp", hit=True, weight=1.5, detail="第 2 句索取驗證碼")]
+    return [CheckResult(name="solicit_otp", hit=True, detail="第 2 句索取驗證碼")]
 
 
 solicit_otp.name = "solicit_otp"  # type: ignore[attr-defined]
@@ -35,7 +35,6 @@ class UrlCheck:
             CheckResult(
                 name="url",
                 hit=True,
-                weight=2.5,
                 detail=f"命中 165 涉詐網站清單：{host}",
                 evidence=[(0, i)],
                 hard=True,

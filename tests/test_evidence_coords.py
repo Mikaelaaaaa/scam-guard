@@ -18,7 +18,6 @@ def test_valid_coordinate_resolves_to_the_sentence_the_check_saw() -> None:
     result = CheckResult(
         name="solicit_transfer",
         hit=True,
-        weight=1.5,
         detail="要求匯款",
         evidence=[(1, 1)],
     )
@@ -31,7 +30,7 @@ def test_valid_coordinate_resolves_to_the_sentence_the_check_saw() -> None:
 
 def test_invalid_coordinate_raises_instead_of_returning_nothing() -> None:
     doc = build_document(a_conversation())
-    result = CheckResult(name="broken", hit=True, weight=1.0, detail="算錯位置", evidence=[(9, 9)])
+    result = CheckResult(name="broken", hit=True, detail="算錯位置", evidence=[(9, 9)])
 
     with pytest.raises(KeyError, match="座標不存在"):
         doc.index_of(result.evidence[0])
@@ -54,7 +53,6 @@ def test_message_index_survives_truncation() -> None:
     result = CheckResult(
         name="solicit_otp",
         hit=True,
-        weight=1.5,
         detail="索取驗證碼",
         evidence=[doc.coords[0]],
     )

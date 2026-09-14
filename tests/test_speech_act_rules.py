@@ -7,13 +7,11 @@ from scam_guard.normalize import Document, build_document
 from scam_guard.pipeline import detect
 from scam_guard.rules.speech_act import (
     CODE_EXEMPT_RULES,
-    HARD_WEIGHT,
     HELP_CHANNELS,
     RELATIONSHIP_RULE,
     SPEECH_ACT_RULES,
     TIER_A_RULES,
     TIER_B_RULES,
-    WEAK_WEIGHT,
     RelationshipRule,
     SpeechActRule,
     has_self_contained_code,
@@ -58,7 +56,7 @@ def run_all(*texts: str) -> list[CheckResult]:
 def test_solicit_otp_hits() -> None:
     results = run("solicit_otp", "請把剛收到的驗證碼告訴我")
 
-    assert [(r.hit, r.hard, r.weight) for r in results] == [(True, True, HARD_WEIGHT)]
+    assert [(r.hit, r.hard) for r in results] == [(True, True)]
     assert results[0].evidence == [(0, 0)]
     assert results[0].scam_types == [ScamType.ACCOUNT_TAKEOVER]
 
@@ -87,7 +85,6 @@ def test_exemption_downgrades_but_keeps_the_record() -> None:
     assert len(results) == 1
     assert results[0].hit is True
     assert results[0].hard is False
-    assert results[0].weight == WEAK_WEIGHT
     assert results[0].evidence == [(0, 0)]
     assert "482913" in results[0].detail
     assert "降級" in results[0].detail
@@ -170,10 +167,17 @@ def test_exactly_ten_hard_rules_each_with_a_fact() -> None:
     assert len(TIER_B_RULES) == 10
 
 
-def test_weight_has_exactly_two_distinct_values() -> None:
-    weights = {result.weight for text in HIT_SAMPLES for result in run_all(text)}
+def test_hard_has_exactly_two_distinct_values() -> None:
+    """規則層的強度只有兩級，且承載它的欄位是 `hard`。
 
-    assert weights == {HARD_WEIGHT, WEAK_WEIGHT}
+    原本此處斷言的是 `weight` 的兩個值（`2.5` / `0.6`）。`add-weight-table`
+    移除 `CheckResult.weight` 之後，那兩個數字住在 `weights.toml` 裡，
+    對應的斷言搬到 `tests/test_weight_table.py`；這裡留下的是規則層自己
+    仍然負責的那一半 —— 它要分得出哪些命中是硬證據。
+    """
+    flags = {result.hard for text in HIT_SAMPLES for result in run_all(text)}
+
+    assert flags == {True, False}
 
 
 def test_scam_types_are_enum_members() -> None:

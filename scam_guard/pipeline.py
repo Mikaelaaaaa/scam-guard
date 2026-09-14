@@ -21,7 +21,7 @@ def _run(check: Check, req: Request, doc: Document) -> list[CheckResult]:
     results = check(req, doc)
     if results:
         return results
-    return [CheckResult(name=check.name, hit=False, weight=0.0, detail=NOT_HIT)]
+    return [CheckResult(name=check.name, hit=False, detail=NOT_HIT)]
 
 
 def _skipped(check: Check) -> CheckResult:
@@ -29,7 +29,7 @@ def _skipped(check: Check) -> CheckResult:
 
     消融實驗需要這個區別 —— 「跑了沒訊號」與「根本沒跑」是兩件事。
     """
-    return CheckResult(name=check.name, hit=False, weight=0.0, detail=SKIPPED)
+    return CheckResult(name=check.name, hit=False, detail=SKIPPED)
 
 
 def detect(

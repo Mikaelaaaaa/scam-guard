@@ -1,0 +1,586 @@
+# 訊號權重表 —— 全系統訊號的單一真相來源。
+#
+# 權重的尺度是**對數似然比**：
+#
+#     w(訊號) = ln( P(訊號命中 | 詐騙) / P(訊號命中 | 合法) )
+#
+# 這不是任意選的尺度，它決定了下游怎麼算。若訊號條件獨立，後驗對數勝算等於
+# 先驗對數勝算加上各訊號的 w 之和 —— 也就是 `add-score-compute` 的加權求和。
+# **求和之所以合法，唯一的理由就是權重是對數似然比。** 若權重是「重要性分數」
+# 之類的東西，相加沒有意義，只是把兩個沒有單位的數字放在一起。
+#
+# 同一個定義說明了「同群組取 max」在補什麼：相加假設條件獨立，而同群組的訊號
+# 明顯不獨立。一則假檢警訊息同時命中 safe_account、atm_operation、secrecy_demand，
+# 不是三個獨立證據，是**一段腳本**。取 max 是承認不獨立之後最保守的處置。
+#
+# ── 每個權重條目 MUST 宣告 basis ─────────────────────────────────────────
+#
+# basis = "measured"    MUST 附 p_hit_given_scam、p_hit_given_ham、measured_on；
+#                       兩個機率 MUST 落在開區間 (0, 1)；
+#                       value MUST 等於 ln(p_scam / p_ham)，容差 0.01
+# basis = "placeholder" MUST NOT 附任何條件機率（附了就拋例外）；
+#                       MUST 附 inherited_from 與 blocked_on；
+#                       value MUST 屬於 {2.5, 0.6, 0.0, -1.5}
+#
+# 這使「編出 33 個有差異的數字」在載入時就失敗：想寫 1.9 就必須標成 measured，
+# 而 measured 必須附兩個機率，而兩個機率必須算得出那個 1.9。
+# **沒有一條路可以在沒有量測的情況下產生一個新數字。**
+#
+# 允許集合的四個值各有出處：
+#   2.5   add-speech-act-rules 的 Tier-A 佔位值
+#   0.6   add-speech-act-rules 的 Tier-B 佔位值（亦為自帶碼豁免的降級值）
+#   -1.5  add-quotation-check 的引述負權重
+#   0.0   url_shortener 的「宣告資訊不足」
+#
+# ── 分群 ──────────────────────────────────────────────────────────────
+#
+# 每個訊號 MUST 宣告 group。**預設每個訊號自成一組。** 兩個訊號同群組的判準是
+# 「存在一則真實訊息，其中的單一事實會同時使兩者命中」，合併 MUST 在
+# [group_rationale] 中寫出那個單一事實是什麼。預設合併會讓人為了看起來整齊
+# 把不相干的訊號塞進同一群，而每一次錯誤的合併都是在**丟棄證據**。
+
+[roles]
+# 計分層、信心層與類型判定層用**角色**認出特殊訊號，不硬編碼字串、
+# 不 import pipeline（會成環）或 rules/（會依賴某一條規則存在）。
+# 載入時驗證每個值都是表中存在的訊號名稱；與
+# `pipeline.QUOTATION_CHECK` / `RELATIONSHIP_RULE` 的一致性由測試斷言。
+quotation = "quotation"
+relationship = "relationship_building"
+blocklist_exact = "url_blocklist"
+
+[group_rationale]
+# 非單元群組 MUST 在此說明「哪一個單一事實會使群組內的訊號同時命中」。
+# 單元群組不需要，也不應該出現在這裡。
+authority_script = "一段假檢警腳本。宣導文複述這段腳本時四條會一起命中，而那是一段複述不是四個證據"
+credential_solicit = "一次「把可直接冒名使用的憑證交出來」的索取；同一則訊息索取驗證碼與卡號是同一件事"
+advance_fee = "一次「先付一筆才能拿到」的要求；add-speech-act-rules 已點名 prepay_to_receive 與 romance_pretext 重疊"
+too_good_offer = "一個不合理的報酬承諾"
+url_reputation = "一個連結不可信；add-url-check 的 Impact 已寫明五者同群組，取 max 避免重複計數"
+evasion = "一次規避行為。零寬字元與全形半形混用常是同一次操作留下的兩個痕跡"
+
+# ══ 規則層 Tier-A（10 條）══════════════════════════════════════════════
+# hard_capable = true：自帶碼豁免會把 hard 由 True 降為 False，
+# 此時計分取 weight_soft，而規則本身不需要知道任何數值。
+
+[[signal]]
+name = "solicit_otp"
+group = "credential_solicit"
+hard_capable = true
+[signal.weight_hard]
+value = 2.5
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的 Tier-A 佔位值"
+blocked_on = "add-testset"
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的自帶碼豁免降級值"
+blocked_on = "add-testset"
+
+[[signal]]
+name = "solicit_card_secret"
+group = "credential_solicit"
+hard_capable = true
+[signal.weight_hard]
+value = 2.5
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的 Tier-A 佔位值"
+blocked_on = "add-testset"
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的自帶碼豁免降級值"
+blocked_on = "add-testset"
+
+[[signal]]
+name = "solicit_bank_credentials"
+group = "credential_solicit"
+hard_capable = true
+[signal.weight_hard]
+value = 2.5
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的 Tier-A 佔位值"
+blocked_on = "add-testset"
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的自帶碼豁免降級值"
+blocked_on = "add-testset"
+
+# deliver_bank_instrument 不併入 credential_solicit：「請提供網銀密碼」與
+# 「請把存摺寄到這個地址」是兩個分別發出的要求，一則訊息可以同時有兩個，
+# 那是兩件事不是一件事。合併會讓 BANK_ACCOUNT_HARVEST 這類訊息少算一個證據。
+[[signal]]
+name = "deliver_bank_instrument"
+group = "deliver_bank_instrument"
+hard_capable = true
+[signal.weight_hard]
+value = 2.5
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的 Tier-A 佔位值"
+blocked_on = "add-testset"
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的自帶碼豁免降級值"
+blocked_on = "add-testset"
+
+[[signal]]
+name = "atm_operation"
+group = "authority_script"
+hard_capable = true
+[signal.weight_hard]
+value = 2.5
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的 Tier-A 佔位值"
+blocked_on = "add-testset"
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的自帶碼豁免降級值"
+blocked_on = "add-testset"
+
+[[signal]]
+name = "safe_account"
+group = "authority_script"
+hard_capable = true
+[signal.weight_hard]
+value = 2.5
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的 Tier-A 佔位值"
+blocked_on = "add-testset"
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的自帶碼豁免降級值"
+blocked_on = "add-testset"
+
+[[signal]]
+name = "secrecy_demand"
+group = "authority_script"
+hard_capable = true
+[signal.weight_hard]
+value = 2.5
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的 Tier-A 佔位值"
+blocked_on = "add-testset"
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的自帶碼豁免降級值"
+blocked_on = "add-testset"
+
+[[signal]]
+name = "remote_control_tool"
+group = "authority_script"
+hard_capable = true
+[signal.weight_hard]
+value = 2.5
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的 Tier-A 佔位值"
+blocked_on = "add-testset"
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的自帶碼豁免降級值"
+blocked_on = "add-testset"
+
+[[signal]]
+name = "prepay_to_receive"
+group = "advance_fee"
+hard_capable = true
+[signal.weight_hard]
+value = 2.5
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的 Tier-A 佔位值"
+blocked_on = "add-testset"
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的自帶碼豁免降級值"
+blocked_on = "add-testset"
+
+[[signal]]
+name = "seller_verification"
+group = "seller_verification"
+hard_capable = true
+[signal.weight_hard]
+value = 2.5
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的 Tier-A 佔位值"
+blocked_on = "add-testset"
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的自帶碼豁免降級值"
+blocked_on = "add-testset"
+
+# ══ 規則層 Tier-B（11 條）══════════════════════════════════════════════
+# hard_capable = false：Tier-B 永遠不是硬證據，表中 MUST NOT 有 weight_hard，
+# 且查表時收到 hard=True 的結果 MUST 拋例外。
+
+[[signal]]
+name = "guaranteed_return"
+group = "too_good_offer"
+hard_capable = false
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的 Tier-B 佔位值"
+blocked_on = "add-testset"
+
+[[signal]]
+name = "romance_pretext"
+group = "advance_fee"
+hard_capable = false
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的 Tier-B 佔位值"
+blocked_on = "add-testset"
+
+[[signal]]
+name = "identity_docs"
+group = "credential_solicit"
+hard_capable = false
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的 Tier-B 佔位值"
+blocked_on = "add-testset"
+
+[[signal]]
+name = "escort_deposit"
+group = "advance_fee"
+hard_capable = false
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的 Tier-B 佔位值"
+blocked_on = "add-testset"
+
+# game_code 併入 credential_solicit 是分群表中最沒把握的一條（見 design 的
+# Open Questions）：點數卡序號是可直接變現的憑證，但「代儲」與「走指定代管站」
+# 更接近交易流程。留待 add-ablation 掃描。
+[[signal]]
+name = "game_code"
+group = "credential_solicit"
+hard_capable = false
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的 Tier-B 佔位值"
+blocked_on = "add-testset"
+
+[[signal]]
+name = "identity_reset"
+group = "identity_reset"
+hard_capable = false
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的 Tier-B 佔位值"
+blocked_on = "add-testset"
+
+[[signal]]
+name = "charity_personal_account"
+group = "advance_fee"
+hard_capable = false
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的 Tier-B 佔位值"
+blocked_on = "add-testset"
+
+[[signal]]
+name = "parcel_notice"
+group = "parcel_notice"
+hard_capable = false
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的 Tier-B 佔位值"
+blocked_on = "add-testset"
+
+[[signal]]
+name = "loan_no_check"
+group = "too_good_offer"
+hard_capable = false
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的 Tier-B 佔位值"
+blocked_on = "add-testset"
+
+[[signal]]
+name = "high_pay_no_skill"
+group = "too_good_offer"
+hard_capable = false
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的 Tier-B 佔位值"
+blocked_on = "add-testset"
+
+[[signal]]
+name = "relationship_building"
+group = "relationship_building"
+hard_capable = false
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的 Tier-B 佔位值"
+blocked_on = "add-testset"
+
+# ══ 引述（1 條）════════════════════════════════════════════════════════
+
+[[signal]]
+name = "quotation"
+group = "quotation"
+hard_capable = false
+[signal.weight_soft]
+value = -1.5
+basis = "placeholder"
+inherited_from = "add-quotation-check 的引述負權重"
+blocked_on = "add-testset"
+
+# ══ 規避（5 條）════════════════════════════════════════════════════════
+
+[[signal]]
+name = "evasion_invisible"
+group = "evasion"
+hard_capable = false
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-evasion-check 的佔位權重，與 Tier-B 相同"
+blocked_on = "add-testset"
+
+[[signal]]
+name = "evasion_width_mix"
+group = "evasion"
+hard_capable = false
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-evasion-check 的佔位權重，與 Tier-B 相同"
+blocked_on = "add-testset"
+
+[[signal]]
+name = "evasion_split_word"
+group = "evasion"
+hard_capable = false
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-evasion-check 的佔位權重，與 Tier-B 相同"
+blocked_on = "add-testset"
+
+[[signal]]
+name = "evasion_homophone"
+group = "evasion"
+hard_capable = false
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-evasion-check 的佔位權重，與 Tier-B 相同"
+blocked_on = "add-testset"
+
+[[signal]]
+name = "evasion_zhuyin"
+group = "evasion"
+hard_capable = false
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-evasion-check 的佔位權重，與 Tier-B 相同"
+blocked_on = "add-testset"
+
+# ══ URL 層（5 條）與網域年齡（1 條）═════════════════════════════════════
+
+# hard_capable = true：黑名單的兩級比對 —— 主機精確命中 hard=True，
+# 可註冊網域命中但主機不同 hard=False。
+[[signal]]
+name = "url_blocklist"
+group = "url_reputation"
+hard_capable = true
+[signal.weight_hard]
+value = 2.5
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的 Tier-A 佔位值（主機精確命中為硬證據）"
+blocked_on = "add-testset"
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的 Tier-B 佔位值（可註冊網域命中而主機不同）"
+blocked_on = "add-testset"
+
+# url_shortener 自成一組，MUST NOT 併入 url_reputation。它的語意是
+# 「此連結的目的地未知，其餘 URL 訊號在此不具資訊量」。把一個宣告資訊不足的
+# 訊號放進「這個連結不可信」的群組，取 max 時會被別的訊號蓋掉，
+# 它想傳達的事就消失了。
+[[signal]]
+name = "url_shortener"
+group = "url_shortener"
+hard_capable = false
+[signal.weight_soft]
+value = 0.0
+basis = "placeholder"
+inherited_from = "add-url-check：短網址宣告的是目的地未知，不是連結不可信；0.0 表示不增減證據"
+blocked_on = "add-testset"
+
+[[signal]]
+name = "url_tld_risk"
+group = "url_reputation"
+hard_capable = false
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-url-check 的 URL 信譽訊號，沿用 Tier-B 佔位值"
+blocked_on = "add-testset"
+
+[[signal]]
+name = "url_host_shape"
+group = "url_reputation"
+hard_capable = false
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-url-check 的 URL 信譽訊號，沿用 Tier-B 佔位值"
+blocked_on = "add-testset"
+
+[[signal]]
+name = "url_brand"
+group = "url_reputation"
+hard_capable = false
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-url-check 的 URL 信譽訊號，沿用 Tier-B 佔位值"
+blocked_on = "add-testset"
+
+[[signal]]
+name = "domain_age"
+group = "url_reputation"
+hard_capable = false
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-domain-age 的新註冊網域訊號，沿用 Tier-B 佔位值"
+blocked_on = "add-testset"
+
+# ══ 門檻 ══════════════════════════════════════════════════════════════
+#
+# scoring 相關的全部常數集中於此，MUST NOT 於程式碼中出現任何未登錄的判定門檻。
+# 每條 MUST 含 value 與 basis；basis = "placeholder" 時 MUST 附 rationale
+# （此值是從什麼推出來的）與 blocked_on（哪個 change 會取代它）。
+# 門檻沒有「繼承自某個既有佔位值」這回事，所以此處不要求 inherited_from，
+# 也不限制值必須落在權重的允許集合內 —— 門檻的單位雖與權重相同，
+# 但機率與行數這類門檻根本不在那個尺度上。
+
+[thresholds]
+# 此區段在 add-weight-table 落地時為空骨架，由
+# add-score-compute、add-confidence、add-verdict-render 各自填入。
+
+# ══ 類型優先序 ════════════════════════════════════════════════════════
+#
+# 供 add-type-resolve 在 hard 與權重皆平手時取用。順序依 165 各 CaseTitle
+# 的件數降序。件數不是「這個類型比較重要」，它是「在台灣比較常發生」——
+# 這是唯一一個我們手上真的有數字的排序依據，而任何其他順序
+# （Enum 定義順序、字典序、候選出現順序）都是在假裝有依據。
+#
+# 兩個合併成員的件數為其涵蓋的兩個 CaseTitle 之和：
+#   INSTALLMENT_CANCEL = 1589 + 997 = 2586
+#   ORDER_ANOMALY      =  839 + 266 = 1105
+# 這使本清單的順序與 ScamType 的定義順序**不同**（INSTALLMENT_CANCEL 2586
+# 排在 GUESS_WHO 2227 之前），而那正是「不是 Enum 順序」的可觀察證據。
+
+[[type_priority]]
+name = "FAKE_INVESTMENT"
+cases = 30053
+source = "165 打詐儀錶板 191,912 筆案件的 CaseTitle 統計（假投資）"
+
+[[type_priority]]
+name = "ROMANCE_INVESTMENT"
+cases = 15506
+source = "165 打詐儀錶板 191,912 筆案件的 CaseTitle 統計（假交友(投資詐財)）"
+
+[[type_priority]]
+name = "SEXUAL_SERVICE"
+cases = 11614
+source = "165 打詐儀錶板 191,912 筆案件的 CaseTitle 統計（色情應召）"
+
+[[type_priority]]
+name = "FAKE_BUYER"
+cases = 11000
+source = "165 打詐儀錶板 191,912 筆案件的 CaseTitle 統計（假買家騙賣家）"
+
+[[type_priority]]
+name = "ROMANCE_MARRIAGE"
+cases = 9488
+source = "165 打詐儀錶板 191,912 筆案件的 CaseTitle 統計（假交友(徵婚詐財)）"
+
+[[type_priority]]
+name = "PHISHING_LINK"
+cases = 6966
+source = "165 打詐儀錶板 191,912 筆案件的 CaseTitle 統計（釣魚簡訊/惡意連結）"
+
+[[type_priority]]
+name = "FAKE_LOAN"
+cases = 6536
+source = "165 打詐儀錶板 191,912 筆案件的 CaseTitle 統計（假借銀行貸款）"
+
+[[type_priority]]
+name = "FAKE_AUTHORITY"
+cases = 5429
+source = "165 打詐儀錶板 191,912 筆案件的 CaseTitle 統計（假檢警/假冒公務機關）"
+
+[[type_priority]]
+name = "BANK_ACCOUNT_HARVEST"
+cases = 5337
+source = "165 打詐儀錶板 191,912 筆案件的 CaseTitle 統計（騙取金融帳戶(卡片)）"
+
+[[type_priority]]
+name = "GAME_ITEM"
+cases = 5280
+source = "165 打詐儀錶板 191,912 筆案件的 CaseTitle 統計（虛擬遊戲）"
+
+[[type_priority]]
+name = "FAKE_PRIZE"
+cases = 5167
+source = "165 打詐儀錶板 191,912 筆案件的 CaseTitle 統計（假中獎通知）"
+
+[[type_priority]]
+name = "FAKE_JOB"
+cases = 4946
+source = "165 打詐儀錶板 191,912 筆案件的 CaseTitle 統計（假求職）"
+
+[[type_priority]]
+name = "ACCOUNT_TAKEOVER"
+cases = 4867
+source = "165 打詐儀錶板 191,912 筆案件的 CaseTitle 統計（盜用通訊軟體帳號）"
+
+[[type_priority]]
+name = "INSTALLMENT_CANCEL"
+cases = 2586
+source = "165 打詐儀錶板 191,912 筆案件的 CaseTitle 統計（解除分期付款(騙買家) 1589 + (騙賣家) 997）"
+
+[[type_priority]]
+name = "GUESS_WHO"
+cases = 2227
+source = "165 打詐儀錶板 191,912 筆案件的 CaseTitle 統計（猜猜我是誰）"
+
+[[type_priority]]
+name = "ORDER_ANOMALY"
+cases = 1105
+source = "165 打詐儀錶板 191,912 筆案件的 CaseTitle 統計（假消費異常詐騙(騙買家) 839 + 假交易異常詐騙(騙賣家) 266）"
+
+[[type_priority]]
+name = "FAKE_CHARITY"
+cases = 1026
+source = "165 打詐儀錶板 191,912 筆案件的 CaseTitle 統計（假慈善機關(急難救助)）"
+
+[[type_priority]]
+name = "FAKE_PARCEL"
+cases = 620
+source = "165 打詐儀錶板 191,912 筆案件的 CaseTitle 統計（假借包裹招領）"

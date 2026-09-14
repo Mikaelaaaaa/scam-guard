@@ -13,14 +13,6 @@ from scam_guard.url import PublicSuffixList
 from scam_guard.url_check import UrlBlocklistCheck, load_tables, register_url_checks
 from tests.test_blocklist_store import PSL_WITH_EXAMPLE, days_ago, write_snapshot
 
-WEIGHTS = {
-    "url_blocklist": 1.0,
-    "url_shortener": 1.0,
-    "url_tld_risk": 1.0,
-    "url_host_shape": 1.0,
-    "url_brand": 1.0,
-}
-
 ENTRIES = (
     {
         "host": "evil.com",
@@ -73,7 +65,7 @@ def psl_fixture() -> PublicSuffixList:
 def check_fixture(tmp_path: Path, psl: PublicSuffixList) -> UrlBlocklistCheck:
     directory = write_snapshot(tmp_path, ENTRIES, **{"176455": {"data_through": days_ago(10)}})
     store = BlocklistStore.load(directory, psl, max_age_days=60)
-    return UrlBlocklistCheck(store, psl, load_tables(), weight=1.0)
+    return UrlBlocklistCheck(store, psl, load_tables())
 
 
 def run(check: UrlBlocklistCheck, *texts: str):
@@ -107,7 +99,7 @@ def test_160055_maps_to_fake_investment(tmp_path: Path, psl: PublicSuffixList) -
     entries = ({**ENTRIES[1], "host": "bet.example", "url": "bet.example"},)
     directory = write_snapshot(tmp_path, entries)
     store = BlocklistStore.load(directory, psl, max_age_days=60)
-    (result,) = UrlBlocklistCheck(store, psl, load_tables(), weight=1.0)(
+    (result,) = UrlBlocklistCheck(store, psl, load_tables())(
         Request(messages=[Message(text="https://bet.example/x")]),
         build_document([Message(text="https://bet.example/x")]),
     )
@@ -158,7 +150,7 @@ def test_clean_url_returns_empty(check: UrlBlocklistCheck) -> None:
 def test_registry_omits_the_check_without_a_store(psl: PublicSuffixList) -> None:
     """未提供 store 時不註冊一個永遠不命中的空檢查。"""
     registry = CheckRegistry()
-    register_url_checks(registry, psl, load_tables(), weights=WEIGHTS, store=None)
+    register_url_checks(registry, psl, load_tables(), store=None)
     assert "url_blocklist" not in [check.name for check in registry.enabled()]
     assert len(registry.enabled()) == 4
 
@@ -167,7 +159,7 @@ def test_registry_includes_the_check_with_a_store(
     psl: PublicSuffixList, check: UrlBlocklistCheck
 ) -> None:
     registry = CheckRegistry()
-    register_url_checks(registry, psl, load_tables(), weights=WEIGHTS, store=check._store)
+    register_url_checks(registry, psl, load_tables(), store=check._store)
     names = [registered.name for registered in registry.enabled()]
     assert names == [
         "url_blocklist",
@@ -187,7 +179,7 @@ def test_hard_hit_short_circuits_expensive_checks(
     這也是 `add-domain-age` 的 RDAP **不會對最像詐騙的那批網域外流**的機制。
     """
     registry = CheckRegistry()
-    register_url_checks(registry, psl, load_tables(), weights=WEIGHTS, store=check._store)
+    register_url_checks(registry, psl, load_tables(), store=check._store)
     expensive = RecordingExpensiveCheck()
     registry.register(expensive)
     verdict = detect(Request(messages=[Message(text="https://evil.com/login")]), registry)
@@ -198,7 +190,7 @@ def test_hard_hit_short_circuits_expensive_checks(
 
 def test_no_hard_hit_runs_expensive_checks(psl: PublicSuffixList, check: UrlBlocklistCheck) -> None:
     registry = CheckRegistry()
-    register_url_checks(registry, psl, load_tables(), weights=WEIGHTS, store=check._store)
+    register_url_checks(registry, psl, load_tables(), store=check._store)
     expensive = RecordingExpensiveCheck()
     registry.register(expensive)
     detect(Request(messages=[Message(text="https://clean.example/a")]), registry)
@@ -223,7 +215,7 @@ def test_each_check_can_be_disabled_independently(
     psl: PublicSuffixList, check: UrlBlocklistCheck
 ) -> None:
     registry = CheckRegistry()
-    register_url_checks(registry, psl, load_tables(), weights=WEIGHTS, store=check._store)
+    register_url_checks(registry, psl, load_tables(), store=check._store)
     registry.disable("url_tld_risk")
     names = [registered.name for registered in registry.enabled()]
     assert "url_tld_risk" not in names

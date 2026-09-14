@@ -252,13 +252,10 @@ class UrlBlocklistCheck:
     name = "url_blocklist"
     stage = Stage.LOCAL
 
-    def __init__(
-        self, store: BlocklistStore, psl: PublicSuffixList, tables: Tables, *, weight: float
-    ) -> None:
+    def __init__(self, store: BlocklistStore, psl: PublicSuffixList, tables: Tables) -> None:
         self._store = store
         self._psl = psl
         self._known_services = tables.known_service_domains
-        self._weight = weight
         sources = store.manifest["sources"]
         self._titles = {dataset_id: meta["title"] for dataset_id, meta in sources.items()}
 
@@ -304,7 +301,6 @@ class UrlBlocklistCheck:
         return CheckResult(
             name=self.name,
             hit=True,
-            weight=self._weight,
             detail=self._detail(domain, urls, entries, hard=hard),
             evidence=coords_of(urls),
             scam_types=scam_types,
@@ -360,10 +356,9 @@ class UrlShortenerCheck:
     name = "url_shortener"
     stage = Stage.LOCAL
 
-    def __init__(self, tables: Tables, psl: PublicSuffixList, *, weight: float) -> None:
+    def __init__(self, tables: Tables, psl: PublicSuffixList) -> None:
         self._tables = tables
         self._psl = psl
-        self._weight = weight
 
     def __call__(self, req: Request, doc: Document) -> list[CheckResult]:
         results = []
@@ -375,7 +370,6 @@ class UrlShortenerCheck:
                 CheckResult(
                     name=self.name,
                     hit=True,
-                    weight=self._weight,
                     detail=(
                         f"短網址 {url.url}（{service.service}），目的地未知；"
                         f"黑名單、TLD 風險與網域年齡對此連結不具資訊量"
@@ -405,10 +399,9 @@ class UrlTldRiskCheck:
     name = "url_tld_risk"
     stage = Stage.LOCAL
 
-    def __init__(self, tables: Tables, psl: PublicSuffixList, *, weight: float) -> None:
+    def __init__(self, tables: Tables, psl: PublicSuffixList) -> None:
         self._tables = tables
         self._psl = psl
-        self._weight = weight
 
     def __call__(self, req: Request, doc: Document) -> list[CheckResult]:
         known = self._tables.known_service_domains
@@ -425,7 +418,6 @@ class UrlTldRiskCheck:
                 CheckResult(
                     name=self.name,
                     hit=True,
-                    weight=self._weight,
                     detail=(
                         f"網域 {domain} 的 TLD .{tld} 每萬網域的釣魚分數為 {risk.value}"
                         f"（{risk.source}，{risk.as_of}），約為 .{self._tables.baseline_tld}"
@@ -460,9 +452,8 @@ class UrlHostShapeCheck:
     name = "url_host_shape"
     stage = Stage.LOCAL
 
-    def __init__(self, psl: PublicSuffixList, *, weight: float) -> None:
+    def __init__(self, psl: PublicSuffixList) -> None:
         self._psl = psl
-        self._weight = weight
 
     def __call__(self, req: Request, doc: Document) -> list[CheckResult]:
         results = []
@@ -472,7 +463,6 @@ class UrlHostShapeCheck:
                     CheckResult(
                         name=self.name,
                         hit=True,
-                        weight=self._weight,
                         detail=detail,
                         evidence=list(url.coords),
                         scam_types=[ScamType.PHISHING_LINK],
@@ -533,7 +523,6 @@ class UrlBrandCheck:
         tables: Tables,
         psl: PublicSuffixList,
         *,
-        weight: float,
         short_label_length: int = DEFAULT_SHORT_LABEL_LENGTH,
         short_label_distance: int = DEFAULT_SHORT_LABEL_DISTANCE,
         long_label_distance: int = DEFAULT_LONG_LABEL_DISTANCE,
@@ -542,7 +531,6 @@ class UrlBrandCheck:
         """⚠️ 四個門檻**沒有實驗依據**，是參數不是常數，由 `add-ablation` 掃描。"""
         self._tables = tables
         self._psl = psl
-        self._weight = weight
         self._short_label_length = short_label_length
         self._short_label_distance = short_label_distance
         self._long_label_distance = long_label_distance
@@ -560,7 +548,6 @@ class UrlBrandCheck:
         return CheckResult(
             name=self.name,
             hit=True,
-            weight=self._weight,
             detail=detail,
             evidence=evidence,
             scam_types=[ScamType.PHISHING_LINK],
@@ -721,7 +708,6 @@ def register_url_checks(
     psl: PublicSuffixList,
     tables: Tables,
     *,
-    weights: dict[str, float],
     store: BlocklistStore | None = None,
 ) -> None:
     """把 URL 層的檢查註冊進 registry。
@@ -729,12 +715,12 @@ def register_url_checks(
     **未提供 `store` 時不註冊 `url_blocklist`** —— 不註冊一個永遠不命中的空檢查，
     否則「沒有訊號」與「沒有資料」在 `Verdict.checks` 裡看起來一模一樣。
 
-    `weights` 為必填且無預設：權重的來源是 `add-weight-table`，
-    在它之前沒有任何數字可以從別的地方推出來。
+    檢查不接收權重：權重由 `(name, hard)` 於 `weights.toml` 查得
+    （`add-weight-table`），檢查本身不需要知道任何數值。
     """
     if store is not None:
-        registry.register(UrlBlocklistCheck(store, psl, tables, weight=weights["url_blocklist"]))
-    registry.register(UrlShortenerCheck(tables, psl, weight=weights["url_shortener"]))
-    registry.register(UrlTldRiskCheck(tables, psl, weight=weights["url_tld_risk"]))
-    registry.register(UrlHostShapeCheck(psl, weight=weights["url_host_shape"]))
-    registry.register(UrlBrandCheck(tables, psl, weight=weights["url_brand"]))
+        registry.register(UrlBlocklistCheck(store, psl, tables))
+    registry.register(UrlShortenerCheck(tables, psl))
+    registry.register(UrlTldRiskCheck(tables, psl))
+    registry.register(UrlHostShapeCheck(psl))
+    registry.register(UrlBrandCheck(tables, psl))

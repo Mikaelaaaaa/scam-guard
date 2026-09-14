@@ -39,7 +39,7 @@ def tables_fixture() -> Tables:
 
 @pytest.fixture(name="check")
 def check_fixture(tables: Tables, psl: PublicSuffixList) -> UrlBrandCheck:
-    return UrlBrandCheck(tables, psl, weight=1.0)
+    return UrlBrandCheck(tables, psl)
 
 
 def run(check: UrlBrandCheck, *texts: str):

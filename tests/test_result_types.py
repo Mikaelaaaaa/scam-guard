@@ -15,7 +15,6 @@ def test_check_result_with_all_fields() -> None:
     result = CheckResult(
         name="brand_similarity",
         hit=True,
-        weight=1.8,
         detail="0.87/0.85",
         evidence=[(0, 3), (0, 4)],
         scam_types=[ScamType.PHISHING_LINK],
@@ -24,7 +23,6 @@ def test_check_result_with_all_fields() -> None:
 
     assert result.name == "brand_similarity"
     assert result.hit is True
-    assert result.weight == 1.8
     assert result.detail == "0.87/0.85"
     assert result.evidence == [(0, 3), (0, 4)]
     assert result.scam_types == [ScamType.PHISHING_LINK]
@@ -35,7 +33,6 @@ def test_check_result_evidence_may_span_messages() -> None:
     result = CheckResult(
         name="trajectory",
         hit=True,
-        weight=1.2,
         detail="關係建立後隨即出現金錢話題",
         evidence=[(0, 2), (4, 0)],
     )
@@ -45,7 +42,7 @@ def test_check_result_evidence_may_span_messages() -> None:
 
 def test_hit_without_evidence_is_legal() -> None:
     """整體特徵的訊號（則數異常、時間集中度）不指向特定句子。"""
-    result = CheckResult(name="burst", hit=True, weight=0.4, detail="10 分鐘內 30 則")
+    result = CheckResult(name="burst", hit=True, detail="10 分鐘內 30 則")
 
     assert result.hit is True
     assert result.evidence == []
@@ -56,7 +53,6 @@ def test_check_result_may_carry_multiple_scam_types() -> None:
     result = CheckResult(
         name="advance_fee",
         hit=True,
-        weight=1.5,
         detail="領獎前需先繳手續費",
         scam_types=[ScamType.FAKE_PRIZE, ScamType.FAKE_LOAN],
     )
@@ -66,15 +62,15 @@ def test_check_result_may_carry_multiple_scam_types() -> None:
 
 def test_hit_without_scam_types_is_legal() -> None:
     """規避偵測這類訊號指示可疑，但不指向特定類型。"""
-    result = CheckResult(name="evasion", hit=True, weight=0.6, detail="字元間插入零寬空格")
+    result = CheckResult(name="evasion", hit=True, detail="字元間插入零寬空格")
 
     assert result.hit is True
     assert result.scam_types == []
 
 
 def test_check_result_defaults_are_empty_and_not_shared() -> None:
-    first = CheckResult(name="blocklist", hit=False, weight=0.0, detail="未命中")
-    second = CheckResult(name="domain_age", hit=False, weight=0.0, detail="未命中")
+    first = CheckResult(name="blocklist", hit=False, detail="未命中")
+    second = CheckResult(name="domain_age", hit=False, detail="未命中")
 
     assert first.evidence == []
     assert first.scam_types == []
@@ -116,13 +112,11 @@ def test_verdict_scam_type_is_a_vocabulary_member() -> None:
 
 def test_verdict_keeps_unhit_checks() -> None:
     checks = [
-        CheckResult(
-            name="blocklist", hit=True, weight=2.5, detail="命中 165 涉詐網站清單", hard=True
-        ),
-        CheckResult(name="solicit_otp", hit=True, weight=1.5, detail="第 2 句索取驗證碼"),
-        CheckResult(name="domain_age", hit=False, weight=0.0, detail="未命中"),
-        CheckResult(name="evasion", hit=False, weight=0.0, detail="未命中"),
-        CheckResult(name="quotation", hit=False, weight=0.0, detail="未命中"),
+        CheckResult(name="blocklist", hit=True, detail="命中 165 涉詐網站清單", hard=True),
+        CheckResult(name="solicit_otp", hit=True, detail="第 2 句索取驗證碼"),
+        CheckResult(name="domain_age", hit=False, detail="未命中"),
+        CheckResult(name="evasion", hit=False, detail="未命中"),
+        CheckResult(name="quotation", hit=False, detail="未命中"),
     ]
     verdict = Verdict(
         scam_probability=0.87,
@@ -139,7 +133,7 @@ def test_verdict_keeps_unhit_checks() -> None:
 
 
 def test_check_result_is_immutable() -> None:
-    result = CheckResult(name="blocklist", hit=False, weight=0.0, detail="未命中")
+    result = CheckResult(name="blocklist", hit=False, detail="未命中")
 
     with pytest.raises(FrozenInstanceError):
         result.hit = True  # type: ignore[misc]

@@ -15,7 +15,6 @@ from scam_guard.rules.quotation import (
     MIN_QUOTE_LEN,
     NAME,
     QUOTE_CATEGORY,
-    QUOTE_WEIGHT,
     QuotationCheck,
     long_quotes,
     quoted_spans,
@@ -153,7 +152,6 @@ def test_output_shape() -> None:
     assert results[0].hit is True
     assert results[0].hard is False
     assert results[0].scam_types == []
-    assert results[0].weight == QUOTE_WEIGHT == -1.5
 
 
 def test_evidence_covers_every_matching_sentence() -> None:
@@ -251,5 +249,4 @@ def test_scam_disguised_as_awareness_still_keeps_its_hard_evidence() -> None:
     assert NAME in hit
     assert AWARENESS_CATEGORY in hit[NAME].detail
     assert hit["solicit_bank_credentials"].hard is True
-    assert hit["solicit_bank_credentials"].weight == 2.5
     assert hit["solicit_bank_credentials"].evidence != []

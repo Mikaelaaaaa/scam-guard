@@ -25,11 +25,11 @@ class FakeCheck:
 
 
 def hard_hit(name: str) -> list[CheckResult]:
-    return [CheckResult(name=name, hit=True, weight=2.5, detail="命中 165 涉詐網站清單", hard=True)]
+    return [CheckResult(name=name, hit=True, detail="命中 165 涉詐網站清單", hard=True)]
 
 
 def weak_hit(name: str) -> list[CheckResult]:
-    return [CheckResult(name=name, hit=True, weight=0.6, detail="語氣急迫", hard=False)]
+    return [CheckResult(name=name, hit=True, detail="語氣急迫", hard=False)]
 
 
 def a_request() -> Request:
@@ -67,7 +67,7 @@ def test_check_without_signal_is_recorded_as_unhit() -> None:
     assert [r.name for r in checks] == ["blocklist", "evasion", "quotation"]
     unhit = [r for r in checks if not r.hit]
     assert [r.name for r in unhit] == ["evasion", "quotation"]
-    assert all(r.detail == NOT_HIT and r.weight == 0.0 for r in unhit)
+    assert all(r.detail == NOT_HIT for r in unhit)
 
 
 def test_hard_evidence_skips_expensive_checks() -> None:
@@ -200,7 +200,6 @@ class CoordCheck:
             CheckResult(
                 name=self.name,
                 hit=True,
-                weight=1.5,
                 detail=f"命中：{doc.text_at(self.coord)}",
                 evidence=[self.coord],
             )
