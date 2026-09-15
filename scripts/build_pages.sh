@@ -16,11 +16,15 @@ cd "$root"
 rm -rf "$out"
 mkdir -p "$out"
 
-# 站台自己的檔案：頁面、它的 Python 側、兩份介面層共用的標記層，以及範例庫。
+# 站台自己的檔案：頁面、它的 Python 側、兩份介面層共用的標記層、瀏覽器側的
+# LLM 那一半，以及範例庫。
 # `app.py` 不在這裡：它是 Gradio 介面，本站台不經過 Gradio（見 docs/pages_app.py）。
-# `demo_ui.py` 在根目錄而不在 wheel 裡（`packages.find` 只收 `scam_guard*`），
-# 所以它跟 `pages_app.py` 一樣靠這一行複製過去。
-cp docs/index.html docs/pages_app.py demo_ui.py demo_samples.json "$out/"
+# `demo_ui.py` 與 `browser_llm.py` 在根目錄而不在 wheel 裡（`packages.find` 只收
+# `scam_guard*`），所以它們跟 `pages_app.py` 一樣靠這一行複製過去。
+#
+# ⚠️ 模型檔不在這裡，也不該在這裡：那 783,858,998 bytes 由使用者的瀏覽器直接向
+# huggingface.co 取得。站台的 1 GB 上限與 100 GB／月頻寬都不被它佔用。
+cp docs/index.html docs/pages_app.py demo_ui.py browser_llm.py demo_samples.json "$out/"
 
 # 偵測核心以 wheel 交付，由瀏覽器內的 micropip 安裝。
 python3 -m build --wheel --outdir "$out"
@@ -43,13 +47,36 @@ if ! grep -q "$wheel" "$out/index.html"; then
   exit 1
 fi
 
-# 共用的標記層不在 wheel 裡，漏掉那一行 `cp` 的後果是頁面載到 `pyimport`
-# 那一步才拋 ModuleNotFoundError。比照上面的 wheel 檔名檢查，在這裡擋成建置失敗。
-for module in demo_ui.py pages_app.py; do
+# 共用的標記層與瀏覽器側的 LLM 那一半都不在 wheel 裡，漏掉那一行 `cp` 的後果是
+# 頁面載到 `pyimport` 那一步才拋 ModuleNotFoundError。比照上面的 wheel 檔名檢查，
+# 在這裡擋成建置失敗。
+for module in demo_ui.py browser_llm.py pages_app.py; do
   if [ ! -f "$out/$module" ]; then
     echo "建置失敗：$out 下沒有 $module，頁面會在 pyimport 階段找不到模組" >&2
     exit 1
   fi
 done
+
+# `index.html` 以 ESM 從 CDN 取 transformers.js，版本號寫死在那個 URL 裡。
+# 它與 design 記下的版本一改就分家，而後果是一個我們沒有驗證過的函式庫在使用者
+# 的瀏覽器裡跑我們的 prompt。比照 wheel 檔名，在這裡擋成建置失敗。
+transformers_version="4.2.0"
+if ! grep -q "@huggingface/transformers@$transformers_version" "$out/index.html"; then
+  echo "建置失敗：docs/index.html 引用的 @huggingface/transformers 版本與建置腳本記下的不符" >&2
+  echo "（腳本記的是 $transformers_version；改版本要同時改這兩處與 design。）" >&2
+  exit 1
+fi
+if grep -q "@huggingface/transformers@latest" "$out/index.html"; then
+  echo "建置失敗：docs/index.html 用了 @latest —— 外部資產的版本必須是我們記下來的" >&2
+  exit 1
+fi
+
+# 模型檔進站台是一個會安靜發生的錯（有人為了「離線也能用」把它 cp 進來），
+# 而後果是 728 MiB 佔掉站台 1 GB 上限的七成五，外加每月 100 GB 頻寬只夠 127 次下載。
+if find "$out" -type f \( -name '*.onnx' -o -name '*.onnx_data' -o -name '*.gguf' \) |
+  grep -q .; then
+  echo "建置失敗：$out 之下出現模型檔。模型由瀏覽器直接向 huggingface.co 取得，不進站台" >&2
+  exit 1
+fi
 
 echo "站台已產出於 $out"

@@ -14,6 +14,11 @@
 文案層由 `add-verdict-render` 在 `scam_guard/` 內持有（`Verdict.evidence` 與
 `Verdict.actions` 本來就是它產的），而本模組是**標記層**，那一層本來就不該進核心。
 
+**措辭潤飾層的驗證住在這裡，理由與標記層相同。** `PolishValidator` 與它的兩個
+允許集合原本在 `app.py`，而兩個載體（Gradio 與瀏覽器）都需要它 —— 兩份實作各改
+一次，第二次就是它的利息。它不碰任何介面框架，搬家是機械的。
+**它驗證的是措辭，不產生措辭**：產生那一段文字的是模型，而模型住在載體那一側。
+
 **本模組已知而刻意不解的一件事：** `CheckResult.indeterminate=True` 落在五個
 狀態術語之外。`check_state()` 對它會 `raise` 而不是猜一個術語 —— 今天不會發生
 （唯一的產生者是 `domain_age`，兩個部署都不註冊它），它落地的那一天會是一個
@@ -32,7 +37,7 @@ from scam_guard.normalize import Document
 from scam_guard.pipeline import NOT_HIT, SKIPPED
 from scam_guard.render import QUOTE_SEPARATOR
 from scam_guard.scoring import Score, compute_score, is_decision
-from scam_guard.types import CheckResult, Coord, Message, Verdict
+from scam_guard.types import CheckResult, Coord, Message, ScamType, Verdict
 from scam_guard.weights import WeightTable
 
 # ---------------------------------------------------------------------------
@@ -708,6 +713,91 @@ def victim_reply(verdict: Verdict, spoken: Sequence[str]) -> tuple[str, list[str
         parts = [parsed.title, *parsed.notes[:1]]
         return "。".join(parts) + "。", [*spoken, line]
     return NO_NEW_SIGNAL, list(spoken)
+
+
+# ---------------------------------------------------------------------------
+# 措辭潤飾層的驗證 —— 三條前綴可判定的條件
+# ---------------------------------------------------------------------------
+
+DIGITS = re.compile(r"\d+")
+URL_MARKERS = ("http", "www.")
+
+POLISH_NOT_INJECTED = "這句回應直接來自判定結果，沒有經過語言模型改寫。"
+POLISH_STREAMING = "語言模型正在改寫這句回應的措辭。"
+POLISH_ACCEPTED = "改寫後的措辭通過檢查，沒有加入判定結果以外的內容。"
+POLISH_DISCARDED = "改寫加進了判定結果沒有的內容，已整句丟棄，改用原本的回應。"
+
+
+def allowed_numbers(segments: Sequence[str]) -> frozenset[str]:
+    """確定性層輸出中的每一段連續數字。潤飾層只能使用這些數字。
+
+    受害方的回應改為每輪至多一條依據之後，這個集合自動收緊：輸出不再含機率，
+    潤飾層就再也不能吐出任何百分比。不需要為它加規則。
+    """
+    return frozenset(match.group() for part in segments for match in DIGITS.finditer(part))
+
+
+def allowed_types(verdict: Verdict) -> frozenset[str]:
+    """本次 `Verdict` 中出現過的 `ScamType` 值。
+
+    含 `verdict.scam_type` 與命中檢查回報的 `scam_types` —— 兩者都是字面上
+    「出現於 `Verdict`」的類型。其餘 `ScamType` 成員一律視為模型發明的。
+    """
+    values: set[str] = set()
+    if verdict.scam_type is not None:
+        values.add(verdict.scam_type.value)
+    for result in verdict.checks:
+        if result.hit:
+            values.update(scam_type.value for scam_type in result.scam_types)
+    return frozenset(values)
+
+
+class PolishValidator:
+    """「不得新增事實」的三條可驗證條件，逐字元判定。
+
+    三條都是**前綴可判定的**：一旦違規字元出現，後續文字不可能讓它變回合規。
+    因此驗證可以在串流過程中即時進行，違規即中止 —— 若等全文產生完才驗證，
+    使用者已經看過那段唬爛了。前綴可判定讓「串流」與「fail-closed」並存。
+
+    1. 數字：維護當前的連續數字串，它不是任何允許數字的前綴即違規。
+    2. 網址：出現 `http` 或 `www.` 即違規（確定性層的輸出不含網址）。
+    3. 類型：出現未在本次 `Verdict` 中的 `ScamType` 值即違規 —— 這擋掉最危險
+       的那種唬爛：判定沒有類型，受害方卻說「這是假檢警」。
+
+    已知代價：模型把「兩項訊號」寫成「2 項訊號」就會違規。接受 —— 這一層寧可
+    退回模板句，也不要放行一個會講數字的模型，而且丟棄是可見的，不是靜默。
+    """
+
+    def __init__(self, segments: Sequence[str], verdict: Verdict) -> None:
+        self._numbers = allowed_numbers(segments)
+        self._forbidden_types = frozenset(
+            scam_type.value for scam_type in ScamType
+        ) - allowed_types(verdict)
+        self._text = ""
+        self._digits = ""
+
+    @property
+    def text(self) -> str:
+        """目前為止已通過驗證的文字。"""
+        return self._text
+
+    def feed(self, chunk: str) -> bool:
+        """餵入一段新產生的文字。回傳 `False` 代表違規，呼叫端 MUST 中止串流。"""
+        for character in chunk:
+            self._text += character
+            if character.isdigit():
+                self._digits += character
+                if not any(number.startswith(self._digits) for number in self._numbers):
+                    return False
+            else:
+                self._digits = ""
+            for marker in URL_MARKERS:
+                if self._text.endswith(marker):
+                    return False
+            for value in self._forbidden_types:
+                if self._text.endswith(value):
+                    return False
+        return True
 
 
 # ---------------------------------------------------------------------------
