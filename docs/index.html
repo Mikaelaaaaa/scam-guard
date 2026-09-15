@@ -3,123 +3,116 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>scam-guard 純規則版 demo</title>
+    <title>這是詐騙嗎 · scam-guard</title>
     <style>
+      /* 這個頁面不是 Gradio，所以它自己提供那七個主題變數的值 ——
+         判定卡、偵測細節與氣泡的樣式表由 demo_ui.CSS 提供（頁面就緒後注入），
+         那份樣式表只引用變數、不含任何色碼。寫死的顏色因此全部集中在下面
+         兩個 :root 區塊裡，而深色模式由 prefers-color-scheme 覆寫一次。 */
       :root {
-        color-scheme: light;
+        color-scheme: light dark;
+        --body-text-color: #22262c;
+        --body-text-color-subdued: #5a6069;
+        --background-fill-secondary: #f2f5f9;
+        --block-background-fill: #ffffff;
+        --border-color-primary: #c6cbd2;
+        --color-accent: #2b4c7e;
+        --color-accent-soft: #e4ecf7;
+        --page-background: #ffffff;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --body-text-color: #e6e8ec;
+          --body-text-color-subdued: #a3a9b4;
+          --background-fill-secondary: #1b1f26;
+          --block-background-fill: #13171d;
+          --border-color-primary: #39404a;
+          --color-accent: #7aa7e0;
+          --color-accent-soft: #1e2a3a;
+          --page-background: #0d1117;
+        }
       }
       body {
         margin: 0;
         padding: 1.5rem 1rem 4rem;
         font-family: system-ui, "Noto Sans TC", sans-serif;
         line-height: 1.75;
-        color: #22262c;
-        background: #fff;
+        color: var(--body-text-color);
+        background: var(--page-background);
       }
       main {
-        max-width: 62rem;
+        max-width: 48rem;
         margin: 0 auto;
       }
-      h1 {
-        font-size: 1.5rem;
-        margin: 0 0 0.25rem;
-      }
-      h2 {
-        font-size: 1.05rem;
-        margin: 1.8rem 0 0.4rem;
-      }
-      h4 {
-        font-size: 0.9rem;
-        margin: 0 0 0.4rem;
-      }
-      p,
-      li,
-      label {
-        font-size: 0.9rem;
-      }
-      code {
-        font-family: ui-monospace, monospace;
-        background: #eef1f5;
-        padding: 0 0.25rem;
-        border-radius: 3px;
-      }
-      .fine {
-        font-size: 0.8rem;
-        color: #5a6069;
-      }
       .boot {
-        border: 1px solid #c6cbd2;
-        border-left: 4px solid #2b4c7e;
+        border: 1px solid var(--border-color-primary);
+        border-left: 4px solid var(--color-accent);
         border-radius: 6px;
         padding: 0.6rem 0.9rem;
         margin: 1rem 0;
-        background: #f5f7fa;
-      }
-      .boot.failed {
-        border-left-color: #8a2b2b;
-        background: #faf3f3;
+        background: var(--background-fill-secondary);
       }
       .boot-head {
         font-weight: 700;
       }
       .boot-detail {
         font-size: 0.82rem;
-        color: #3d434b;
+        color: var(--body-text-color-subdued);
         white-space: pre-wrap;
+      }
+      label {
+        font-size: 0.85rem;
+        color: var(--body-text-color-subdued);
       }
       textarea {
         width: 100%;
         box-sizing: border-box;
-        min-height: 9rem;
+        min-height: 7rem;
         font: inherit;
         font-size: 0.9rem;
         padding: 0.6rem;
-        border: 1px solid #c6cbd2;
+        margin-top: 0.3rem;
+        color: var(--body-text-color);
+        background: var(--block-background-fill);
+        border: 1px solid var(--border-color-primary);
         border-radius: 6px;
       }
-      .controls {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.5rem;
-        align-items: center;
-        margin: 0.5rem 0 1rem;
-      }
-      button,
-      select {
+      button {
         font: inherit;
         font-size: 0.85rem;
-        padding: 0.35rem 0.8rem;
-        border: 1px solid #2b4c7e;
-        border-radius: 5px;
-        background: #fff;
-        color: #2b4c7e;
+        padding: 0.3rem 0.75rem;
+        border: 1px solid var(--border-color-primary);
+        border-radius: 999px;
+        background: var(--block-background-fill);
+        color: var(--body-text-color);
         cursor: pointer;
       }
       button.primary {
-        background: #2b4c7e;
-        color: #fff;
+        border-color: var(--color-accent);
+        background: var(--color-accent);
+        color: var(--page-background);
+        border-radius: 8px;
+        padding: 0.45rem 1.1rem;
+        font-weight: 700;
       }
-      button[disabled],
-      select[disabled] {
+      button[disabled] {
         opacity: 0.5;
         cursor: not-allowed;
       }
-      select {
-        max-width: 26rem;
+      .chips {
+        margin: 0.5rem 0;
       }
-      .columns {
+      .send-row {
         display: flex;
         flex-wrap: wrap;
-        gap: 1rem;
-        align-items: flex-start;
-      }
-      .columns > * {
-        flex: 1 1 22rem;
-        min-width: 0;
+        gap: 0.6rem;
+        align-items: center;
+        margin: 0.6rem 0 1rem;
       }
       .error {
-        border: 1px solid #8a2b2b;
-        background: #faf3f3;
+        border: 1px solid var(--border-color-primary);
+        border-left: 4px solid var(--color-accent);
+        background: var(--background-fill-secondary);
         border-radius: 6px;
         padding: 0.6rem 0.9rem;
         margin: 1rem 0;
@@ -127,235 +120,71 @@
         white-space: pre-wrap;
         overflow-x: auto;
       }
-
-      /* 以下的類別由 docs/pages_app.py 產生 */
-      .verdict-row {
-        display: flex;
-        gap: 1.5rem;
-        width: 100%;
-        box-sizing: border-box;
-        padding: 0.8rem 1rem;
-        border: 1px solid #c6cbd2;
-        border-radius: 8px;
-        margin: 1rem 0;
-      }
-      .verdict-row .cell {
-        flex: 1;
-      }
-      .cell-label {
-        font-size: 0.8rem;
-        color: #5a6069;
-        letter-spacing: 0.05em;
-      }
-      .cell-value {
-        font-size: 1.5rem;
-        font-weight: 700;
-      }
-      .cell-note {
-        font-size: 0.72rem;
-        color: #5a6069;
-        line-height: 1.5;
-      }
-      .bubble {
-        border-radius: 10px;
-        padding: 0.5rem 0.75rem;
-        background: #eef1f5;
-        margin-bottom: 0.6rem;
-      }
-      .bubble.dropped {
-        opacity: 0.55;
-        border: 1px dashed #8a8f98;
-      }
-      .who {
-        font-size: 0.72rem;
-        color: #5a6069;
-        margin-bottom: 0.25rem;
-      }
-      .lines {
-        white-space: pre-wrap;
-        line-height: 1.8;
-        font-size: 0.9rem;
-      }
-      .sentence {
-        padding: 1px 2px;
-        border-radius: 3px;
-      }
-      .sentence:target {
-        background: #dbe7f5;
-        outline: 2px solid #2b4c7e;
-      }
-      .pii-tag {
-        font-size: 0.7rem;
-        background: #dfe3e8;
-        border-radius: 3px;
-        padding: 0 0.3rem;
-        margin: 0 0.2rem;
-      }
-      .check {
-        border-left: 4px solid #cfd4da;
-        padding: 0.3rem 0.6rem;
-        margin-bottom: 0.3rem;
-      }
-      .check.state-hit {
-        border-left: 4px solid #2b4c7e;
-        background: #eef2f8;
-        font-weight: 600;
-      }
-      .check.state-not-hit {
-        border-left: 4px solid #cfd4da;
-        opacity: 0.7;
-      }
-      .check.state-skipped {
-        border-left: 4px dashed #8a8f98;
-      }
-      .check.state-unregistered {
-        border-left: 4px dotted #8a8f98;
-        font-style: italic;
-      }
-      .check-head {
-        display: flex;
-        gap: 0.4rem;
-        align-items: baseline;
-        flex-wrap: wrap;
-      }
-      .check-name {
-        font-family: ui-monospace, monospace;
-        font-size: 0.82rem;
-      }
-      .badge,
-      .badge-hard {
-        font-size: 0.68rem;
-        border: 1px solid #8a8f98;
-        border-radius: 3px;
-        padding: 0 0.25rem;
-      }
-      .badge-hard {
-        border-color: #2b4c7e;
-      }
-      .check-detail {
-        font-size: 0.82rem;
-        color: #3d434b;
-      }
-      .evidence-list {
-        display: flex;
-        flex-direction: column;
-        gap: 0.15rem;
-        margin-top: 0.2rem;
-      }
-      a.evidence {
-        font-size: 0.78rem;
-      }
-      .registered {
-        font-weight: 700;
-        margin-bottom: 0.4rem;
-        font-size: 0.85rem;
-      }
-      /* 面板逐筆列出每一個檢查（含未命中者），行數等於註冊數，因此在自己的框裡
-         捲動，而不是把整頁拉成三倍高。**不過濾未命中者**是刻意的：看得見
-         「執行了未命中」才知道系統真的看過。 */
-      .checks {
-        max-height: 34rem;
-        overflow-y: auto;
-      }
-      .truncation {
-        border: 1px dashed #8a8f98;
-        padding: 0.3rem 0.5rem;
-        margin-bottom: 0.4rem;
-        font-size: 0.82rem;
-      }
-      .panel,
-      .answer {
-        border: 1px solid #c6cbd2;
-        border-radius: 8px;
-        padding: 0.6rem 0.9rem;
-        margin-bottom: 0.8rem;
-      }
-      .answer ul {
-        margin: 0 0 0.8rem;
-        padding-left: 1.2rem;
-      }
-      .answer li {
-        margin-bottom: 0.3rem;
+      #echo {
+        margin-top: 1rem;
       }
     </style>
+    <style id="shared-style"></style>
   </head>
   <body>
     <main>
-      <h1>scam-guard 純規則版 demo</h1>
-      <p class="fine">
-        台灣中文詐騙訊息偵測。偵測核心以 Pyodide 在<b>你的瀏覽器裡</b>執行，沒有後端伺服器 ——
-        你貼上的訊息不會離開這台電腦，也沒有任何地方可以記錄它。
-      </p>
+      <div class="sg-head">
+        <h1>這是詐騙嗎</h1>
+        <p>
+          貼上你收到的可疑訊息，看看它像不像詐騙、依據是什麼，以及你現在可以做什麼。
+          判斷全部在你的瀏覽器裡完成，訊息不會送出。
+        </p>
+      </div>
 
       <div class="boot" id="boot">
         <div class="boot-head" id="boot-head">正在載入執行環境</div>
         <div class="boot-detail" id="boot-detail">
-          首次載入需要下載 Pyodide（Python 3.13 的 WebAssembly 版本，解壓後約 12 MB，
-          由 CDN 壓縮傳輸），視網路狀況約需數秒到十幾秒；下載後由瀏覽器快取，
-          再次開啟約一秒內完成。這段期間下方的輸入框是停用的，不是壞了。
+          第一次開啟需要下載執行環境（約 12 MB），視網路狀況約需數秒到十幾秒；
+          之後由瀏覽器快取，再開約一秒內完成。這段期間下方的輸入框是停用的，不是壞了。
         </div>
       </div>
 
-      <h2>貼上你收到的訊息</h2>
-      <label for="input" class="fine">
+      <label for="input">
         一則就直接貼上；一段轉傳的多則對話請以<b>空行</b>分隔。
-        不解析時間戳行與暱稱行 —— 那些會被當成一般文字。
       </label>
       <textarea id="input" disabled placeholder="等待執行環境載入完成"></textarea>
-      <div class="controls">
-        <button id="run" class="primary" disabled>判定</button>
-        <select id="samples" disabled>
-          <option value="">載入範例訊息</option>
-        </select>
-        <span class="fine" id="registered-note"></span>
+      <div class="chips" id="samples"></div>
+      <div class="send-row">
+        <button id="run" class="primary" disabled>看看這是不是詐騙</button>
+        <span class="note" id="registered-note"></span>
       </div>
 
       <div id="error" class="error" hidden></div>
-      <div id="verdict-row"></div>
-      <div class="columns">
-        <div>
-          <div id="answer"></div>
-          <div id="echo"></div>
-        </div>
-        <div id="panel"></div>
+      <div id="card"></div>
+      <div id="echo"></div>
+
+      <div class="sg-foot">
+        <details>
+          <summary>你的訊息會被怎麼處理</summary>
+          <div class="note">
+            <p>
+              <b>不會送出。</b>偵測核心在你的瀏覽器裡執行，你貼上的訊息不會離開這台電腦，
+              這個頁面也沒有後端可以記錄它。
+            </p>
+            <p>
+              取得這個頁面本身（HTML、執行環境與名單）會像開啟任何網頁一樣留下一次連線記錄，
+              那筆記錄裡沒有你打的字。
+            </p>
+          </div>
+        </details>
+        <details>
+          <summary>範例訊息的來源與授權（Cofacts，CC BY-SA 4.0）</summary>
+          <div class="note">
+            <p>
+              程式為 MIT。範例訊息取自
+              <a href="https://cofacts.tw" target="_blank" rel="noopener">Cofacts 真的假的</a>
+              的開放資料，授權為 CC BY-SA 4.0，姓名標示以每一筆的出處連結滿足；
+              散布該內容或其衍生內容時須以相同條款釋出，不適用本專案的 MIT。
+            </p>
+            <ul id="attribution"></ul>
+          </div>
+        </details>
       </div>
-
-      <h2>這個 demo 和完整版差在哪</h2>
-      <p>
-        <b>措辭潤飾層（LLM）不存在。</b>
-        <code>llama-cpp-python</code> 沒有 Pyodide 版本，模型層在瀏覽器裡跑不起來，
-        因此本頁是<b>純規則版</b>。這不是缺陷：判定從頭到尾本來就不是模型做的，模型只在
-        另一個模式裡負責把判定結果講成人話。少了它，判定、依據與建議動作一個字都不會少。
-      </p>
-      <p>
-        <b>兩項檢查明確不註冊</b>，右側面板會逐項列出理由：<code>domain_age</code>
-        需要對網域註冊局發出查詢，而本頁不對任何外部服務發出請求；<code>url_blocklist</code>
-        需要 165 涉詐網址快照，那份快照是 15.9 MB、107,499 筆，在瀏覽器裡載入後佔用約
-        66 MB 記憶體，為了一項檢查不值得。少一個訊號會被明白標示成「未註冊」，
-        不會偽裝成「沒有命中」。
-      </p>
-      <p>
-        <b>個人資料標註只有四類</b>：身分證、手機、市話、信用卡，標在句子之後。
-        <b>姓名與地址不在辨識範圍內</b> —— 它們需要另一條預設關閉的選配路徑。
-        標註只指出類型與筆數，<b>不改寫任何文字</b>。
-      </p>
-      <p>
-        <b>一個不基於本次判定的建議</b>：無論這則訊息是真是假，
-        <b>撥打 165 反詐騙專線查證</b>都不會讓你受損。這句話永遠在這裡，
-        它不是判定的一部分。
-      </p>
-
-      <h2>授權</h2>
-      <p class="fine">
-        程式為 MIT。範例訊息取自
-        <a href="https://cofacts.tw" target="_blank" rel="noopener">Cofacts 真的假的</a>
-        的開放資料，授權為 CC BY-SA 4.0，姓名標示以每一筆的出處連結滿足；
-        散布該內容或其衍生內容時須以相同條款釋出，不適用本專案的 MIT。
-      </p>
-      <details>
-        <summary class="fine">範例訊息的出處（Cofacts，CC BY-SA 4.0）</summary>
-        <ul id="attribution" class="fine"></ul>
-      </details>
     </main>
 
     <script type="module">
@@ -367,6 +196,11 @@
       const PYODIDE = "https://cdn.jsdelivr.net/pyodide/v0.29.4/full/pyodide.mjs";
       const WHEEL = "scam_guard-0.1.0-py3-none-any.whl";
       const SAMPLES = "demo_samples.json";
+      // demo_ui.py 與 pages_app.py 都不在 wheel 裡（pyproject 的 packages.find 只
+      // 收 scam_guard*），兩者由 scripts/build_pages.sh 複製到部署目錄，
+      // 再由這裡寫進 Pyodide 的檔案系統。少一個檔案會在 pyimport 當場炸，
+      // 而建置腳本有一條檢查把它擋在部署之前。
+      const MODULES = ["demo_ui.py", "pages_app.py"];
 
       const at = (path) => new URL(path, new URL(".", location.href)).href;
       const $ = (id) => document.getElementById(id);
@@ -390,7 +224,6 @@
 
       function bootFailed(reason) {
         clearInterval(ticker);
-        boot.classList.add("failed");
         bootHead.textContent = "執行環境載入失敗";
         bootDetail.textContent = String(reason);
       }
@@ -405,23 +238,32 @@
         return response;
       }
 
+      const texts = new Map();
+
       async function loadSamples() {
         const loaded = await (await fetchOrThrow(SAMPLES)).json();
         if (!Array.isArray(loaded.samples)) {
           throw new Error(`${SAMPLES} 缺少 samples 欄位`);
         }
-        const select = $("samples");
+        const chips = $("samples");
         const list = $("attribution");
-        for (const sample of loaded.samples) {
-          for (const field of ["label", "text", "source_uri"]) {
+        loaded.samples.forEach((sample, index) => {
+          for (const field of ["label", "short_label", "text", "source_uri"]) {
             if (!(field in sample)) {
               throw new Error(`${SAMPLES} 的一筆資料缺少 ${field} 欄位`);
             }
           }
-          const option = document.createElement("option");
-          option.textContent = sample.label;
-          option.value = sample.text;
-          select.appendChild(option);
+          if (texts.has(String(index))) {
+            throw new Error(`${SAMPLES} 的索引重複：${index}`);
+          }
+          texts.set(String(index), sample.text);
+
+          const chip = document.createElement("button");
+          chip.type = "button";
+          chip.textContent = sample.short_label;
+          chip.dataset.sampleIndex = String(index);
+          chip.disabled = true;
+          chips.appendChild(chip);
 
           const item = document.createElement("li");
           const link = document.createElement("a");
@@ -431,16 +273,11 @@
           link.textContent = "出處";
           item.append(`${sample.label} —— `, link);
           list.appendChild(item);
-        }
-        select.addEventListener("change", () => {
-          if (select.value) {
-            $("input").value = select.value;
-          }
         });
       }
 
       async function boot_python() {
-        stageIs("下載 Pyodide");
+        stageIs("下載執行環境");
         const { loadPyodide } = await import(PYODIDE);
         const py = await loadPyodide();
 
@@ -453,7 +290,7 @@
           "import micropip\nawait micropip.install(WHEEL_URL, deps=False)\n"
         );
 
-        stageIs("載入 Public Suffix List 快照");
+        stageIs("載入網域名單快照");
         py.FS.mkdir("/psl");
         for (const name of ["public_suffix_list.dat", "manifest.json"]) {
           const response = await fetchOrThrow(`psl/${name}`);
@@ -461,44 +298,61 @@
         }
 
         stageIs("建立檢查註冊表");
-        const source = await (await fetchOrThrow("pages_app.py")).text();
-        py.FS.writeFile("/home/pyodide/pages_app.py", source);
+        for (const name of MODULES) {
+          const source = await (await fetchOrThrow(name)).text();
+          py.FS.writeFile(`/home/pyodide/${name}`, source);
+        }
         return py.pyimport("pages_app");
+      }
+
+      function analyze(app, input) {
+        errorBox.hidden = true;
+        let result;
+        try {
+          result = JSON.parse(app.analyze(input.value));
+        } catch (reason) {
+          // Python 的例外原文直接放上畫面：輸入為空、座標算錯、檢查回報了無法
+          // 分類的狀態，各自的訊息都已經指名了是哪一件事。
+          errorBox.textContent = String(reason.message ?? reason);
+          errorBox.hidden = false;
+          return;
+        }
+        $("card").innerHTML = result.card;
+        $("echo").innerHTML = result.echo;
       }
 
       try {
         await loadSamples();
         const app = await boot_python();
         clearInterval(ticker);
-        bootHead.textContent = "執行環境已就緒";
-        bootDetail.textContent =
-          `載入耗時 ${elapsed()} 秒。偵測核心在本頁執行，訊息不會送出。`;
-        $("registered-note").textContent = `已註冊 ${app.check_count()} 個檢查`;
+        // 樣式表與標記同源：這個頁面只提供調色盤，class 的規則一份都不自己寫。
+        $("shared-style").textContent = app.styles();
+        boot.hidden = true;
+        $("registered-note").textContent = `已檢查 ${app.check_count()} 個訊號`;
 
         const input = $("input");
         const run = $("run");
         input.disabled = false;
         input.placeholder = "把你收到的訊息貼在這裡";
         run.disabled = false;
-        $("samples").disabled = false;
 
-        run.addEventListener("click", () => {
-          errorBox.hidden = true;
-          let result;
-          try {
-            result = JSON.parse(app.analyze(input.value));
-          } catch (reason) {
-            // Python 的例外原文直接放上畫面：輸入為空、座標算錯、檢查回報了無法
-            // 分類的狀態，各自的訊息都已經指名了是哪一件事。
-            errorBox.textContent = String(reason.message ?? reason);
-            errorBox.hidden = false;
+        run.addEventListener("click", () => analyze(app, input));
+        // 一個委派的 handler 讀 dataset，不為每顆按鈕各捕獲一份索引。
+        $("samples").addEventListener("click", (event) => {
+          const chip = event.target.closest("button[data-sample-index]");
+          if (!chip) {
             return;
           }
-          $("verdict-row").innerHTML = result.verdict_row;
-          $("answer").innerHTML = result.answer;
-          $("panel").innerHTML = result.panel;
-          $("echo").innerHTML = result.echo;
+          const text = texts.get(chip.dataset.sampleIndex);
+          if (text === undefined) {
+            throw new Error(`範例庫中沒有這個索引：${chip.dataset.sampleIndex}`);
+          }
+          input.value = text;
+          analyze(app, input);
         });
+        for (const chip of $("samples").querySelectorAll("button")) {
+          chip.disabled = false;
+        }
       } catch (reason) {
         bootFailed(reason.message ?? reason);
       }
