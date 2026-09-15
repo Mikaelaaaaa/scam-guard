@@ -251,8 +251,14 @@ def test_adding_a_weaker_hit_in_the_same_group_changes_nothing() -> None:
 
 
 NON_NEGATIVE_SIGNALS = tuple(
-    name for name in load_weights().signals if name != load_weights().roles["quotation"]
+    name
+    for name, signal in load_weights().signals.items()
+    if signal.weight_soft.value >= 0.0
+    and (signal.weight_hard is None or signal.weight_hard.value >= 0.0)
 )
+"""權重非負的訊號。**由表推導，不是「除了 quotation」的捷徑** —— 校準把
+`url_shortener` 量成負權重（此語料上短網址更常出現在合法訊息裡），單調性只在
+非負訊號上成立，所以量出來的負權重 MUST 一併排除。"""
 
 
 def test_more_evidence_never_lowers_the_score() -> None:

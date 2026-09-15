@@ -153,9 +153,11 @@ def test_non_unit_groups_have_a_rationale() -> None:
 
 
 def test_url_shortener_is_its_own_group(table: WeightTable) -> None:
-    """短網址宣告的是「目的地未知」，併入 URL 信譽群組會被取 max 蓋掉。"""
+    """短網址自成一組。measure-weights 把它由佔位的 0.0 量成負權重
+    （此語料上短網址更常出現在合法訊息裡），自成一組使這個負貢獻不被取 max 蓋掉。"""
     assert table.groups["url_shortener"] == ("url_shortener",)
-    assert table.weight_for("url_shortener", hard=False) == 0.0
+    assert table.signals["url_shortener"].weight_soft.basis == "measured"
+    assert table.weight_for("url_shortener", hard=False) < 0.0
 
 
 def test_every_placeholder_value_is_in_the_allowed_set(table: WeightTable) -> None:
@@ -180,11 +182,13 @@ def test_allowed_set_is_exactly_four_traceable_values() -> None:
     assert PLACEHOLDER_WEIGHTS == frozenset({2.5, 0.6, 0.0, -1.5})
 
 
-def test_ngram_is_the_first_measured_signal(table: WeightTable) -> None:
+def test_measured_signals_are_ngram_and_the_two_calibrated(table: WeightTable) -> None:
+    """`add-ngram-classifier` 量出 ngram_classifier；measure-weights 再量出
+    quotation 與 url_shortener 兩個 weight_soft。三者是全表僅有的 measured 訊號。"""
     measured = [
         signal.name for signal in table.signals.values() if signal.weight_soft.basis == "measured"
     ]
-    assert measured == ["ngram_classifier"]
+    assert measured == ["quotation", "url_shortener", "ngram_classifier"]
     assert table.thresholds["ngram_threshold"].basis == "measured"
 
 
