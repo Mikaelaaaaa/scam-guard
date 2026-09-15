@@ -9,10 +9,31 @@ name: Pages
 on:
   push:
     branches: [main]
-  # PSL 快照的新鮮度等於最後一次部署的新鮮度，而 `lite_entry.py` 的
-  # `PSL_MAX_AGE_DAYS` 是 90 天 —— 每週重新部署一次，讓快照永遠遠離那條線。
-  # ⚠️ GitHub 會在 repo 連續 60 天沒有活動後停用排程工作流程。那之後快照會
-  # 在第 90 天過期，頁面會停止運作並顯示過期訊息。手動重跑一次即可恢復。
+  # 三份快照的新鮮度都等於最後一次部署的新鮮度，而三者的門檻與判準都不同：
+  #
+  #   PSL      90 天  `docs/pages_app.py` 的 `PSL_MAX_AGE_DAYS`
+  #                   判準是 `fetched_at`（下載時間）
+  #   黑名單   60 天  `docs/pages_app.py` 的 `BLOCKLIST_MAX_AGE_DAYS`，取自
+  #                   `api/app.py` 的同名常數。判準是 `data_through`
+  #                   （**資料內容**停在哪一天，不是下載時間）——
+  #                   160055 的詮釋資料 2026-07-29 還更新過，檔內最新的一筆
+  #                   卻停在 2025-12-31
+  #   白名單   30 天  `docs/pages_app.py` 的 `ALLOWLIST_MAX_AGE_DAYS`，取自
+  #                   `RankAllowlist.load()` 的 docstring。判準是
+  #                   `data_through`（來自 HTTP `Last-Modified`）
+  #
+  # 每週重新部署一次，讓三份都遠離自己那條線。
+  #
+  # ⚠️ GitHub 會在 repo 連續 60 天沒有活動後停用排程工作流程。停用之後的時序
+  # 由**最緊的**那條線起算，不是由 90 天起算：
+  #
+  #   約第 30 天  白名單過期 → `url_blocklist` 一併不註冊（兩者成對，理由見
+  #               `docs/pages_app.py` 的 `load_snapshots`），頁面照常運作但
+  #               少一項檢查，未註冊清單上看得見
+  #   約第 40–45 天  黑名單過期（當次部署的快照本來就已經舊了 15–20 天）
+  #   第 90 天    PSL 過期 → 頁面在 import 階段拋例外，停止運作並顯示過期訊息
+  #
+  # 以 `workflow_dispatch` 手動重跑一次即可全部恢復。
   schedule:
     - cron: "0 2 * * 1"
   workflow_dispatch:

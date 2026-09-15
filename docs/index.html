@@ -412,6 +412,25 @@
           py.FS.writeFile(`/psl/${name}`, new Uint8Array(await response.arrayBuffer()));
         }
 
+        // 涉詐網址黑名單與 Tranco 排名白名單，兩份都是建置腳本打包的快照原樣。
+        // 黑名單是 gzip 後約 1.2 MB 的十萬筆 JSON Lines，這一段與下面
+        // pages_app 的 import 合計約多花 1.6 秒（其中 1.32 秒在
+        // BlocklistStore.__init__ 逐筆算可註冊網域，任何打包格式都要付）——
+        // 所以它自己有一個階段名稱：一個沒有標籤的一秒半看起來像當掉。
+        stageIs("載入涉詐網址名單");
+        for (const directory of ["blocklist", "allowlist"]) {
+          py.FS.mkdir(`/${directory}`);
+          for (const name of ["entries.jsonl", "manifest.json"]) {
+            const response = await fetchOrThrow(`${directory}/${name}`);
+            py.FS.writeFile(
+              `/${directory}/${name}`,
+              new Uint8Array(await response.arrayBuffer())
+            );
+          }
+        }
+
+        // pyimport 是 BlocklistStore.__init__ 真正發生的地方，所以這一段仍然是
+        // 最後一個階段 —— 標籤要蓋住最慢的那一步，不是最慢的那一步的前一步。
         stageIs("建立檢查註冊表");
         for (const name of MODULES) {
           const source = await (await fetchOrThrow(name)).text();
