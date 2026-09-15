@@ -64,9 +64,13 @@ llm = [
 # 門檻掃描與消融全部只用標準庫 —— `math.sqrt` 與 `collections.Counter` 已足夠，
 # 一個常數不值得一個依賴（本專案已為此拒絕過 PyYAML、tldextract 與拼音函式庫）。
 #
-# 因此本 change（`add-testset`）留空。唯一預期的填入者是 `add-ablation` 的
-# TF-IDF 對照組（scikit-learn）—— 那是一個**刻意不屬於本系統**的外部基準。
-eval = []
+# 唯一的例外是 `tools/eval/baseline_tfidf.py` 的 TF-IDF 對照組，它是一個
+# **刻意不屬於本系統**的外部基準：規則系統值不值得做，要有一個不需要規則、
+# 不需要依據、1 秒訓練完的東西來比。`scam_guard/` 不 import 它、不知道它存在，
+# 由 `tests/test_baseline_tfidf.py` 的一條掃描 import 的測試守著。
+eval = [
+    "scikit-learn>=1.4",
+]
 
 [tool.setuptools.packages.find]
 include = ["scam_guard*"]

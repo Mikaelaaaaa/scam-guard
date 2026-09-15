@@ -87,6 +87,7 @@ class RunRecord:
     simplified: bool
     hit_signals: tuple[str, ...]
     hard_signals: tuple[str, ...]
+    typed_signals: tuple[str, ...]
     shadowed_signals: tuple[str, ...]
     speech_act_hits: int
     no_clause_hits: int
@@ -193,6 +194,7 @@ def run_one(
         simplified=_is_simplified(sample.text),
         hit_signals=tuple(result.name for result in hits),
         hard_signals=tuple(result.name for result in hits if result.hard),
+        typed_signals=tuple(result.name for result in hits if result.scam_types),
         shadowed_signals=tuple(
             shadowed.name
             for contribution in score.group_contributions

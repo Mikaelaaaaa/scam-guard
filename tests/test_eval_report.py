@@ -82,6 +82,7 @@ def make_record(
         simplified=False,
         hit_signals=hits,
         hard_signals=(),
+        typed_signals=hits if scam_type is not None else (),
         shadowed_signals=(),
         speech_act_hits=1,
         no_clause_hits=0,
