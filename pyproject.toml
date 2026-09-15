@@ -35,6 +35,18 @@ demo = [
     "gradio>=6.0",
 ]
 
+# HTTP 介面層的執行期依賴。與 `demo` 同性質：`pip install scam-guard` 不會裝到
+# 它，`scam_guard/` 的 `dependencies` 維持 `[]`，而 `banned-api` 擋住核心 import
+# `fastapi`。pydantic 雖然是 fastapi 的必要依賴，仍顯式列出 ——
+# `api/schema.py` 直接 `import pydantic`，而依賴一個只是碰巧被裝進來的套件，
+# 在上游改用別的驗證層時會安靜地壞掉。
+api = [
+    "fastapi>=0.115",
+    "pydantic>=2.0",
+    # 跑起來需要一個 ASGI server，fastapi 不含它。
+    "uvicorn>=0.30",
+]
+
 [tool.setuptools.packages.find]
 include = ["scam_guard*"]
 
