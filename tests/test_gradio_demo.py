@@ -1,8 +1,13 @@
-"""介面層（`app.py`）的測試。
+"""Gradio 介面層（`app.py`）的測試。
 
 `pytest.importorskip("gradio")` 在**模組層、檔案頂端**，不是藏在函式裡的
 import。本機沒裝 `[demo]` extra 時整個檔案被跳過；CI 安裝 `.[dev,demo]`，
 因為 skipped 不會讓 CI 變紅 —— 一個安靜跳過的測試檔等於沒有測試。
+
+**標記層的性質不在這裡驗。** 判定卡、偵測細節、氣泡、排行、受害方回應與樣式表
+全部住在 `demo_ui`，它們的測試在 `tests/test_demo_ui.py`，而那個檔案不需要
+gradio 也不需要 PSL 快照。這裡只驗這一側獨有的東西：組裝、事件處理、跨輪狀態、
+潤飾層的驗證，以及「兩個模式不共用狀態」。
 """
 
 import json
@@ -15,13 +20,14 @@ import pytest
 pytest.importorskip("gradio")
 
 # `gradio` 由 `app` 持有。此處**不直接 import 它** —— `pyproject.toml` 的
-# `banned-api` 只豁免 `app.py`，而本 change 不新增 ruff 豁免。
+# `banned-api` 只豁免 `app.py`。
 import app  # noqa: E402
-from scam_guard.check import Check, CheckRegistry, Stage  # noqa: E402
-from scam_guard.normalize import DEFAULT_LIMITS, Document, Limits, build_document  # noqa: E402
-from scam_guard.pipeline import NOT_HIT, SKIPPED, detect  # noqa: E402
+import demo_ui  # noqa: E402
+from scam_guard.check import Check, CheckRegistry  # noqa: E402
+from scam_guard.normalize import DEFAULT_LIMITS, Limits, build_document  # noqa: E402
+from scam_guard.pipeline import detect  # noqa: E402
 from scam_guard.redact import RedactedText  # noqa: E402
-from scam_guard.types import CheckResult, Message, Request, ScamType, Verdict  # noqa: E402
+from scam_guard.types import Message, Request, ScamType, Verdict  # noqa: E402
 
 EMPTY_REDACTED = RedactedText(sentences=[], coords=[], counts={})
 
@@ -34,6 +40,10 @@ EMPTY_VERDICT = Verdict(
     checks=[],
     redacted=EMPTY_REDACTED,
 )
+
+SCAM_LINE = "請把簡訊驗證碼給我，不要告訴家人。"
+
+MESSAGES, REPLIES, SPOKEN, CONVERSATION, CARD, RANKING, STATUS, BOX = range(8)
 
 
 def verdict_with(**overrides) -> Verdict:
@@ -50,125 +60,17 @@ def verdict_with(**overrides) -> Verdict:
     return Verdict(**fields)
 
 
-class HardLocalCheck:
-    """一定命中的硬證據 `LOCAL` 檢查，用來觸發 pipeline 的短路。"""
-
-    name = "solicit_otp"
-    stage = Stage.LOCAL
-
-    def __call__(self, req: Request, doc: Document) -> list[CheckResult]:
-        return [CheckResult(name=self.name, hit=True, detail="假的硬證據", hard=True)]
-
-
-class ExpensiveCheck:
-    """永遠不該被執行到的 `EXPENSIVE` 檢查。"""
-
-    name = "domain_age"
-    stage = Stage.EXPENSIVE
-
-    def __call__(self, req: Request, doc: Document) -> list[CheckResult]:
-        raise AssertionError("短路時不應執行 EXPENSIVE 檢查")
-
-
-class BadCoordCheck:
-    """回報一個不存在於 `Document` 的座標。"""
-
-    name = "secrecy_demand"
-    stage = Stage.LOCAL
-
-    def __call__(self, req: Request, doc: Document) -> list[CheckResult]:
-        return [CheckResult(name=self.name, hit=True, detail="越界座標", evidence=[(99, 99)])]
-
-
-class RecordingCheck:
-    """記下 `detect()` 內部產生的 `Document`，供座標一致性比對。"""
-
-    name = "quotation"
-    stage = Stage.LOCAL
-
-    def __init__(self) -> None:
-        self.seen: list[Document] = []
-
-    def __call__(self, req: Request, doc: Document) -> list[CheckResult]:
-        self.seen.append(doc)
-        return []
+def run_practice(
+    text: str, state: tuple[list, list, list]
+) -> tuple[tuple, tuple[list, list, list]]:
+    """跑完一輪對練，回傳最後一次產出與更新後的三份跨輪狀態。"""
+    outputs = list(app.practice_submit(text, *state))
+    last = outputs[-1]
+    return last, (last[MESSAGES], last[REPLIES], last[SPOKEN])
 
 
 # ---------------------------------------------------------------------------
-# 11.2 – 11.6 確定性渲染層
-# ---------------------------------------------------------------------------
-
-
-def test_render_lines_no_probability_emits_no_number() -> None:
-    lines = app.render_lines(verdict_with(scam_type=ScamType.FAKE_AUTHORITY))
-    assert lines.judgement is not None
-    assert "0%" not in lines.judgement
-    assert not re.search(r"\d", lines.judgement)
-    assert app.UNDECIDED in lines.judgement
-
-
-def test_render_lines_missing_advice_segment_does_not_exist() -> None:
-    lines = app.render_lines(EMPTY_VERDICT)
-    assert lines.advice is None
-    assert lines.advice != ""
-    assert lines.segments() == []
-
-
-def test_render_lines_falls_back_to_raw_check_detail_with_marker() -> None:
-    checks = [
-        CheckResult(name="solicit_otp", hit=True, detail="索取簡訊驗證碼"),
-        CheckResult(name="secrecy_demand", hit=True, detail="要求保密"),
-        CheckResult(name="atm_operation", hit=False, detail=NOT_HIT),
-    ]
-    lines = app.render_lines(verdict_with(checks=checks))
-    assert lines.grounds is not None
-    assert lines.grounds.startswith(app.RAW_GROUNDS_PREFIX)
-    assert "solicit_otp：索取簡訊驗證碼" in lines.grounds
-    assert "secrecy_demand：要求保密" in lines.grounds
-    assert "atm_operation" not in lines.grounds
-
-
-def test_render_lines_prefers_rendered_evidence_without_marker() -> None:
-    checks = [CheckResult(name="solicit_otp", hit=True, detail="索取簡訊驗證碼")]
-    lines = app.render_lines(verdict_with(evidence=["要求提供簡訊驗證碼"], checks=checks))
-    assert lines.grounds == "要求提供簡訊驗證碼"
-    assert app.RAW_GROUNDS_PREFIX not in lines.grounds
-
-
-def test_practice_speech_reports_empty_registry_as_system_status() -> None:
-    segments = app.practice_speech(app.render_lines(EMPTY_VERDICT), 0)
-    assert "目前沒有註冊任何檢查" in segments[0]
-
-
-def test_practice_speech_reports_registered_but_no_hit() -> None:
-    segments = app.practice_speech(app.render_lines(EMPTY_VERDICT), 27)
-    assert "27 項檢查全部未命中" in segments[0]
-
-
-def test_inquiry_answer_always_gives_fallback_action_marked_as_unrelated() -> None:
-    segments = app.inquiry_answer(app.render_lines(EMPTY_VERDICT))
-    assert app.UNDECIDED in segments[0]
-    assert app.FALLBACK_ACTION in segments[-1]
-    assert app.FALLBACK_NOTE in segments[-1]
-
-
-def test_both_modes_share_the_same_three_segments() -> None:
-    checks = [CheckResult(name="solicit_otp", hit=True, detail="索取簡訊驗證碼")]
-    verdict = verdict_with(checks=checks, actions=["不要照做"])
-    lines = app.render_lines(verdict)
-    assert app.practice_speech(lines, 27)[:-1] == app.inquiry_answer(lines)[:-1]
-
-
-def test_render_lines_output_is_plain_text() -> None:
-    checks = [CheckResult(name="solicit_otp", hit=True, detail="索取簡訊驗證碼")]
-    lines = app.render_lines(verdict_with(checks=checks, actions=["撥打 165"]))
-    for segment in lines.segments():
-        assert "<" not in segment
-        assert "](" not in segment
-
-
-# ---------------------------------------------------------------------------
-# 11.7 – 11.11 潤飾驗證
+# 潤飾驗證
 # ---------------------------------------------------------------------------
 
 
@@ -199,9 +101,9 @@ def test_polish_accepts_scam_type_present_in_verdict() -> None:
 
 
 def test_polish_accepts_rewording() -> None:
-    segments = ["尚無法判定這則訊息是不是詐騙。", "撥打 165 反詐騙專線查證。"]
+    segments = ["要求不得告知家人、行員或警察。"]
     validator = app.PolishValidator(segments, EMPTY_VERDICT)
-    assert validator.feed("我看不出這是不是詐騙耶，我還是先撥打 165 問問好了。") is True
+    assert validator.feed("你叫我不要跟家人講，這件事我得跟家人講一下。") is True
 
 
 def test_polish_validation_is_prefix_decidable() -> None:
@@ -230,140 +132,27 @@ def test_allowed_numbers_extracts_every_digit_run() -> None:
     assert app.allowed_numbers(["撥打 165 查證", "共 27 項"]) == frozenset({"165", "27"})
 
 
-# ---------------------------------------------------------------------------
-# 11.12 – 11.13 檢查四種狀態
-# ---------------------------------------------------------------------------
+def test_the_victim_line_carries_no_percentage_so_the_polisher_cannot_invent_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """受害方改為每輪一條依據之後，`allowed_numbers()` 自動收緊。
 
-
-def test_pipeline_detail_constants_are_locked() -> None:
-    """狀態分類靠這兩個常數，值變了就會靜默地把狀態分錯。"""
-    assert NOT_HIT == "未命中"
-    assert SKIPPED == "因短路未執行"
-
-
-def test_check_state_classifies_three_states() -> None:
-    assert app.check_state(CheckResult(name="a", hit=True, detail="命中了")) == (app.STATE_HIT)
-    assert app.check_state(CheckResult(name="b", hit=False, detail=NOT_HIT)) == (app.STATE_NOT_HIT)
-    assert app.check_state(CheckResult(name="c", hit=False, detail=SKIPPED)) == (app.STATE_SKIPPED)
-
-
-def test_check_state_refuses_to_guess() -> None:
-    with pytest.raises(ValueError, match="無法分類的檢查記錄"):
-        app.check_state(CheckResult(name="d", hit=False, detail="別的東西"))
-
-
-def test_skipped_check_renders_as_its_own_state() -> None:
-    """走 `_skipped()` 的實際路徑：硬證據命中使 EXPENSIVE 檢查未被執行。"""
-    registry = CheckRegistry()
-    registry.register(HardLocalCheck())
-    registry.register(ExpensiveCheck())
-    request = Request.from_text("測試訊息。")
-    verdict = detect(request, registry, app.TABLE, limits=app.LIMITS)
-    document = build_document(request.messages, app.LIMITS)
-
-    states = {result.name: app.check_state(result) for result in verdict.checks}
-    assert states["solicit_otp"] == app.STATE_HIT
-    assert states["domain_age"] == app.STATE_SKIPPED
-
-    panel = app.render_panel(verdict, document, len(registry.enabled()), None)
-    assert f"state-{app.STATE_SKIPPED}" in panel
-    assert f"state-{app.STATE_HIT}" in panel
-    assert "硬證據" in panel
-
-
-def test_panel_shows_the_four_states_distinctly() -> None:
-    checks = [
-        CheckResult(name="a", hit=True, detail="命中了"),
-        CheckResult(name="b", hit=False, detail=NOT_HIT),
-        CheckResult(name="c", hit=False, detail=SKIPPED),
-    ]
-    request = Request.from_text("測試訊息。")
-    document = build_document(request.messages, app.LIMITS)
-    panel = app.render_panel(verdict_with(checks=checks), document, 3, None)
-    for state in (app.STATE_HIT, app.STATE_NOT_HIT, app.STATE_SKIPPED, app.STATE_UNREGISTERED):
-        assert f"state-{state}" in panel
-    assert "domain_age" in panel
-    assert "未注入 RDAP 解析器" in panel
-
-
-def test_panel_does_not_filter_out_misses() -> None:
-    checks = [CheckResult(name="quiet_check", hit=False, detail=NOT_HIT)]
-    request = Request.from_text("測試訊息。")
-    document = build_document(request.messages, app.LIMITS)
-    panel = app.render_panel(verdict_with(checks=checks), document, 1, None)
-    assert "quiet_check" in panel
-
-
-def test_panel_reports_registered_count() -> None:
-    request = Request.from_text("測試訊息。")
-    document = build_document(request.messages, app.LIMITS)
-    assert "已註冊 0 個檢查" in app.render_panel(EMPTY_VERDICT, document, 0, None)
-    assert "已註冊 27 個檢查" in app.render_panel(EMPTY_VERDICT, document, 27, None)
-
-
-def test_unregistered_list_holds_only_implemented_checks() -> None:
-    names = {name for name, _reason in app.UNREGISTERED_CHECKS}
-    assert names == {"domain_age"}
-
-
-# ---------------------------------------------------------------------------
-# 11.14 – 11.15 座標
-# ---------------------------------------------------------------------------
-
-
-def test_panel_document_coords_match_detect_internal_document() -> None:
-    request = Request(
-        messages=[
-            Message(text="您好，這裡是中華郵政。請把驗證碼告訴我。"),
-            Message(text="不要告訴家人。快點！"),
-        ]
-    )
-    recorder = RecordingCheck()
-    registry = CheckRegistry()
-    registry.register(recorder)
-    detect(request, registry, app.TABLE, limits=app.LIMITS)
-    panel_document = build_document(request.messages, app.LIMITS)
-    assert recorder.seen[0].coords == panel_document.coords
-    assert recorder.seen[0].raw_sentences == panel_document.raw_sentences
-
-
-def test_invalid_coord_propagates_key_error() -> None:
-    """越界座標 MUST 讓 `KeyError` 傳播，不得被吞成「少一條依據」。
-
-    `add-verdict-render` 落地後拋出的位置從呈現層前移到 `detect()` 內部的
-    `render_evidence()` —— 那一層同樣以 `doc.raw_at()` 解析座標。前移是好事：
-    錯誤的證據在更早的地方就炸掉，而本測試鎖的是「會炸」，不是「在哪一層炸」。
+    確定性層的輸出不再含機率，潤飾層就再也不能吐出任何百分比 ——
+    不需要為它加規則。
     """
-    registry = CheckRegistry()
-    registry.register(BadCoordCheck())
-    request = Request.from_text("測試訊息。")
-    with pytest.raises(KeyError):
-        detect(request, registry, app.TABLE, limits=app.LIMITS)
+    monkeypatch.setattr(app, "POLISHER", None)
+    outputs = list(app.practice_submit(SCAM_LINE, [], [], []))
+    victim = outputs[-1][REPLIES][-1]
+    assert not re.search(r"\d+%", victim)
 
-
-def test_evidence_links_point_to_sentence_anchors() -> None:
-    checks = [
-        CheckResult(name="a", hit=True, detail="命中了", evidence=[(0, 1)]),
-    ]
-    request = Request.from_text("第一句。第二句。")
-    document = build_document(request.messages, app.LIMITS)
-    panel = app.render_panel(verdict_with(checks=checks), document, 1, None)
-    conversation = app.render_conversation(request.messages, (), document, "收到的訊息", None)
-    assert 'href="#s-0-1"' in panel
-    assert 'id="s-0-1"' in conversation
-
-
-def test_hit_without_evidence_is_still_a_hit() -> None:
-    checks = [CheckResult(name="a", hit=True, detail="沒有句子位置")]
-    request = Request.from_text("測試訊息。")
-    document = build_document(request.messages, app.LIMITS)
-    panel = app.render_panel(verdict_with(checks=checks), document, 1, None)
-    assert f"state-{app.STATE_HIT}" in panel
-    assert "evidence-list" not in panel
+    request = Request.from_text(SCAM_LINE)
+    verdict = detect(request, app.REGISTRY, app.TABLE, limits=app.LIMITS)
+    validator = app.PolishValidator([victim], verdict)
+    assert validator.feed("這則訊息有 92% 的可能") is False
 
 
 # ---------------------------------------------------------------------------
-# 11.16 – 11.20 兩個模式
+# 模式一：對練
 # ---------------------------------------------------------------------------
 
 
@@ -377,13 +166,12 @@ def test_practice_messages_carry_sender_and_timestamp() -> None:
     assert before <= messages[0].sent_at <= after
 
 
-def test_practice_request_contains_only_user_messages() -> None:
-    messages: list[Message] = []
-    replies: list[str] = []
+def test_practice_request_contains_only_user_messages(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(app, "POLISHER", None)
+    state: tuple[list, list, list] = ([], [], [])
     for text in ("第一則", "第二則", "第三則"):
-        outputs = list(app.practice_submit(text, messages, replies))
-        messages, replies = outputs[-1][0], outputs[-1][1]
-    assert len(messages) == 3
+        _last, state = run_practice(text, state)
+    messages, replies, _spoken = state
     assert [message.text for message in messages] == ["第一則", "第二則", "第三則"]
     assert len(replies) == 3
     for reply in replies:
@@ -391,13 +179,11 @@ def test_practice_request_contains_only_user_messages() -> None:
     assert all(message.sender == app.SENDER_THEM for message in messages)
 
 
-def test_victim_reply_does_not_change_the_next_verdict() -> None:
+def test_victim_reply_does_not_change_the_next_verdict(monkeypatch: pytest.MonkeyPatch) -> None:
     """受害方的台詞含詐騙關鍵詞時，下一輪的檢查結果不因它而改變。"""
-    messages: list[Message] = []
-    replies: list[str] = []
-    outputs = list(app.practice_submit("請把驗證碼告訴我，不要告訴家人。", messages, replies))
-    messages, replies = outputs[-1][0], outputs[-1][1]
-    assert any("驗證碼" in reply for reply in replies)
+    monkeypatch.setattr(app, "POLISHER", None)
+    _last, (messages, replies, _spoken) = run_practice(SCAM_LINE, ([], [], []))
+    assert replies[0]
 
     with_reply = detect(Request(messages=messages), app.REGISTRY, app.TABLE, limits=app.LIMITS)
     without_reply = detect(
@@ -409,6 +195,139 @@ def test_victim_reply_does_not_change_the_next_verdict() -> None:
     assert [(r.name, r.hit, r.detail) for r in with_reply.checks] == [
         (r.name, r.hit, r.detail) for r in without_reply.checks
     ]
+
+
+def test_the_victim_does_not_repeat_itself_on_a_turn_without_new_signals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """本 change 的回歸測試。
+
+    舊實作每輪把整份判定說一次，而 `Verdict` 是對整段對話算的 —— 第二輪打
+    「今天天氣不錯對吧」會得到與第一輪逐字相同的八行，畫面上是兩面一樣的文字牆。
+    """
+    monkeypatch.setattr(app, "POLISHER", None)
+    _first, state = run_practice(SCAM_LINE, ([], [], []))
+    _second, state = run_practice("今天天氣不錯對吧", state)
+    _messages, replies, _spoken = state
+    assert replies[1] != replies[0]
+
+
+def test_spoken_state_grows_at_most_one_line_per_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(app, "POLISHER", None)
+    state: tuple[list, list, list] = ([], [], [])
+    sizes = []
+    for text in (SCAM_LINE, "請至ATM操作解除分期付款。", "今天天氣不錯對吧"):
+        _last, state = run_practice(text, state)
+        sizes.append(len(state[2]))
+    assert sizes == sorted(sizes)
+    assert all(later - earlier <= 1 for earlier, later in zip(sizes, sizes[1:]))
+    assert len(state[2]) == len(set(state[2]))
+
+
+def test_ranking_accumulates_across_turns(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(app, "POLISHER", None)
+    state: tuple[list, list, list] = ([], [], [])
+    first, state = run_practice("請把簡訊驗證碼給我。", state)
+    assert "第 1 輪" in first[RANKING]
+    second, state = run_practice("不要告訴家人或行員。", state)
+    assert "第 2 輪" in second[RANKING]
+    assert second[RANKING].count('class="rank-row"') > first[RANKING].count('class="rank-row"')
+
+
+def test_practice_rejects_empty_input() -> None:
+    with pytest.raises(app.gr.Error):
+        list(app.practice_submit("   ", [], [], []))
+
+
+# ---------------------------------------------------------------------------
+# 更新順序 —— 判定卡 MUST 早於模型的第一個字元
+# ---------------------------------------------------------------------------
+
+
+class SlowPolisher:
+    """會 sleep 的假潤飾層。第一次產出若要等它，測試就會慢到看得出來。"""
+
+    def __init__(self) -> None:
+        self.called = False
+
+    def __call__(self, segments):
+        self.called = True
+        time.sleep(0.5)
+        yield "嗯"
+        time.sleep(0.5)
+        yield "，我先不要照做。"
+
+
+def test_card_completes_before_the_model_produces_any_character(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """generator 的**第一次產出**已含完整的判定卡與排行。
+
+    這條測試會在「等模型跑完再一起更新」的實作下失敗：那種實作的第一次 `yield`
+    要等 1 秒，而且 `polisher.called` 在第一次產出時已為 True。
+    """
+    polisher = SlowPolisher()
+    monkeypatch.setattr(app, "POLISHER", polisher)
+
+    stream = app.practice_submit("請把驗證碼告訴我。", [], [], [])
+    started = time.monotonic()
+    first = next(stream)
+    elapsed = time.monotonic() - started
+
+    assert polisher.called is False, "判定卡產出時潤飾層尚未被呼叫"
+    assert elapsed < 0.4, f"第一次產出花了 {elapsed:.2f} 秒，代表它等了模型"
+
+    assert demo_ui.TITLE_SCAM in first[CARD]
+    assert "solicit_otp" in first[CARD]
+    assert "第 1 輪" in first[RANKING]
+    assert "s-0-0" in first[CONVERSATION]
+    assert first[STATUS] == app.POLISH_STREAMING
+
+    rest = list(stream)
+    assert polisher.called is True
+    assert len(rest) >= 2, "潤飾層的輸出 MUST 分多次更新於畫面"
+    assert rest[-1][STATUS] == app.POLISH_ACCEPTED
+
+
+def test_card_and_ranking_are_identical_with_and_without_polisher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(app, "POLISHER", None)
+    without = next(app.practice_submit("請把驗證碼告訴我。", [], [], []))
+    monkeypatch.setattr(app, "POLISHER", SlowPolisher())
+    with_polisher = next(app.practice_submit("請把驗證碼告訴我。", [], [], []))
+    assert without[CARD] == with_polisher[CARD]
+    assert without[RANKING] == with_polisher[RANKING]
+    assert without[STATUS] != with_polisher[STATUS]
+
+
+class LyingPolisher:
+    def __call__(self, segments):
+        yield "我覺得"
+        yield "有 87"
+        yield "% 的機率是詐騙"
+
+
+def test_discarded_polish_is_visible_and_falls_back_to_deterministic_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(app, "POLISHER", LyingPolisher())
+    outputs = list(app.practice_submit("請把驗證碼告訴我。", [], [], []))
+    deterministic = outputs[0][REPLIES][-1]
+    assert outputs[-1][STATUS] == app.POLISH_DISCARDED
+    assert outputs[-1][STATUS] != app.POLISH_NOT_INJECTED
+    assert outputs[-1][REPLIES][-1] == deterministic
+    assert "87" not in outputs[-1][CONVERSATION]
+
+
+def test_not_injected_and_discarded_are_different_labels() -> None:
+    assert app.POLISH_NOT_INJECTED != app.POLISH_DISCARDED
+    assert app.POLISH_NOT_INJECTED != app.POLISH_ACCEPTED
+
+
+# ---------------------------------------------------------------------------
+# 模式二：這是詐騙嗎
+# ---------------------------------------------------------------------------
 
 
 def test_inquiry_splits_on_blank_lines() -> None:
@@ -440,167 +359,47 @@ def test_inquiry_rejects_empty_input() -> None:
 
 def test_inquiry_ignores_the_polisher(monkeypatch: pytest.MonkeyPatch) -> None:
     """已注入潤飾層時，模式二的輸出與未注入時完全相同。"""
-    text = "請把簡訊驗證碼給我，不要告訴家人。"
     monkeypatch.setattr(app, "POLISHER", None)
-    without = app.inquiry_submit(text)
+    without = app.inquiry_submit(SCAM_LINE)
 
     def never_called(segments):
         raise AssertionError("模式二 MUST NOT 呼叫潤飾層")
 
     monkeypatch.setattr(app, "POLISHER", never_called)
-    assert app.inquiry_submit(text) == without
+    assert app.inquiry_submit(SCAM_LINE) == without
+
+
+def test_inquiry_has_no_ranking() -> None:
+    """累積命中排行是對練模式的元件。"""
+    card, echo = app.inquiry_submit(SCAM_LINE)
+    assert "ranking" not in card
+    assert "ranking" not in echo
 
 
 def test_modes_do_not_share_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(app, "POLISHER", None)
     baseline = app.inquiry_submit("獨立的一則訊息。")
-    messages: list[Message] = []
-    replies: list[str] = []
+    state: tuple[list, list, list] = ([], [], [])
     for text in ("模式一的第一則", "模式一的第二則"):
-        outputs = list(app.practice_submit(text, messages, replies))
-        messages, replies = outputs[-1][0], outputs[-1][1]
+        _last, state = run_practice(text, state)
     assert app.inquiry_submit("獨立的一則訊息。") == baseline
     assert "模式一的第一則" not in baseline[0]
 
 
 # ---------------------------------------------------------------------------
-# 11.21 更新順序
+# 範例庫與範例標籤
 # ---------------------------------------------------------------------------
 
 
-class SlowPolisher:
-    """會 sleep 的假潤飾層。第一次產出若要等它，測試就會慢到看得出來。"""
-
-    def __init__(self) -> None:
-        self.called = False
-
-    def __call__(self, segments):
-        self.called = True
-        time.sleep(0.5)
-        yield "嗯"
-        time.sleep(0.5)
-        yield "，我先不要照做。"
-
-
-def test_panel_completes_before_the_model_produces_any_character(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """generator 的**第一次產出**已含完整判定列與偵測項目。
-
-    這條測試會在「等模型跑完再一起更新」的實作下失敗：那種實作的第一次 `yield`
-    要等 1 秒，而且 `polisher.called` 在第一次產出時已為 True。
-    """
-    polisher = SlowPolisher()
-    monkeypatch.setattr(app, "POLISHER", polisher)
-
-    stream = app.practice_submit("請把驗證碼告訴我。", [], [])
-    started = time.monotonic()
-    first = next(stream)
-    elapsed = time.monotonic() - started
-
-    assert polisher.called is False, "面板產出時潤飾層尚未被呼叫"
-    assert elapsed < 0.4, f"第一次產出花了 {elapsed:.2f} 秒，代表它等了模型"
-
-    _messages, _replies, conversation, row, panel, status, _box = first
-    assert "詐騙機率" in row and "信心值" in row and "詐騙類型" in row
-    assert "已註冊" in panel
-    assert "solicit_otp" in panel
-    assert "s-0-0" in conversation
-    assert status == app.POLISH_STREAMING
-
-    rest = list(stream)
-    assert polisher.called is True
-    assert len(rest) >= 2, "潤飾層的輸出 MUST 分多次更新於畫面"
-    assert rest[-1][5] == app.POLISH_ACCEPTED
-
-
-def test_panel_is_identical_with_and_without_polisher(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(app, "POLISHER", None)
-    without = next(app.practice_submit("請把驗證碼告訴我。", [], []))
-    monkeypatch.setattr(app, "POLISHER", SlowPolisher())
-    with_polisher = next(app.practice_submit("請把驗證碼告訴我。", [], []))
-    assert without[3] == with_polisher[3]
-    assert without[4] == with_polisher[4]
-    assert without[5] != with_polisher[5]
-
-
-class LyingPolisher:
-    def __call__(self, segments):
-        yield "我覺得"
-        yield "有 87"
-        yield "% 的機率是詐騙"
-
-
-def test_discarded_polish_is_visible_and_falls_back_to_deterministic_output(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(app, "POLISHER", LyingPolisher())
-    outputs = list(app.practice_submit("請把驗證碼告訴我。", [], []))
-    deterministic = outputs[0][1][-1]
-    assert outputs[-1][5] == app.POLISH_DISCARDED
-    assert outputs[-1][5] != app.POLISH_NOT_INJECTED
-    assert outputs[-1][1][-1] == deterministic
-    assert "87" not in outputs[-1][2]
-
-
-def test_not_injected_and_discarded_are_different_labels() -> None:
-    assert app.POLISH_NOT_INJECTED != app.POLISH_DISCARDED
-    assert app.POLISH_NOT_INJECTED != app.POLISH_ACCEPTED
-
-
-# ---------------------------------------------------------------------------
-# 11.22 HTML 逸出
-# ---------------------------------------------------------------------------
-
-
-def test_user_input_is_escaped() -> None:
-    request = Request.from_text("<script>alert(1)</script>")
-    document = build_document(request.messages, app.LIMITS)
-    conversation = app.render_conversation(request.messages, (), document, "收到的訊息", None)
-    assert "<script>" not in conversation
-    assert "&lt;script&gt;" in conversation
-
-
-def test_escaped_url_round_trips() -> None:
-    raw = "https://x.cc/a?id=1&ref=2"
-    assert app.escaped(raw) == "https://x.cc/a?id=1&amp;ref=2"
-
-
-# ---------------------------------------------------------------------------
-# 11.23 截斷
-# ---------------------------------------------------------------------------
-
-
-def test_truncation_is_visible() -> None:
-    tiny = Limits(max_messages=2, max_chars=1_000)
-    messages = [Message(text=f"第 {index} 則訊息。") for index in range(5)]
-    request = Request(messages=messages)
-    document = build_document(request.messages, tiny)
-    assert document.truncated is True
-    panel = app.render_panel(EMPTY_VERDICT, document, 0, None)
-    assert f"已丟棄最舊的 {document.dropped_messages} 則" in panel
-
-    conversation = app.render_conversation(messages, (), document, "收到的訊息", None)
-    assert conversation.count("未納入本次判定") == document.dropped_messages
-
-
-def test_no_truncation_notice_when_within_limits() -> None:
-    request = Request.from_text("一則短訊息。")
-    document = build_document(request.messages, app.LIMITS)
-    assert "已丟棄最舊的" not in app.render_panel(EMPTY_VERDICT, document, 0, None)
-
-
-# ---------------------------------------------------------------------------
-# 11.24 範例庫
-# ---------------------------------------------------------------------------
-
-
-def test_samples_load_with_source_uri() -> None:
+def test_samples_load_with_source_uri_and_short_label() -> None:
     assert 6 <= len(app.SAMPLES) <= 10
+    labels = [sample.short_label for sample in app.SAMPLES]
+    assert len(labels) == len(set(labels))
     for sample in app.SAMPLES:
         assert sample.source_uri.startswith("https://cofacts.tw/article/")
         assert sample.text.strip()
         assert sample.label.strip()
+        assert 0 < len(sample.short_label) <= app.SHORT_LABEL_MAX
 
 
 def test_samples_file_declares_its_own_license() -> None:
@@ -617,117 +416,146 @@ def test_missing_samples_file_raises_with_filename(tmp_path) -> None:
         app.load_samples(missing)
 
 
-def test_fill_sample_returns_text_without_submitting() -> None:
+def write_samples(tmp_path, entries) -> object:
+    path = tmp_path / "demo_samples.json"
+    path.write_text(json.dumps({"samples": entries}, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def sample_entry(**overrides) -> dict:
+    entry = {
+        "label": "假中獎：以抽獎名義索取簡訊認證碼",
+        "short_label": "假中獎",
+        "text": "你中獎了",
+        "source_uri": "https://cofacts.tw/article/x",
+    }
+    entry.update(overrides)
+    return entry
+
+
+def test_missing_short_label_raises_and_names_the_entry(tmp_path) -> None:
+    entry = sample_entry()
+    del entry["short_label"]
+    with pytest.raises(ValueError, match="short_label"):
+        app.load_samples(write_samples(tmp_path, [entry]))
+
+
+def test_duplicate_short_label_raises_and_names_the_value(tmp_path) -> None:
+    entries = [sample_entry(), sample_entry(label="另一筆")]
+    with pytest.raises(ValueError, match="重複"):
+        app.load_samples(write_samples(tmp_path, entries))
+
+
+def test_over_long_short_label_raises_and_names_the_value(tmp_path) -> None:
+    entry = sample_entry(short_label="這個標籤實在太長了")
+    with pytest.raises(ValueError, match="超過"):
+        app.load_samples(write_samples(tmp_path, [entry]))
+
+
+def test_sample_text_rejects_an_unknown_short_label() -> None:
+    with pytest.raises(ValueError, match="沒有這個短標籤"):
+        app.sample_text("不存在的標籤")
+
+
+def test_the_fifth_chip_loads_the_fifth_sample() -> None:
+    """捕獲迴圈變數的寫法會讓每一顆按鈕都送出最後一筆，症狀就是這一條。"""
+    fifth = app.SAMPLES[4]
+    text, card, echo = app.inquiry_from_sample(fifth.short_label)
+    assert text == fifth.text
+    assert card
+    assert echo
+
+
+def test_a_chip_click_fills_and_judges_in_one_step() -> None:
     sample = app.SAMPLES[0]
-    assert app.fill_sample(sample.label) == sample.text
+    text, card, _echo = app.inquiry_from_sample(sample.short_label)
+    assert text == sample.text
+    assert "card-title" in card
 
 
-def test_fill_sample_rejects_unknown_label() -> None:
-    with pytest.raises(ValueError, match="沒有這個標籤"):
-        app.fill_sample("不存在的標籤")
+def test_a_practice_chip_sends_the_sample_as_one_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(app, "POLISHER", None)
+    sample = app.SAMPLES[4]
+    outputs = list(app.practice_from_sample(sample.short_label, [], [], []))
+    assert [message.text for message in outputs[-1][MESSAGES]] == [sample.text]
 
 
 # ---------------------------------------------------------------------------
-# 11.25 個資標註
+# 文案與頁尾
 # ---------------------------------------------------------------------------
 
-
-def recognizer_none(sentence: str) -> list[app.PiiSpan]:
-    return []
-
-
-def recognizer_tw_id(sentence: str) -> list[app.PiiSpan]:
-    return [
-        (match.start(), match.end(), "身分證") for match in re.finditer(r"[A-Z][12]\d{8}", sentence)
-    ]
-
-
-def test_pii_not_mounted_is_not_the_same_as_no_pii() -> None:
-    request = Request.from_text("測試訊息。")
-    document = build_document(request.messages, app.LIMITS)
-    not_mounted = app.render_pii_block(document, None)
-    mounted = app.render_pii_block(document, recognizer_none)
-    assert app.PII_NOT_MOUNTED in not_mounted
-    assert app.PII_NO_HIT not in not_mounted
-    assert app.PII_NO_HIT in mounted
-    assert app.PII_NOT_MOUNTED not in mounted
-    assert not_mounted != mounted
+FORBIDDEN_TERMS = (
+    "組裝層",
+    "注入",
+    "渲染",
+    "協定",
+    "可記錄投影",
+    "確定性渲染層",
+    "硬證據",
+    "未經文案渲染",
+)
 
 
-def test_pii_block_discloses_its_scope() -> None:
-    request = Request.from_text("測試訊息。")
-    document = build_document(request.messages, app.LIMITS)
-    block = app.render_pii_block(document, None)
-    for label in ("身分證", "手機", "市話", "信用卡"):
-        assert label in block
-    assert "姓名與地址不在辨識範圍內" in block
-    assert "預設關閉" in block
-
-
-def test_pii_tags_are_sentence_level_and_do_not_rewrite_text() -> None:
-    request = Request.from_text("我的身分證是 A123456789 請確認。")
-    document = build_document(request.messages, app.LIMITS)
-    conversation = app.render_conversation(
-        request.messages, (), document, "收到的訊息", recognizer_tw_id
+def assembled_copy() -> str:
+    """畫面上所有由本檔提供的固定文字。"""
+    written: list[list[str]] = []
+    return "".join(
+        [
+            app.HEADER,
+            app.PRACTICE_NOTE,
+            app.PRIVACY_NOTE,
+            app.samples_listing(),
+            app.transcript_notice(written.append),
+            app.POLISH_NOT_INJECTED,
+            app.POLISH_STREAMING,
+            app.POLISH_ACCEPTED,
+            app.POLISH_DISCARDED,
+            *(reason for _name, _label, reason in app.UNREGISTERED_CHECKS),
+        ]
     )
-    assert "身分證 ×1" in conversation
-    assert "A123456789" in conversation
-    assert "&lt;TW_ID&gt;" not in conversation
-    assert "<TW_ID>" not in conversation
 
 
-def test_sentence_without_pii_gets_no_tag() -> None:
-    request = Request.from_text("這句沒有個資。")
-    document = build_document(request.messages, app.LIMITS)
-    conversation = app.render_conversation(
-        request.messages, (), document, "收到的訊息", recognizer_tw_id
-    )
-    assert "pii-tag" not in conversation
+def test_implementation_vocabulary_never_reaches_the_screen() -> None:
+    copy = assembled_copy()
+    for term in FORBIDDEN_TERMS:
+        assert term not in copy
 
 
-def test_pii_highlight_slices_before_escaping() -> None:
-    """迴歸測試：`html.escape()` 是一對多的（`&` → `&amp;`）。
-
-    先逸出整句再用區間切片，從第一個 `&` 之後的所有索引全部位移，`<mark>` 會標到
-    隔壁幾個字 —— 而 `&` 在帶追蹤參數的釣魚連結裡幾乎必然出現。這個錯不會拋例外，
-    沒有任何測試會報告它，所以必須有這一條。
-    """
-    sentence = "請至 https://x.cc/a?id=1&ref=2 驗證，身分證 A123456789"
-    spans = recognizer_tw_id(sentence)
-    assert spans, "測試前提：句中有一筆身分證"
-    rendered = app.render_pii_highlight(sentence, spans)
-    marked = re.findall(r'<mark class="pii-mark"[^>]*>(.*?)</mark>', rendered)
-    assert marked == ["A123456789"]
-    assert "&amp;ref=2" in rendered
+def test_no_design_note_intro_block_survives() -> None:
+    """導言整塊被刪掉了：不解釋速度差、不解釋兩個模式的設計立場。"""
+    assert not hasattr(app, "INTRO")
+    assert not hasattr(app, "EXTERNAL_BLOCK")
+    assert "毫秒級" not in app.HEADER
+    assert "現場證據" not in app.HEADER
 
 
-def test_pii_block_states_it_shows_normalized_sentences() -> None:
-    request = Request.from_text("我的身分證是 Ａ１２３４５６７８９ 請確認。")
-    document = build_document(request.messages, app.LIMITS)
-    block = app.render_pii_block(document, recognizer_tw_id)
-    assert "正規化後" in block
-    assert "pii-mark" in block
+def test_no_fallback_advice_path_exists() -> None:
+    """保底建議那條路徑整條刪除，不再有「此建議不基於本次判定」。"""
+    assert not hasattr(app, "fallback_advice")
+    assert not hasattr(app, "FALLBACK_ACTION")
+    assert not hasattr(app, "FALLBACK_NOTE")
+    assert not hasattr(app, "RAW_GROUNDS_PREFIX")
+    assert "此建議不基於本次判定" not in assembled_copy()
 
 
-# ---------------------------------------------------------------------------
-# 11.26 外部查詢與隱私揭露
-# ---------------------------------------------------------------------------
+def test_no_advice_at_all_when_nothing_hits() -> None:
+    card, _echo = app.inquiry_submit("明天見。")
+    assert demo_ui.ACTIONS_HEADING not in card
 
 
-def test_external_block_lists_domain_age_and_its_disclosure() -> None:
-    assert "domain_age" in app.EXTERNAL_BLOCK
-    assert "未注入 RDAP 解析器" in app.EXTERNAL_BLOCK
-    assert "registrable domain" in app.EXTERNAL_BLOCK
-    assert "不含 path、query string 與子網域" in app.EXTERNAL_BLOCK
-    assert "目前不對任何外部服務發出請求" in app.EXTERNAL_BLOCK
+def test_footer_keeps_the_licence_and_every_source_link() -> None:
+    listing = app.samples_listing()
+    assert "CC BY-SA 4.0" in listing
+    assert "Cofacts" in listing
+    for sample in app.SAMPLES:
+        assert sample.source_uri in listing
+        assert sample.label in listing
 
 
 def test_privacy_note_does_not_claim_zero_trace() -> None:
     for claim in ("完全不留痕跡", "不被任何系統記錄", "完全不會被記錄"):
         assert claim not in app.PRIVACY_NOTE
-    assert "不在本系統控制範圍內" in app.PRIVACY_NOTE
-    assert "同一個程序" in app.PRIVACY_NOTE
-    assert "access log" in app.PRIVACY_NOTE
+    assert "不在我們控制範圍內" in app.PRIVACY_NOTE
 
 
 def test_transcript_notice_only_when_logger_injected() -> None:
@@ -742,7 +570,7 @@ def test_transcript_logger_receives_explicit_message_text(
     written: list[list[str]] = []
     monkeypatch.setattr(app, "TRANSCRIPT_LOGGER", written.append)
     monkeypatch.setattr(app, "POLISHER", None)
-    list(app.practice_submit("第一則", [], []))
+    list(app.practice_submit("第一則", [], [], []))
     assert written == [["第一則"]]
     assert "len=" not in written[0][0]
 
@@ -750,34 +578,8 @@ def test_transcript_logger_receives_explicit_message_text(
 def test_no_logging_without_injection(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(app, "TRANSCRIPT_LOGGER", None)
     monkeypatch.setattr(app, "POLISHER", None)
-    outputs = list(app.practice_submit("第一則", [], []))
+    outputs = list(app.practice_submit("第一則", [], [], []))
     assert outputs
-
-
-def test_verdict_row_has_three_labelled_columns() -> None:
-    row = app.render_verdict_row(EMPTY_VERDICT)
-    assert row.count('class="cell"') == 3
-    for label in ("詐騙機率", "信心值", "詐騙類型"):
-        assert label in row
-    assert "自我信心" in row
-    assert row.count("未判定") == 2
-    assert "0.00" in row
-
-
-def test_verdict_row_has_no_traffic_light_grading() -> None:
-    row = app.render_verdict_row(EMPTY_VERDICT)
-    for word in ("高風險", "中風險", "低風險", "紅燈", "黃燈", "綠燈"):
-        assert word not in row
-
-
-def test_verdict_row_shows_probability_when_present() -> None:
-    row = app.render_verdict_row(
-        verdict_with(scam_probability=0.87, confidence=0.62, scam_type=ScamType.FAKE_AUTHORITY)
-    )
-    assert "87%" in row
-    assert "0.62" in row
-    assert "假檢警/假冒公務機關" in row
-    assert "未判定" not in row
 
 
 # ---------------------------------------------------------------------------
@@ -796,25 +598,13 @@ def test_registry_is_built_once_by_the_assembly_layer() -> None:
     assert [check.name for check in app.REGISTRY.enabled()] == [check.name for check in rebuilt]
 
 
-def test_panel_row_count_follows_the_registry() -> None:
-    """新增一項檢查時面板多一行，呈現邏輯未變。"""
-    request = Request.from_text("測試訊息。")
-    document = build_document(request.messages, app.LIMITS)
-
-    small = CheckRegistry()
-    small.register(HardLocalCheck())
-    before = detect(request, small, app.TABLE, limits=app.LIMITS)
-
-    bigger = CheckRegistry()
-    bigger.register(HardLocalCheck())
-    bigger.register(RecordingCheck())
-    after = detect(request, bigger, app.TABLE, limits=app.LIMITS)
-
-    panel_before = app.render_panel(before, document, len(small.enabled()), None)
-    panel_after = app.render_panel(after, document, len(bigger.enabled()), None)
-    assert panel_after.count('class="check ') == panel_before.count('class="check ') + 1
-    assert "已註冊 1 個檢查" in panel_before
-    assert "已註冊 2 個檢查" in panel_after
+def test_unregistered_list_holds_only_implemented_checks() -> None:
+    names = {name for name, _label, _reason in app.UNREGISTERED_CHECKS}
+    assert names == {"domain_age"}
+    for _name, label, reason in app.UNREGISTERED_CHECKS:
+        assert label.strip()
+        assert reason.strip()
+        assert "\n" not in reason
 
 
 def test_domain_age_is_not_injected() -> None:
@@ -832,3 +622,37 @@ def test_demo_builds_as_blocks_without_flagging() -> None:
     assert isinstance(demo, app.gr.Blocks)
     assert not isinstance(demo, app.gr.Interface)
     assert demo.analytics_enabled is False
+
+
+def test_the_interface_does_not_try_to_lock_the_colour_scheme() -> None:
+    """明暗模式鎖不住，唯一的解法是不寫死顏色 —— 所以這裡不該有任何嘗試。"""
+    source = (app.SAMPLES_PATH.parent / "app.py").read_text(encoding="utf-8")
+    for attempt in ("__theme", "theme_mode", "color-scheme", "gr.themes"):
+        assert attempt not in source
+
+
+def test_the_interface_layer_owns_no_second_copy_of_the_markup() -> None:
+    """判定卡、偵測細節、氣泡與樣式表只有一份實作，住在 `demo_ui`。"""
+    for name in (
+        "render_verdict_row",
+        "render_panel",
+        "render_answer",
+        "render_lines",
+        "render_checks",
+        "render_conversation",
+        "check_state",
+        "escaped",
+        "anchor_id",
+        "CSS",
+        "STATE_LABELS",
+    ):
+        assert not hasattr(app, name), f"app.{name} 應該已經移入 demo_ui"
+
+
+def test_document_coords_match_the_detected_document() -> None:
+    """渲染用的 `Document` 與 `detect()` 內部的是同一個座標系。"""
+    request = app.build_inquiry_request("第一句。第二句。")
+    document = build_document(request.messages, app.LIMITS)
+    card, echo = app.inquiry_submit("第一句。第二句。")
+    assert f'id="{demo_ui.anchor_id(document.coords[1])}"' in echo
+    assert card

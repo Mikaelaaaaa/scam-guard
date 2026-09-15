@@ -16,9 +16,11 @@ cd "$root"
 rm -rf "$out"
 mkdir -p "$out"
 
-# 站台自己的檔案：頁面、它的 Python 側，以及範例庫。
+# 站台自己的檔案：頁面、它的 Python 側、兩份介面層共用的標記層，以及範例庫。
 # `app.py` 不在這裡：它是 Gradio 介面，本站台不經過 Gradio（見 docs/pages_app.py）。
-cp docs/index.html docs/pages_app.py demo_samples.json "$out/"
+# `demo_ui.py` 在根目錄而不在 wheel 裡（`packages.find` 只收 `scam_guard*`），
+# 所以它跟 `pages_app.py` 一樣靠這一行複製過去。
+cp docs/index.html docs/pages_app.py demo_ui.py demo_samples.json "$out/"
 
 # 偵測核心以 wheel 交付，由瀏覽器內的 micropip 安裝。
 python3 -m build --wheel --outdir "$out"
@@ -40,5 +42,14 @@ if ! grep -q "$wheel" "$out/index.html"; then
   echo '（版本號改過了嗎？index.html 的 requirements 那一行要一起改。）' >&2
   exit 1
 fi
+
+# 共用的標記層不在 wheel 裡，漏掉那一行 `cp` 的後果是頁面載到 `pyimport`
+# 那一步才拋 ModuleNotFoundError。比照上面的 wheel 檔名檢查，在這裡擋成建置失敗。
+for module in demo_ui.py pages_app.py; do
+  if [ ! -f "$out/$module" ]; then
+    echo "建置失敗：$out 下沒有 $module，頁面會在 pyimport 階段找不到模組" >&2
+    exit 1
+  fi
+done
 
 echo "站台已產出於 $out"

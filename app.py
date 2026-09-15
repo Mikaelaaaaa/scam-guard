@@ -1,45 +1,46 @@
 """Gradio 介面 —— 偵測核心的第一個看得見的消費者。
 
-本檔是介面層的**唯一**檔案，位置由兩個既有約束指定：`pyproject.toml` 的
-`banned-api` 對 `gradio` 的訊息明寫「Gradio 相關程式碼請放在 `app.py`」、
-`per-file-ignores` 只豁免 `"app.py"`；HuggingFace Spaces 亦固定執行 repo
-根目錄的 `app.py`。因此本 change 不新增目錄、不修改 ruff 的兩張表。
+本檔是 Gradio 相關程式碼的**唯一**容身處，位置由兩個既有約束指定：
+`pyproject.toml` 的 `banned-api` 對 `gradio` 的訊息明寫「Gradio 相關程式碼請放在
+`app.py`」、`per-file-ignores` 只豁免 `"app.py"`；HuggingFace Spaces 亦固定執行
+repo 根目錄的 `app.py`。
 
 三層結構，由內而外：
 
-    scam_guard.detect()              偵測核心（本檔不修改它一行）
+    scam_guard.detect()      偵測核心（本檔不修改它一行）
         ↓
-    確定性渲染層（render_lines）      純 Python，無模型，三段純文字
+    demo_ui                  標記層（純 Python，無 gradio，兩份介面層共用）
         ↓
     ├─ 模式二「這是詐騙嗎」：直接顯示，MUST NOT 經過模型
     └─ 模式一「詐騙對練」：可選的措辭潤飾層，受三條前綴可判定的條件約束
 
-更新順序是 requirement 而非實作細節：面板 MUST 在潤飾層產生任何字元之前完成
-更新，受害方的回應 MUST 以 streaming 呈現。兩者合起來是專題論點的現場證據 ——
-規則層零成本可稽核，模型昂貴。因此送出的 handler 是 generator function，
-第一次 `yield` 已含完整面板。
+交棒事項：文案與標記現在的中繼站是 `demo_ui.py`（`docs/pages_app.py` 也 import
+它）。終點不變 —— `add-verdict-render` 在 `scam_guard/` 內持有文案層，
+`Verdict.evidence` 與 `Verdict.actions` 本來就是它產的；`demo_ui` 留下的是標記，
+那一層不該進核心。
+
+更新順序是 requirement 而非實作細節：判定卡與排行 MUST 在潤飾層產生任何字元之前
+完成更新，受害方的回應 MUST 以 streaming 呈現。因此送出的 handler 是 generator
+function，第一次 `yield` 已含完整的判定卡。
 """
 
-import html
 import json
-import operator
 import re
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TypeAlias
 
 import gradio as gr
 
+import demo_ui
 from scam_guard.check import CheckRegistry
-from scam_guard.normalize import DEFAULT_LIMITS, Document, Limits, build_document
-from scam_guard.pipeline import NOT_HIT, SKIPPED, detect
-from scam_guard.redact import redact_document
+from scam_guard.normalize import DEFAULT_LIMITS, Limits, build_document
+from scam_guard.pipeline import detect
 from scam_guard.rules.evasion import register_evasion_checks
 from scam_guard.rules.quotation import QuotationCheck
 from scam_guard.rules.speech_act import register_speech_act_rules
-from scam_guard.types import CheckResult, Coord, Message, Request, ScamType, Verdict
+from scam_guard.types import Message, Request, ScamType, Verdict
 from scam_guard.weights import load_weights
 
 # ---------------------------------------------------------------------------
@@ -54,31 +55,38 @@ LIMITS: Limits = DEFAULT_LIMITS
 """
 
 SENDER_THEM = "them"
-"""模式一的發送者標示。`project.md` 的輸入契約範例寫的就是 `"from": "them"`。"""
+"""模式一的發送者標示。`project.md` 的輸入契約範例寫的就是 `"from": "them"`。
+
+這是**偵測語義**（被檢查的那一方），與版面的左右無關 —— 見 `demo_ui.CSS` 裡
+氣泡對齊那一段。
+"""
 
 SAMPLES_PATH = Path(__file__).with_name("demo_samples.json")
 
-UNREGISTERED_CHECKS: tuple[tuple[str, str], ...] = (("domain_age", "未注入 RDAP 解析器"),)
-"""組裝層**明確知道其存在、但選擇不註冊**的檢查，以及不註冊的理由。
+UNREGISTERED_CHECKS: tuple[demo_ui.UnregisteredCheck, ...] = (
+    ("domain_age", "網域年齡查詢", "需要向網域註冊局查詢，本服務不對外連線"),
+)
+"""組裝層**明確知道其存在、但選擇不註冊**的檢查：識別字、中文名與一行理由。
 
 只收錄已實作且有 spec 定義「未註冊」狀態的檢查。尚未實作的檢查不列入 ——
 把它們寫進清單等於臆測未來的名稱，而名稱一旦不符，畫面上會永遠掛著一行
 指向不存在的東西的「未註冊」。
+
+清單本身要留著：少一個訊號要在畫面上看得見，否則「沒有訊號」與「沒有資料」
+長得一模一樣。理由縮成一行 —— 使用者關心的是「它有沒有把我的網址送出去」，
+不是共用出口 IP 的論證，那段論證在 `README.md`。
 """
 
-PiiSpan: TypeAlias = tuple[int, int, str]
-"""個資區間 `(start, end, type)`，座標在**正規化後的句子**上，對齊
-`add-pii-recognizers` 的契約（辨識器只回報區間與類型，不改寫文字）。"""
-
-PiiRecognizer: TypeAlias = Callable[[str], list[PiiSpan]]
-Polisher: TypeAlias = Callable[[Sequence[str]], Iterator[str]]
-TranscriptLogger: TypeAlias = Callable[[list[str]], None]
+PiiRecognizer = demo_ui.PiiRecognizer
+PiiSpan = demo_ui.PiiSpan
+Polisher = Callable[[Sequence[str]], Iterator[str]]
+TranscriptLogger = Callable[[list[str]], None]
 
 PII_RECOGNIZER: PiiRecognizer | None = None
-"""個資辨識器。未注入時面板顯示「未掛載」，MUST NOT 顯示「未偵測到個資」。"""
+"""個資辨識器。未掛載時畫面顯示「沒有開啟」，MUST NOT 顯示「沒有找到」。"""
 
 POLISHER: Polisher | None = None
-"""模式一的措辭潤飾層。輸入只有確定性渲染層的三段，**簽章中沒有訊息原文**。"""
+"""模式一的措辭潤飾層。輸入只有受害方那一句，**簽章中沒有訊息原文**。"""
 
 TRANSCRIPT_LOGGER: TranscriptLogger | None = None
 """模式一的原文記錄器。以注入表達而非布林開關 —— 一個預設為 False 的布林是一個
@@ -118,12 +126,21 @@ TABLE = load_weights()
 # 範例庫
 # ---------------------------------------------------------------------------
 
+SHORT_LABEL_MAX = 6
+"""`short_label` 的長度上限。標籤是一顆按鈕上的字，八顆要能換行排下。"""
+
 
 @dataclass(frozen=True)
 class Sample:
-    """一則進版控的範例訊息。`source_uri` 為 CC BY-SA 4.0 的姓名標示要求。"""
+    """一則進版控的範例訊息。`source_uri` 為 CC BY-SA 4.0 的姓名標示要求。
+
+    `short_label` 是畫面上那顆按鈕的字，**不從 `label` 推導**：八筆的 `label`
+    是「類型：說明」的形式，在 `：` 切開會得到兩筆都叫「假借補助金」的標籤，
+    而兩個一模一樣的按鈕比一個長按鈕更糟。
+    """
 
     label: str
+    short_label: str
     text: str
     source_uri: str
 
@@ -135,6 +152,10 @@ def load_samples(path: Path = SAMPLES_PATH) -> list[Sample]:
     正常狀態。不讀 `data/`、不內建預設清單、不回傳空清單 —— 「有 `data/` 就讀
     `data/`、沒有就用內嵌」會讓 HF Spaces 永遠走其中一條、本機永遠走另一條，
     於是兩條路徑的差異不會被任何人發現。
+
+    `short_label` 的三個條件（存在、不超過上限、跨全部範例唯一）皆於此處驗證並
+    指名該筆：重複的短標籤會產生兩顆一模一樣的按鈕，而那是一個沒有任何地方會
+    報告的錯。
     """
     if not path.exists():
         raise FileNotFoundError(
@@ -146,14 +167,29 @@ def load_samples(path: Path = SAMPLES_PATH) -> list[Sample]:
     if "samples" not in loaded:
         raise ValueError(f"範例庫檔案缺少 samples 欄位：{path.name}")
     samples: list[Sample] = []
+    seen: set[str] = set()
     for entry in loaded["samples"]:
-        for field_name in ("label", "text", "source_uri"):
+        for field_name in ("label", "short_label", "text", "source_uri"):
             if field_name not in entry:
                 raise ValueError(
                     f"範例庫的一筆資料缺少 {field_name} 欄位：{path.name}，該筆為 {entry!r}"
                 )
+        short_label = entry["short_label"]
+        if len(short_label) > SHORT_LABEL_MAX:
+            raise ValueError(
+                f"範例庫的 short_label 超過 {SHORT_LABEL_MAX} 個字：{path.name}，"
+                f"該值為 {short_label!r}（{len(short_label)} 個字）"
+            )
+        if short_label in seen:
+            raise ValueError(f"範例庫的 short_label 重複：{path.name}，該值為 {short_label!r}")
+        seen.add(short_label)
         samples.append(
-            Sample(label=entry["label"], text=entry["text"], source_uri=entry["source_uri"])
+            Sample(
+                label=entry["label"],
+                short_label=short_label,
+                text=entry["text"],
+                source_uri=entry["source_uri"],
+            )
         )
     return samples
 
@@ -161,122 +197,16 @@ def load_samples(path: Path = SAMPLES_PATH) -> list[Sample]:
 SAMPLES: list[Sample] = load_samples()
 
 
-# ---------------------------------------------------------------------------
-# 確定性渲染層 —— 兩個模式共用的唯一文案來源
-#
-# 交棒事項：`add-line-adapter` 落地時 MUST 把本層移到兩個介面都能 import 的
-# 位置（`adapters/` 不能 import `app.py`，方向反了）。終點是
-# `add-verdict-render` 在 `scam_guard/` 內持有它 —— `verdict.evidence` 與
-# `verdict.actions` 本來就是它產的。現在不預先抽象：只有一個消費者時抽出一個
-# 共用模組，是「不做沒被要求的彈性」要擋的東西。
-# ---------------------------------------------------------------------------
+def sample_text(short_label: str) -> str:
+    """以短標籤取範例的內文。未知的短標籤 `raise` 並指名該值。
 
-UNDECIDED = "尚無法判定這則訊息是不是詐騙。"
-RAW_GROUNDS_PREFIX = "（未經文案渲染的原始檢查明細）"
-FALLBACK_ACTION = "撥打 165 反詐騙專線查證。"
-FALLBACK_NOTE = "此建議不基於本次判定。"
-UNDETERMINED_CELL = "未判定"
-
-
-@dataclass(frozen=True)
-class VerdictLines:
-    """三段台詞，**純文字**，不含任何標記語言。
-
-    各介面自行把段落包成自己的呈現形式：Gradio 包成 HTML、未來的 LINE adapter
-    包成純文字。若本層吐 HTML，`add-line-adapter` 只能自己重寫一份，然後兩份
-    文案開始漂移。
-
-    缺料的段為 `None`（整段**不存在**），不是空字串 —— 空字串會在呈現層變成
-    一個看不出是「沒有資料」還是「資料是空的」的空白區塊。
+    不回傳空字串、不退回第一筆 —— 標籤與範例庫出自同一個 `SAMPLES`，對不上
+    代表其中一邊被改壞了。
     """
-
-    judgement: str | None
-    grounds: str | None
-    advice: str | None
-
-    def segments(self) -> list[str]:
-        """存在的段，依判定、依據、建議的順序。"""
-        return [part for part in (self.judgement, self.grounds, self.advice) if part is not None]
-
-
-def render_lines(verdict: Verdict) -> VerdictLines:
-    """把 `Verdict` 渲染成三段台詞。不呼叫模型，兩個模式共用。
-
-    判定段在 `scam_probability is None` 時陳述尚無法判定並且**不輸出任何數字** ——
-    `types.py` 的 `Verdict` docstring 已把這條寫成契約：「呼叫端 MUST 顯示
-    『無法判定』而非數字」。0% 是一個答案，而正確的狀態是沒有答案。
-
-    依據段有**兩個可分辨的狀態**而非一個 fallback：`verdict.evidence` 由
-    `add-verdict-render` 填（屬 `scoring`），但 `rule-signals` 早於 `scoring`
-    落地，那段時間裡面板有三十幾行、命中好幾條，若只認 `verdict.evidence`
-    依據段就會是空的而受害方會說「尚無訊號」—— 那是錯的。因此改用命中檢查的
-    `name` 與 `detail`，並在段首標示本段未經文案渲染。
-    """
-    if verdict.scam_probability is None:
-        if verdict.confidence == 0.0 and verdict.scam_type is None:
-            judgement = None
-        elif verdict.scam_type is None:
-            judgement = UNDECIDED
-        else:
-            judgement = f"{UNDECIDED}訊號指向的類型是{verdict.scam_type.value}。"
-    else:
-        judgement = (
-            f"這則訊息是詐騙的機率為 {verdict.scam_probability:.0%}，"
-            f"系統對本次判定的信心值為 {verdict.confidence:.2f}。"
-        )
-        if verdict.scam_type is not None:
-            judgement += f"類型為{verdict.scam_type.value}。"
-
-    hits = [result for result in verdict.checks if result.hit]
-    if verdict.evidence:
-        grounds = "\n".join(verdict.evidence)
-    elif hits:
-        grounds = "\n".join(
-            [RAW_GROUNDS_PREFIX] + [f"{result.name}：{result.detail}" for result in hits]
-        )
-    else:
-        grounds = None
-
-    advice = "\n".join(verdict.actions) if verdict.actions else None
-
-    return VerdictLines(judgement=judgement, grounds=grounds, advice=advice)
-
-
-def system_status_line(check_count: int) -> str:
-    """三段全缺時，模式一說的系統狀態句。
-
-    依據是**組裝層的事實**（註冊了幾個檢查），不是對 `Verdict` 的猜測。
-    兩句都可驗證，而且每落地一個檢查就會自動改變。
-    """
-    if check_count == 0:
-        return "目前沒有註冊任何檢查，系統看不出這則訊息的任何訊號。"
-    return f"{check_count} 項檢查全部未命中，尚無足以判定的訊號。"
-
-
-def fallback_advice() -> str:
-    """保底建議動作，兩個模式皆顯示，且標示為不基於本次判定。
-
-    它是一個無論這則訊息是真是假都不會讓使用者受損的動作，正是
-    `add-verdict-render` 對建議動作的定義。
-    """
-    return f"{FALLBACK_ACTION}（{FALLBACK_NOTE}）"
-
-
-def practice_speech(lines: VerdictLines, check_count: int) -> list[str]:
-    """模式一的受害方台詞。三段全缺時改說系統狀態句。"""
-    segments = lines.segments()
-    if not segments:
-        segments = [system_status_line(check_count)]
-    return [*segments, fallback_advice()]
-
-
-def inquiry_answer(lines: VerdictLines) -> list[str]:
-    """模式二的輸出。三段全缺時陳述尚無法判定，並仍給出保底動作 ——
-    使用者帶著一個真實的問題來，一句「系統狀態」回答不了他。"""
-    segments = lines.segments()
-    if not segments:
-        segments = [UNDECIDED]
-    return [*segments, fallback_advice()]
+    for sample in SAMPLES:
+        if sample.short_label == short_label:
+            return sample.text
+    raise ValueError(f"範例庫中沒有這個短標籤：{short_label!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -286,14 +216,18 @@ def inquiry_answer(lines: VerdictLines) -> list[str]:
 DIGITS = re.compile(r"\d+")
 URL_MARKERS = ("http", "www.")
 
-POLISH_NOT_INJECTED = "措辭潤飾：未注入（顯示確定性渲染層的原樣輸出）"
-POLISH_STREAMING = "措辭潤飾：產生中"
-POLISH_ACCEPTED = "措辭潤飾：已通過驗證"
-POLISH_DISCARDED = "措辭潤飾：已丟棄（未通過驗證）"
+POLISH_NOT_INJECTED = "這句回應直接來自判定結果，沒有經過語言模型改寫。"
+POLISH_STREAMING = "語言模型正在改寫這句回應的措辭。"
+POLISH_ACCEPTED = "改寫後的措辭通過檢查，沒有加入判定結果以外的內容。"
+POLISH_DISCARDED = "改寫加進了判定結果沒有的內容，已整句丟棄，改用原本的回應。"
 
 
 def allowed_numbers(segments: Sequence[str]) -> frozenset[str]:
-    """確定性層輸出中的每一段連續數字。潤飾層只能使用這些數字。"""
+    """確定性層輸出中的每一段連續數字。潤飾層只能使用這些數字。
+
+    受害方的回應改為每輪至多一條依據之後，這個集合自動收緊：輸出不再含機率，
+    潤飾層就再也不能吐出任何百分比。不需要為它加規則。
+    """
     return frozenset(match.group() for part in segments for match in DIGITS.finditer(part))
 
 
@@ -399,345 +333,29 @@ def build_inquiry_request(text: str) -> Request:
 
 
 # ---------------------------------------------------------------------------
-# 分析面板
-# ---------------------------------------------------------------------------
-
-STATE_HIT = "hit"
-STATE_NOT_HIT = "not-hit"
-STATE_SKIPPED = "skipped"
-STATE_UNREGISTERED = "unregistered"
-
-STATE_LABELS = {
-    STATE_HIT: "命中",
-    STATE_NOT_HIT: "執行了未命中",
-    STATE_SKIPPED: "因短路未執行",
-    STATE_UNREGISTERED: "未註冊",
-}
-
-PII_NOT_MOUNTED = "PII 辨識器：未掛載"
-PII_NO_HIT = "未偵測到個資"
-PII_SCOPE_NOTE = (
-    "辨識範圍只有身分證、手機、市話、信用卡四類。"
-    "<b>姓名與地址不在辨識範圍內</b> —— 它們需要另一條預設關閉的選配路徑"
-    "（gated 模型，模型卡自述 hard-negative 誤報率 77.5%）。"
-)
-
-
-def check_state(result: CheckResult) -> str:
-    """把一筆 `CheckResult` 分類為四種狀態之一（未註冊不從這裡來）。
-
-    判定依據是 `scam_guard.pipeline` 公開的 `NOT_HIT` 與 `SKIPPED` 兩個常數，
-    **不是字串字面值** —— 介面層 import 核心是允許的方向。
-
-    交棒事項：根治「靠 `detail` 字串判定未執行」需要 `CheckResult` 新增
-    `skipped` 欄位（檢查自己也可以回傳 `detail="因短路未執行"`，那會被誤分類），
-    屬 `add-check-pipeline` 的後續。在那之前，無法分類即 `raise`，不猜。
-    """
-    if result.hit:
-        return STATE_HIT
-    if result.detail == NOT_HIT:
-        return STATE_NOT_HIT
-    if result.detail == SKIPPED:
-        return STATE_SKIPPED
-    raise ValueError(
-        f"無法分類的檢查記錄：name={result.name!r}、hit=False、detail={result.detail!r}"
-        f"（未命中的 detail 只能是 pipeline.NOT_HIT 或 pipeline.SKIPPED）"
-    )
-
-
-def escaped(value: str) -> str:
-    """使用者輸入進入標記之前的唯一入口。
-
-    輸入是真實詐騙訊息，裡面有 `<`、`&`、完整網址，不逸出就是一個 XSS，
-    而這是一個公開的 Space。
-    """
-    return html.escape(value).replace("\n", "<br>")
-
-
-def anchor_id(coord: Coord) -> str:
-    """證據座標對應的 HTML 錨點 id。純 HTML 與 CSS，不需要 JavaScript。"""
-    message_index, sentence_index = coord
-    return f"s-{message_index}-{sentence_index}"
-
-
-def render_verdict_row(verdict: Verdict) -> str:
-    """判定列：三個並列且各自標示名稱的量，橫跨最上方全寬。
-
-    不合併成單一指標、不用三級燈號 —— `project.md` 已經否決過顏色標籤。
-    詐騙機率與信心值是兩個獨立的量：前者答「是不是詐騙」，後者答「有沒有足夠
-    依據下判斷」。
-    """
-    if verdict.scam_probability is None:
-        probability = UNDETERMINED_CELL
-    else:
-        probability = f"{verdict.scam_probability:.0%}"
-    scam_type = UNDETERMINED_CELL if verdict.scam_type is None else escaped(verdict.scam_type.value)
-    return (
-        '<div class="verdict-row">'
-        f'<div class="cell"><div class="cell-label">詐騙機率</div>'
-        f'<div class="cell-value">{probability}</div></div>'
-        f'<div class="cell"><div class="cell-label">信心值</div>'
-        f'<div class="cell-value">{verdict.confidence:.2f}</div>'
-        f'<div class="cell-note">系統對本次判定的自我信心，不是命中率或準確率</div></div>'
-        f'<div class="cell"><div class="cell-label">詐騙類型</div>'
-        f'<div class="cell-value">{scam_type}</div></div>'
-        "</div>"
-    )
-
-
-def render_evidence(result: CheckResult, doc: Document) -> str:
-    """把證據座標展開成指向對話中該句的連結。
-
-    **無效座標讓 `KeyError` 向上傳播，不吞。** `Document.index_of()` 的
-    docstring 寫了理由：無效座標代表產生它的檢查算錯了。面板吞掉它會讓一個
-    算錯座標的檢查看起來只是少一條依據。
-    """
-    if not result.evidence:
-        return ""
-    links = [
-        f'<a class="evidence" href="#{anchor_id(coord)}">'
-        f"({coord[0]},{coord[1]}) {escaped(doc.raw_at(coord))}</a>"
-        for coord in result.evidence
-    ]
-    return '<div class="evidence-list">' + "".join(links) + "</div>"
-
-
-def render_checks(verdict: Verdict, doc: Document) -> str:
-    """偵測項目逐筆顯示，**不過濾未命中者**。行數由 `Verdict.checks` 決定，
-    新增一項檢查不需要修改本函式。"""
-    rows: list[str] = []
-    for result in verdict.checks:
-        state = check_state(result)
-        hard = '<span class="badge-hard">硬證據</span>' if result.hit and result.hard else ""
-        rows.append(
-            f'<div class="check state-{state}">'
-            f'<div class="check-head"><span class="check-name">{escaped(result.name)}</span>'
-            f'<span class="badge">{STATE_LABELS[state]}</span>{hard}</div>'
-            f'<div class="check-detail">{escaped(result.detail)}</div>'
-            f"{render_evidence(result, doc)}"
-            "</div>"
-        )
-    for name, reason in UNREGISTERED_CHECKS:
-        rows.append(
-            f'<div class="check state-{STATE_UNREGISTERED}">'
-            f'<div class="check-head"><span class="check-name">{escaped(name)}</span>'
-            f'<span class="badge">{STATE_LABELS[STATE_UNREGISTERED]}</span></div>'
-            f'<div class="check-detail">{escaped(reason)}</div>'
-            "</div>"
-        )
-    return "".join(rows)
-
-
-def pii_counts(sentence: str, recognizer: PiiRecognizer) -> list[tuple[str, int]]:
-    """某個正規化句子命中的個資類型與筆數，依類型名稱排序。"""
-    counts: dict[str, int] = {}
-    for _start, _end, pii_type in recognizer(sentence):
-        counts[pii_type] = counts.get(pii_type, 0) + 1
-    return sorted(counts.items(), key=operator.itemgetter(0))
-
-
-def render_pii_tags(sentence: str, recognizer: PiiRecognizer | None) -> str:
-    """句子層級的個資標籤，掛在氣泡中該句之後。**不改寫文字。**
-
-    粒度只到句子是資料結構上的限制：辨識器的輸入是**正規化後**的句子，回報的
-    區間在正規化座標系裡，而氣泡顯示的是 `raw_at()` 的原文片段；要把區間映到
-    原文需要句內的字元對映，而今天的 `Document` 沒有保留它。
-
-    **這是一個可替換的函式。** `add-sentence-offsets` 落地後 `Document` 每句
-    會攜帶到原文片段的偏移對映（`raw_bounds_at(coord, start, end)`），屆時把
-    本函式換成原文上的字元層級底線即可，改動集中於此一處。
-
-    絕不以 `raw.find(sentence)` 或在原文中搜尋 PII 片段來補救：NFKC 有一對多
-    與多對一，全形數字或零寬字元時必然搜不到，需要一條「找不到就不標」的規則 ——
-    那會讓規避手法同時關掉 PII 標註，一個可被利用的沉默。
-    """
-    if recognizer is None:
-        return ""
-    tags = [
-        f'<span class="pii-tag">{escaped(pii_type)} ×{count}</span>'
-        for pii_type, count in pii_counts(sentence, recognizer)
-    ]
-    return "".join(tags)
-
-
-def render_pii_highlight(sentence: str, spans: Sequence[PiiSpan]) -> str:
-    """在**正規化句子**上做字元層級標示。
-
-    ⚠️ **先用原始索引切片，再對每一段各自逸出。** `html.escape()` 是一對多的
-    （`&` → `&amp;` 是 1→5），先逸出整句再用區間切片，從第一個 `&` 之後的所有
-    索引全部位移，標示框會標到錯的字 —— 而 `&` 在釣魚連結的 query string 裡
-    幾乎必然出現。這個錯不會拋例外，畫面上只是標到隔壁幾個字。
-    """
-    pieces: list[str] = []
-    cursor = 0
-    for start, end, pii_type in sorted(spans, key=operator.itemgetter(0)):
-        pieces.append(escaped(sentence[cursor:start]))
-        pieces.append(
-            f'<mark class="pii-mark" title="{escaped(pii_type)}">'
-            f"{escaped(sentence[start:end])}</mark>"
-        )
-        cursor = end
-    pieces.append(escaped(sentence[cursor:]))
-    return "".join(pieces)
-
-
-def render_pii_block(doc: Document, recognizer: PiiRecognizer | None) -> str:
-    """面板的個資區塊。字元層級的標示只出現在這裡，且標在正規化句子上。
-
-    「未掛載」與「未偵測到個資」是兩個狀態，文字必須不同：前者是「沒有人在看」，
-    後者是「看過了，沒有」。在一個以展示偵測能力為目的的 demo 裡混淆這兩者，
-    剛好是最糟的謊。
-
-    本路徑**不 import 也不呼叫任何遮蔽（redact）程式碼**：標註指出位置與類型、
-    文字不變、呈現給使用者；遮蔽改寫文字、只有 log 能讀。兩條不同的路徑。
-    """
-    scope = f'<div class="note">{PII_SCOPE_NOTE}</div>'
-    if recognizer is None:
-        return f'<div class="pii"><h4>個人資料標註</h4><div>{PII_NOT_MOUNTED}</div>{scope}</div>'
-
-    rows: list[str] = []
-    for coord, sentence in zip(doc.coords, doc.sentences):
-        spans = recognizer(sentence)
-        if not spans:
-            continue
-        rows.append(
-            f'<div class="pii-row"><span class="coord">({coord[0]},{coord[1]})</span>'
-            f"{render_pii_highlight(sentence, spans)}</div>"
-        )
-    body = "".join(rows) if rows else f"<div>{PII_NO_HIT}</div>"
-    return (
-        '<div class="pii"><h4>個人資料標註</h4>'
-        '<div class="note">以下顯示的是<b>正規化後</b>的句子，不是原文片段。標註只指出'
-        "位置與類型，不改寫任何文字。</div>"
-        f"{body}{scope}</div>"
-    )
-
-
-def render_panel(
-    verdict: Verdict,
-    doc: Document,
-    check_count: int,
-    recognizer: PiiRecognizer | None,
-) -> str:
-    """偵測項目與理由。**不含潤飾狀態** —— 那是模型那一側的事，放進來會讓
-    「潤飾層未注入」與「潤飾層已注入的第一次產出」兩種情況的面板內容不同，
-    而 requirement 要求它們相同。"""
-    truncation = ""
-    if doc.truncated:
-        truncation = (
-            f'<div class="truncation">已丟棄最舊的 {doc.dropped_messages} 則，'
-            "它們未納入本次判定。</div>"
-        )
-    return (
-        '<div class="panel"><h4>偵測項目與理由</h4>'
-        f'<div class="registered">已註冊 {check_count} 個檢查</div>'
-        f"{truncation}"
-        f'<div class="checks">{render_checks(verdict, doc)}</div>'
-        f"{render_pii_block(doc, recognizer)}"
-        "</div>"
-    )
-
-
-EXTERNAL_BLOCK = (
-    '<div class="external"><h4>外部查詢</h4>'
-    '<div class="check state-unregistered">'
-    '<div class="check-head"><span class="check-name">domain_age</span>'
-    '<span class="badge">未註冊</span></div>'
-    '<div class="check-detail">未注入 RDAP 解析器</div></div>'
-    '<div class="note">本 demo <b>目前不對任何外部服務發出請求</b>。'
-    "開啟網域年齡檢查後，會把訊息中網址的 <b>registrable domain</b>"
-    "（不含 path、query string 與子網域）送到該網域的註冊局。"
-    "這個 Space 任何人都能開，注入之後每一個訪客輸入的每一個網域都會從共用的"
-    "出口 IP 發出查詢 ——「顯式做的決定」在公開端點上換了主體，因此不注入。</div>"
-    "</div>"
-)
-
-
-# ---------------------------------------------------------------------------
-# 對話與輸入回顯
-# ---------------------------------------------------------------------------
-
-
-def render_message(
-    message_index: int,
-    message: Message,
-    doc: Document,
-    sender_label: str,
-    recognizer: PiiRecognizer | None,
-) -> str:
-    """單一則訊息的氣泡，逐句渲染並帶錨點。
-
-    座標不存在於 `Document` 的訊息標示為「未納入本次判定」—— 它還在畫面上，
-    但系統其實沒讀到它。不顯示的話，使用者會以為系統看過全部。
-    """
-    positions = doc.message_range(message_index)
-    if not positions:
-        return (
-            '<div class="bubble them dropped">'
-            f'<div class="who">{escaped(sender_label)} · 第 {message_index + 1} 則 · '
-            "未納入本次判定</div>"
-            f'<div class="dropped-text">{escaped(message.text)}</div></div>'
-        )
-    parts: list[str] = []
-    for position in positions:
-        coord = doc.coords[position]
-        parts.append(
-            f'<span class="sentence" id="{anchor_id(coord)}">'
-            f"{escaped(doc.raw_sentences[position])}</span>"
-            f"{render_pii_tags(doc.sentences[position], recognizer)}"
-        )
-    return (
-        '<div class="bubble them">'
-        f'<div class="who">{escaped(sender_label)} · 第 {message_index + 1} 則</div>'
-        f'<div class="lines">{"".join(parts)}</div></div>'
-    )
-
-
-def render_conversation(
-    messages: Sequence[Message],
-    replies: Sequence[str],
-    doc: Document,
-    sender_label: str,
-    recognizer: PiiRecognizer | None,
-) -> str:
-    """對話（模式一）或輸入回顯（模式二）。
-
-    用自繪的 HTML 而非 `gr.Chatbot`：後者的單位是一則訊息，而這裡需要的最小
-    單位是**句子**（證據座標的粒度就是句子），還要在句子之後掛 PII 標籤。
-    """
-    blocks: list[str] = []
-    for message_index, message in enumerate(messages):
-        blocks.append(render_message(message_index, message, doc, sender_label, recognizer))
-        if message_index < len(replies):
-            blocks.append(
-                '<div class="bubble me"><div class="who">受害方（由判定渲染）</div>'
-                f'<div class="lines">{escaped(replies[message_index])}</div></div>'
-            )
-    return f'<div class="conversation">{"".join(blocks)}</div>'
-
-
-def render_answer(segments: Sequence[str]) -> str:
-    """模式二的輸出區塊。段落之間可分辨，缺料的段根本不在 `segments` 裡。"""
-    body = "".join(f'<p class="segment">{escaped(part)}</p>' for part in segments)
-    return f'<div class="answer"><h4>判定結果</h4>{body}</div>'
-
-
-# ---------------------------------------------------------------------------
 # Event handlers —— 全部定義於模組層，狀態以顯式參數傳入與傳出
 # ---------------------------------------------------------------------------
+
+PRACTICE_SENDER = "你（扮演詐騙方）"
+PRACTICE_REPLY = "對方"
+INQUIRY_SENDER = "你貼上的訊息"
 
 
 def practice_submit(
     text: str,
     messages: list[Message],
     replies: list[str],
-) -> Iterator[tuple[list[Message], list[str], str, str, str, str, str]]:
+    spoken: list[str],
+) -> Iterator[tuple[list[Message], list[str], list[str], str, str, str, str, str]]:
     """模式一的送出處理，**generator function**。
 
-    第一次 `yield` 帶完整面板與確定性層的台詞；其後每次 `yield` 追加潤飾層的
-    新片段。面板 MUST 在模型產生任何字元之前完成更新 —— 若實作成「等模型跑完
-    再一起更新」，畫面仍然正確，只是慢，而**沒有任何測試會報告展示效果消失**。
-    因此測試驗證的是第一次產出的內容，不是最終畫面。
+    第一次 `yield` 帶完整的判定卡、排行與受害方那一句；其後每次 `yield` 追加
+    潤飾層的新片段。判定卡 MUST 在模型產生任何字元之前完成更新 —— 若實作成
+    「等模型跑完再一起更新」，畫面仍然正確，只是慢，而**沒有任何測試會報告
+    展示效果消失**。因此測試驗證的是第一次產出的內容，不是最終畫面。
+
+    `spoken` 是跨輪的狀態，與 `messages` / `replies` 同一個機制：它記住哪幾條
+    依據已經被說過，使受害方每輪至多說一條**新**的。
     """
     if not text.strip():
         raise gr.Error("輸入為空：請輸入一則詐騙方會說的話")
@@ -754,30 +372,39 @@ def practice_submit(
     verdict = detect(request, REGISTRY, TABLE, limits=LIMITS)
     document = build_document(request.messages, LIMITS)
 
-    check_count = len(REGISTRY.enabled())
-    segments = practice_speech(render_lines(verdict), check_count)
-    baseline = "\n".join(segments)
-
+    baseline, updated_spoken = demo_ui.victim_reply(verdict, spoken)
     updated_replies = [*replies, baseline]
-    row = render_verdict_row(verdict)
-    panel = render_panel(verdict, document, check_count, PII_RECOGNIZER)
-    conversation = render_conversation(updated, updated_replies, document, "詐騙方", PII_RECOGNIZER)
+    card = demo_ui.render_verdict_card(
+        verdict, document, TABLE, UNREGISTERED_CHECKS, PII_RECOGNIZER
+    )
+    ranking = demo_ui.render_ranking(verdict.checks, len(updated))
+    conversation = demo_ui.render_conversation(
+        updated, updated_replies, document, PRACTICE_SENDER, PRACTICE_REPLY, PII_RECOGNIZER
+    )
     status = POLISH_NOT_INJECTED if POLISHER is None else POLISH_STREAMING
-    yield updated, updated_replies, conversation, row, panel, status, ""
+    yield updated, updated_replies, updated_spoken, conversation, card, ranking, status, ""
 
     if POLISHER is None:
         return
 
-    validator = PolishValidator(segments, verdict)
-    for chunk in POLISHER(segments):
+    validator = PolishValidator([baseline], verdict)
+    for chunk in POLISHER([baseline]):
         if not validator.feed(chunk):
             updated_replies[-1] = baseline
             yield (
                 updated,
                 updated_replies,
-                render_conversation(updated, updated_replies, document, "詐騙方", PII_RECOGNIZER),
-                row,
-                panel,
+                updated_spoken,
+                demo_ui.render_conversation(
+                    updated,
+                    updated_replies,
+                    document,
+                    PRACTICE_SENDER,
+                    PRACTICE_REPLY,
+                    PII_RECOGNIZER,
+                ),
+                card,
+                ranking,
                 POLISH_DISCARDED,
                 "",
             )
@@ -786,24 +413,45 @@ def practice_submit(
         yield (
             updated,
             updated_replies,
-            render_conversation(updated, updated_replies, document, "詐騙方", PII_RECOGNIZER),
-            row,
-            panel,
+            updated_spoken,
+            demo_ui.render_conversation(
+                updated, updated_replies, document, PRACTICE_SENDER, PRACTICE_REPLY, PII_RECOGNIZER
+            ),
+            card,
+            ranking,
             POLISH_STREAMING,
             "",
         )
     yield (
         updated,
         updated_replies,
-        render_conversation(updated, updated_replies, document, "詐騙方", PII_RECOGNIZER),
-        row,
-        panel,
+        updated_spoken,
+        demo_ui.render_conversation(
+            updated, updated_replies, document, PRACTICE_SENDER, PRACTICE_REPLY, PII_RECOGNIZER
+        ),
+        card,
+        ranking,
         POLISH_ACCEPTED,
         "",
     )
 
 
-def inquiry_submit(text: str) -> tuple[str, str, str, str]:
+def practice_from_sample(
+    short_label: str,
+    messages: list[Message],
+    replies: list[str],
+    spoken: list[str],
+) -> Iterator[tuple[list[Message], list[str], list[str], str, str, str, str, str]]:
+    """點一顆範例標籤就送出那一則，一步完成。
+
+    標籤的身分走**資料**進 handler（`gr.State` 常數），不走捕獲：
+    以 lambda 或巢狀 `def` 捕獲迴圈變數，八顆按鈕會全部送出最後一筆，
+    而那個錯在每顆按鈕上看起來都「有反應」。
+    """
+    yield from practice_submit(sample_text(short_label), messages, replies, spoken)
+
+
+def inquiry_submit(text: str) -> tuple[str, str]:
     """模式二的送出處理。
 
     **不呼叫潤飾層，即使已注入。** 這是產品路徑，使用者在問一個關於自己安危的
@@ -811,134 +459,88 @@ def inquiry_submit(text: str) -> tuple[str, str, str, str]:
     的實作。而且模式二未來要給 LINE 用，那裡沒有串流可以展示速度差。
 
     **本模式不寫任何記錄。** 合法來源只有 `Verdict.redacted`（`add-redact-apply`
-    的 `RedactedText`），而今天那個欄位不存在 —— 沒有合法來源就不寫，不找替代品。
-    交棒事項：`add-redact-apply` 落地後，此處 MUST 改為只寫 `Verdict.redacted`
-    的 `sentences` / `coords` / `counts`，MUST NOT 寫入 `Request`、`Message.text`
-    或 `Verdict.evidence`。這解掉該 change 自記的「投影可能沒有消費者」。
+    的 `RedactedText`），而今天那個欄位沒有消費者 —— 沒有合法來源就不寫，
+    不找替代品。交棒事項：`add-redact-apply` 落地後，此處 MUST 改為只寫
+    `Verdict.redacted` 的 `sentences` / `coords` / `counts`，MUST NOT 寫入
+    `Request`、`Message.text` 或 `Verdict.evidence`。
     """
     request = build_inquiry_request(text)
     verdict = detect(request, REGISTRY, TABLE, limits=LIMITS)
     document = build_document(request.messages, LIMITS)
-
-    check_count = len(REGISTRY.enabled())
-    segments = inquiry_answer(render_lines(verdict))
     return (
-        render_conversation(request.messages, (), document, "收到的訊息", PII_RECOGNIZER),
-        render_verdict_row(verdict),
-        render_panel(verdict, document, check_count, PII_RECOGNIZER),
-        render_answer(segments),
+        demo_ui.render_verdict_card(
+            verdict, document, TABLE, UNREGISTERED_CHECKS, PII_RECOGNIZER
+        ),
+        demo_ui.render_conversation(
+            request.messages, (), document, INQUIRY_SENDER, PRACTICE_REPLY, PII_RECOGNIZER
+        ),
     )
 
 
-def fill_sample(label: str) -> str:
-    """把範例填入輸入框，**不自動送出**。"""
-    for sample in SAMPLES:
-        if sample.label == label:
-            return sample.text
-    raise ValueError(f"範例庫中沒有這個標籤：{label!r}")
+def inquiry_from_sample(short_label: str) -> tuple[str, str, str]:
+    """點一顆範例標籤就填入並判定，一步完成。標籤的身分以參數傳入，不捕獲。"""
+    text = sample_text(short_label)
+    card, echo = inquiry_submit(text)
+    return text, card, echo
 
 
 # ---------------------------------------------------------------------------
 # 介面組裝
 # ---------------------------------------------------------------------------
 
-CSS = """
-.verdict-row { display: flex; gap: 1.5rem; width: 100%; padding: .8rem 1rem;
-  border: 1px solid #c6cbd2; border-radius: 8px; }
-.verdict-row .cell { flex: 1; }
-.cell-label { font-size: .8rem; color: #5a6069; letter-spacing: .05em; }
-.cell-value { font-size: 1.5rem; font-weight: 700; }
-.cell-note { font-size: .72rem; color: #5a6069; }
-.conversation { display: flex; flex-direction: column; gap: .6rem; }
-.bubble { border-radius: 10px; padding: .5rem .75rem; max-width: 92%; }
-.bubble.them { background: #eef1f5; align-self: flex-start; }
-.bubble.me { background: #e3eaf4; align-self: flex-end; border: 1px solid #b9c6d8; }
-.bubble.dropped { opacity: .55; border: 1px dashed #8a8f98; }
-.who { font-size: .72rem; color: #5a6069; margin-bottom: .25rem; }
-.lines { white-space: pre-wrap; line-height: 1.7; }
-.sentence { padding: 1px 2px; border-radius: 3px; }
-.sentence:target { background: #dbe7f5; outline: 2px solid #2b4c7e; }
-.pii-tag { font-size: .7rem; background: #dfe3e8; border-radius: 3px;
-  padding: 0 .3rem; margin: 0 .2rem; }
-.pii-mark { background: #dbe7f5; border-bottom: 2px solid #2b4c7e; }
-.check { border-left: 4px solid #cfd4da; padding: .3rem .6rem; margin-bottom: .3rem; }
-.check.state-hit { border-left: 4px solid #2b4c7e; background: #eef2f8; font-weight: 600; }
-.check.state-not-hit { border-left: 4px solid #cfd4da; opacity: .7; }
-.check.state-skipped { border-left: 4px dashed #8a8f98; }
-.check.state-unregistered { border-left: 4px dotted #8a8f98; font-style: italic; }
-.check-head { display: flex; gap: .4rem; align-items: baseline; }
-.check-name { font-family: ui-monospace, monospace; }
-.badge { font-size: .68rem; border: 1px solid #8a8f98; border-radius: 3px; padding: 0 .25rem; }
-.badge-hard { font-size: .68rem; border: 1px solid #2b4c7e; border-radius: 3px;
-  padding: 0 .25rem; }
-.check-detail { font-size: .82rem; color: #3d434b; }
-.evidence-list { display: flex; flex-direction: column; gap: .15rem; margin-top: .2rem; }
-a.evidence { font-size: .78rem; text-decoration: underline; }
-.registered { font-weight: 700; margin-bottom: .4rem; }
-.truncation { border: 1px dashed #8a8f98; padding: .3rem .5rem; margin-bottom: .4rem; }
-.note { font-size: .74rem; color: #5a6069; line-height: 1.6; margin-top: .4rem; }
-.panel, .external, .answer, .pii { border: 1px solid #c6cbd2; border-radius: 8px;
-  padding: .6rem .8rem; margin-bottom: .6rem; }
-.pii-row { font-family: ui-monospace, monospace; font-size: .8rem; margin: .2rem 0; }
-.coord { color: #5a6069; margin-right: .4rem; }
-.segment { margin: .4rem 0; white-space: pre-wrap; }
-.notice { border: 2px solid #2b4c7e; background: #eef2f8; padding: .5rem .8rem;
-  font-weight: 700; border-radius: 6px; }
+HEADER = """
+<div class="sg-head">
+<h1>這是詐騙嗎</h1>
+<p>貼上你收到的可疑訊息，看看它像不像詐騙、依據是什麼，以及你現在可以做什麼。</p>
+</div>
 """
+
+PRACTICE_NOTE = (
+    '<div class="note">你扮演詐騙方打字，對方由系統扮演。'
+    "對方每一輪只會講一條新看到的訊號，<b>聊不起來是正常的</b>。</div>"
+)
 
 PRIVACY_NOTE = """
-<details><summary><b>這個 demo 對你輸入的內容做了什麼（請先讀這段）</b></summary>
+<details><summary>你的訊息會被怎麼處理</summary>
 <div class="note">
-<p><b>應用層</b>：「這是詐騙嗎」模式<b>不寫任何記錄</b> —— 唯一合法的記錄來源是
-判定結果攜帶的可記錄投影（遮蔽後的句子、座標與分類計數），而那個欄位今天還不存在，
-沒有合法來源就不寫，不找替代品。「詐騙對練」模式只有在組裝層注入記錄器時才記錄，
-本次部署未注入時畫面上不會出現記錄標示。</p>
-<p><b>存取記錄</b>：Gradio / uvicorn 的 access log 只含 HTTP 方法、路徑與狀態碼；
-訊息文字走 POST body 與 WebSocket，不進 access log。</p>
-<p><b>不在本系統控制範圍內的部分</b>：部署平台（HuggingFace Spaces）的容器標準輸出
-保留在 Space 的 logs 分頁，Space 擁有者可見；未捕捉的 traceback 會落在那裡，
-而 traceback 的區域變數可能含完整原文。<b>我們控制不了這一層。</b></p>
-<p><b>模型與介面在同一個程序中</b>，未遮蔽的原文與模型在同一塊記憶體裡；
-遮蔽不改變這個事實，它只在寫入 log 前有意義。</p>
-<p>對話狀態存在瀏覽器工作階段中，程序重啟即消失，不落地成檔案。</p>
+<p><b>不會被儲存。</b>「這是詐騙嗎」模式不留任何記錄；對話內容只存在於這個瀏覽器分頁，
+關掉或重新整理就消失。</p>
+<p><b>不會送到外部服務。</b>比對用的名單與規則都在本機，判斷過程不對外連線。</p>
+<p>伺服器的連線記錄只有網址與狀態碼，不含你打的字。若這個服務是跑在別人的雲端平台上，
+該平台自己的系統記錄不在我們控制範圍內 —— 未被接住的錯誤訊息可能落在那裡。</p>
 </div></details>
-"""
-
-INTRO = """
-<div class="note">
-<p><b>詐騙對練</b>：你扮演詐騙方打字，受害方由系統回應，而受害方說的每一句
-都是判定結果的對話化呈現 —— 它只會說判定裡有的東西，<b>聊不起來是設計不是缺陷</b>。
-這個模式的時間軸反映的是<b>打字的節奏，不是真實詐騙的時間分布</b>，
-未來的軌跡檢查在這裡會得到無意義的結果。</p>
-<p><b>這是詐騙嗎</b>：貼上你真的收到的訊息，輸出是判定、依據與建議動作。
-這是產品本身，不是 demo 功能。</p>
-<p>面板會在<b>毫秒級</b>完成更新，早於受害方的第一個字元 —— 那個速度差本身就是
-「能用規則判的就不要叫 LLM」的現場證據。</p>
-</div>
 """
 
 
 def samples_listing() -> str:
-    """範例庫的出處清單。CC BY-SA 4.0 的姓名標示要求以每筆的連結滿足。"""
+    """範例庫的出處清單。CC BY-SA 4.0 的姓名標示要求以每筆的連結滿足。
+
+    收在頁尾的可展開區塊：授權標示是法律要求，必須留著，但它不是使用者來這裡
+    要解決的問題，不該佔掉第一眼的版面。
+    """
     items = "".join(
-        f"<li>{escaped(sample.label)} —— "
-        f'<a href="{escaped(sample.source_uri)}" target="_blank" rel="noopener">出處</a></li>'
+        f"<li>{demo_ui.escaped(sample.label)} —— "
+        f'<a href="{demo_ui.escaped(sample.source_uri)}" target="_blank" rel="noopener">出處</a>'
+        "</li>"
         for sample in SAMPLES
     )
     return (
-        "<details><summary>範例訊息的出處（Cofacts，CC BY-SA 4.0）</summary>"
-        f'<div class="note"><ul>{items}</ul>'
-        "範例內容的授權為 CC BY-SA 4.0，與本專案其餘部分的 MIT 授權不同。</div></details>"
+        "<details><summary>範例訊息的來源與授權（Cofacts，CC BY-SA 4.0）</summary>"
+        '<div class="note"><p>範例訊息取自 '
+        '<a href="https://cofacts.tw" target="_blank" rel="noopener">Cofacts 真的假的</a>'
+        " 的開放資料，依 CC BY-SA 4.0 釋出，與本專案其餘部分的 MIT 授權不同；"
+        f"散布它或其衍生內容時須以相同條款釋出。</p><ul>{items}</ul></div></details>"
     )
 
 
 def transcript_notice(logger: TranscriptLogger | None) -> str:
-    """原文記錄器已注入時的顯著標示。未注入時不顯示 —— 那是兩個不同的狀態。"""
+    """原文記錄器已掛上時的顯著標示。沒掛時不顯示 —— 那是兩個不同的狀態。"""
     if logger is None:
         return ""
     return (
-        '<div class="notice">本模式的輸入會被記錄：組裝層已注入原文記錄器，'
-        "你在這裡打的每一則訊息原文都會被寫出。不要在此貼上真實的個人資料。</div>"
+        '<div class="notice">本模式的輸入會被記錄：'
+        "你在這裡打的每一則訊息都會被原樣寫進伺服器的記錄檔。"
+        "不要在這裡貼上真實的個人資料。</div>"
     )
 
 
@@ -952,94 +554,87 @@ def build_demo() -> gr.Blocks:
 
     兩個模式是兩個 `gr.Tab`，各自持有自己的 `gr.State` 與輸出元件 ——
     狀態隔離因此是結構上的，不靠任何清空邏輯維持。
-    """
-    labels = [sample.label for sample in SAMPLES]
-    empty_document = build_document([], LIMITS)
-    empty_verdict = Verdict(
-        scam_probability=None,
-        confidence=0.0,
-        scam_type=None,
-        evidence=[],
-        actions=[],
-        checks=[],
-        redacted=redact_document(empty_document),
-    )
-    initial_row = render_verdict_row(empty_verdict)
-    initial_panel = render_panel(empty_verdict, empty_document, len(REGISTRY.enabled()), None)
 
-    with gr.Blocks(title="scam-guard", analytics_enabled=False) as demo:
-        gr.HTML(INTRO)
-        gr.HTML(PRIVACY_NOTE)
-        gr.HTML(samples_listing())
+    **不嘗試鎖定明暗模式。** `gr.Blocks` 沒有 theme 參數，`launch(theme=)` 接的是
+    調色盤不是明暗模式，而使用者可以在頁尾的設定面板自己切，設定 persist 在
+    瀏覽器。唯一的解法是不寫死顏色 —— 見 `demo_ui.CSS`。
+    """
+    with gr.Blocks(title="這是詐騙嗎 · scam-guard", analytics_enabled=False) as demo:
+        gr.HTML(HEADER)
 
         with gr.Tabs():
+            with gr.Tab("這是詐騙嗎"):
+                inquiry_input = gr.Textbox(
+                    label="貼上你收到的訊息",
+                    lines=5,
+                    placeholder="把整則訊息貼進來。若是一段轉傳的對話，請在每則之間空一行。",
+                )
+                with gr.Row(elem_classes="chips"):
+                    inquiry_chips = [
+                        gr.Button(sample.short_label, size="sm", scale=0) for sample in SAMPLES
+                    ]
+                inquiry_send = gr.Button("看看這是不是詐騙", variant="primary")
+                inquiry_card = gr.HTML()
+                inquiry_echo = gr.HTML()
+
             with gr.Tab("詐騙對練"):
-                practice_row = gr.HTML(initial_row)
+                gr.HTML(PRACTICE_NOTE)
                 gr.HTML(transcript_notice(TRANSCRIPT_LOGGER))
-                with gr.Row():
-                    with gr.Column(scale=3):
-                        practice_conversation = gr.HTML('<div class="conversation"></div>')
-                        practice_input = gr.Textbox(
-                            label="你（扮演詐騙方）",
-                            lines=3,
-                            placeholder="打一句詐騙方會說的話，受害方會以判定結果回應你",
-                        )
-                        with gr.Row():
-                            practice_send = gr.Button("送出", variant="primary")
-                            practice_pick = gr.Dropdown(labels, label="範例訊息", value=None)
-                            practice_fill = gr.Button("填入範例")
-                        practice_status = gr.HTML(f'<div class="note">{POLISH_NOT_INJECTED}</div>')
-                    with gr.Column(scale=2):
-                        practice_panel = gr.HTML(initial_panel)
-                        gr.HTML(EXTERNAL_BLOCK)
+                practice_card = gr.HTML()
+                practice_ranking = gr.HTML()
+                practice_conversation = gr.HTML()
+                practice_input = gr.Textbox(
+                    label="你（扮演詐騙方）",
+                    lines=2,
+                    placeholder="打一句詐騙方會說的話",
+                )
+                with gr.Row(elem_classes="chips"):
+                    practice_chips = [
+                        gr.Button(sample.short_label, size="sm", scale=0) for sample in SAMPLES
+                    ]
+                practice_send = gr.Button("送出", variant="primary")
+                practice_status = gr.HTML(f'<div class="note">{POLISH_NOT_INJECTED}</div>')
                 practice_messages_state = gr.State([])
                 practice_replies_state = gr.State([])
+                practice_spoken_state = gr.State([])
 
-            with gr.Tab("這是詐騙嗎"):
-                inquiry_row = gr.HTML(initial_row)
-                with gr.Row():
-                    with gr.Column(scale=3):
-                        inquiry_input = gr.Textbox(
-                            label="貼上你收到的訊息",
-                            lines=8,
-                            placeholder="一則就直接貼上；一段轉傳的多則對話請以空行分隔",
-                            info="以空行分隔為多則。不解析時間戳行與暱稱行 ——"
-                            "那些會被當成一般文字。",
-                        )
-                        with gr.Row():
-                            inquiry_send = gr.Button("判定", variant="primary")
-                            inquiry_pick = gr.Dropdown(labels, label="範例訊息", value=None)
-                            inquiry_fill = gr.Button("填入範例")
-                        inquiry_answer_html = gr.HTML('<div class="answer"></div>')
-                        inquiry_echo = gr.HTML('<div class="conversation"></div>')
-                    with gr.Column(scale=2):
-                        inquiry_panel = gr.HTML(initial_panel)
-                        gr.HTML(EXTERNAL_BLOCK)
+        gr.HTML(f'<div class="sg-foot">{PRIVACY_NOTE}{samples_listing()}</div>')
 
+        practice_inputs = [practice_messages_state, practice_replies_state, practice_spoken_state]
+        practice_outputs = [
+            practice_messages_state,
+            practice_replies_state,
+            practice_spoken_state,
+            practice_conversation,
+            practice_card,
+            practice_ranking,
+            practice_status,
+            practice_input,
+        ]
+        inquiry_outputs = [inquiry_card, inquiry_echo]
+
+        inquiry_send.click(inquiry_submit, inputs=[inquiry_input], outputs=inquiry_outputs)
         practice_send.click(
-            practice_submit,
-            inputs=[practice_input, practice_messages_state, practice_replies_state],
-            outputs=[
-                practice_messages_state,
-                practice_replies_state,
-                practice_conversation,
-                practice_row,
-                practice_panel,
-                practice_status,
-                practice_input,
-            ],
+            practice_submit, inputs=[practice_input, *practice_inputs], outputs=practice_outputs
         )
-        practice_fill.click(fill_sample, inputs=[practice_pick], outputs=[practice_input])
-        inquiry_send.click(
-            inquiry_submit,
-            inputs=[inquiry_input],
-            outputs=[inquiry_echo, inquiry_row, inquiry_panel, inquiry_answer_html],
-        )
-        inquiry_fill.click(fill_sample, inputs=[inquiry_pick], outputs=[inquiry_input])
+        # 標籤的身分以一個常數 `gr.State` 進 handler。迴圈裡不定義任何函式 ——
+        # 捕獲迴圈變數的寫法會讓八顆按鈕全部送出最後一筆。
+        for sample, chip in zip(SAMPLES, inquiry_chips):
+            chip.click(
+                inquiry_from_sample,
+                inputs=[gr.State(sample.short_label)],
+                outputs=[inquiry_input, *inquiry_outputs],
+            )
+        for sample, chip in zip(SAMPLES, practice_chips):
+            chip.click(
+                practice_from_sample,
+                inputs=[gr.State(sample.short_label), *practice_inputs],
+                outputs=practice_outputs,
+            )
 
     return demo
 
 
 if __name__ == "__main__":
     # Gradio 6 把 `css` 從 Blocks 的建構子移到 `launch()`。
-    build_demo().launch(css=CSS)
+    build_demo().launch(css=demo_ui.CSS)
