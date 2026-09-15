@@ -202,6 +202,7 @@
         </label>
         <textarea id="input" disabled placeholder="等待執行環境載入完成"></textarea>
         <div class="chips" id="samples"></div>
+        <p class="note">這些是示範用的合成範例，用來展示系統怎麼判讀；系統對真實訊息的實際表現見評估報告。</p>
         <div class="send-row">
           <button id="run" class="primary" disabled>看看這是不是詐騙</button>
           <span class="note" id="registered-note"></span>
@@ -238,41 +239,7 @@
 
       <div id="error" class="error" hidden></div>
 
-      <div class="sg-foot">
-        <details>
-          <summary>你的訊息會被怎麼處理</summary>
-          <div class="note">
-            <p>
-              <b>不會送出。</b>偵測核心在你的瀏覽器裡執行，你貼上的訊息不會離開這台電腦，
-              這個頁面也沒有後端可以記錄它。
-            </p>
-            <p>
-              取得這個頁面本身（HTML、執行環境與名單）會像開啟任何網頁一樣留下一次連線記錄，
-              那筆記錄裡沒有你打的字。
-            </p>
-            <p>
-              <b>語意判讀那一層多一個對象。</b>進場初始化時，
-              你的瀏覽器會由第三方 CDN <code>huggingface.co</code> 取得約 784 MB 的模型檔 ——
-              這是這個專案第一次讓你的瀏覽器對第三方發出請求。
-              那幾次連線送出的是模型檔的請求，<b>裡面沒有你打的字</b>：
-              訊息只在你的瀏覽器裡跟模型說話，模型也在你的瀏覽器裡。
-              瀏覽器不支援或下載失敗時，規則層仍可完整使用。
-            </p>
-          </div>
-        </details>
-        <details>
-          <summary>範例訊息的來源與授權（Cofacts，CC BY-SA 4.0）</summary>
-          <div class="note">
-            <p>
-              程式為 MIT。範例訊息取自
-              <a href="https://cofacts.tw" target="_blank" rel="noopener">Cofacts 真的假的</a>
-              的開放資料，授權為 CC BY-SA 4.0，姓名標示以每一筆的出處連結滿足；
-              散布該內容或其衍生內容時須以相同條款釋出，不適用本專案的 MIT。
-            </p>
-            <ul id="attribution"></ul>
-          </div>
-        </details>
-      </div>
+      <p class="sg-foot note">你貼的訊息不離開這台電腦；模型由第三方 CDN 取得，你的 IP 會出現在其記錄裡。</p>
       </div>
     </main>
 
@@ -386,9 +353,8 @@
           throw new Error(`${SAMPLES} 缺少 samples 欄位`);
         }
         const chips = $("samples");
-        const list = $("attribution");
         loaded.samples.forEach((sample, index) => {
-          for (const field of ["label", "short_label", "text", "source_uri"]) {
+          for (const field of ["label", "short_label", "text"]) {
             if (!(field in sample)) {
               throw new Error(`${SAMPLES} 的一筆資料缺少 ${field} 欄位`);
             }
@@ -405,14 +371,6 @@
           chip.disabled = true;
           chips.appendChild(chip);
 
-          const item = document.createElement("li");
-          const link = document.createElement("a");
-          link.href = sample.source_uri;
-          link.target = "_blank";
-          link.rel = "noopener";
-          link.textContent = "出處";
-          item.append(`${sample.label} —— `, link);
-          list.appendChild(item);
         });
       }
 

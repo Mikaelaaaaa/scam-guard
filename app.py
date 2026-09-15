@@ -181,7 +181,7 @@ SHORT_LABEL_MAX = 6
 
 @dataclass(frozen=True)
 class Sample:
-    """一則進版控的範例訊息。`source_uri` 為 CC BY-SA 4.0 的姓名標示要求。
+    """一則進版控的合成範例訊息。
 
     `short_label` 是畫面上那顆按鈕的字，**不從 `label` 推導**：八筆的 `label`
     是「類型：說明」的形式，在 `：` 切開會得到兩筆都叫「假借補助金」的標籤，
@@ -191,7 +191,6 @@ class Sample:
     label: str
     short_label: str
     text: str
-    source_uri: str
 
 
 def load_samples(path: Path = SAMPLES_PATH) -> list[Sample]:
@@ -218,7 +217,7 @@ def load_samples(path: Path = SAMPLES_PATH) -> list[Sample]:
     samples: list[Sample] = []
     seen: set[str] = set()
     for entry in loaded["samples"]:
-        for field_name in ("label", "short_label", "text", "source_uri"):
+        for field_name in ("label", "short_label", "text"):
             if field_name not in entry:
                 raise ValueError(
                     f"範例庫的一筆資料缺少 {field_name} 欄位：{path.name}，該筆為 {entry!r}"
@@ -237,7 +236,6 @@ def load_samples(path: Path = SAMPLES_PATH) -> list[Sample]:
                 label=entry["label"],
                 short_label=short_label,
                 text=entry["text"],
-                source_uri=entry["source_uri"],
             )
         )
     return samples
@@ -527,60 +525,10 @@ PRACTICE_NOTE = (
     "對方每一輪只會講一條新看到的訊號，<b>聊不起來是正常的</b>。</div>"
 )
 
-PRIVACY_NOT_LOGGED = (
-    "<p><b>不會被儲存。</b>這個版本兩個模式都不留任何記錄；對話內容只存在於這個"
-    "瀏覽器分頁，關掉或重新整理就消失。</p>"
+SYNTHETIC_SAMPLE_NOTE = (
+    '<p class="note">這些是示範用的合成範例，用來展示系統怎麼判讀；'
+    "系統對真實訊息的實際表現見評估報告。</p>"
 )
-
-PRIVACY_LOGGED = (
-    "<p><b>你貼上的內容會被寫進記錄，兩個模式都一樣。</b>寫進去之前會先蓋掉"
-    "身分證字號、手機號碼、市話與信用卡號四種。<b>姓名、地址與銀行帳號不在這四種"
-    "裡面</b>，會原樣留在記錄裡。不要在這裡貼上你不想被留下來的東西。</p>"
-)
-
-PRIVACY_REST = """
-<p><b>不會送到外部服務。</b>比對用的名單與規則都在本機，判斷過程不對外連線。</p>
-<p>伺服器的連線記錄只有網址與狀態碼，不含你打的字。若這個服務是跑在別人的雲端平台上，
-該平台自己的系統記錄不在我們控制範圍內 —— 未被接住的錯誤訊息可能落在那裡。</p>
-"""
-
-
-def privacy_note(logger: TranscriptLogger | None) -> str:
-    """隱私說明。**依記錄器掛了沒有產生，不是一段無條件的固定文字。**
-
-    原本那段常數無條件宣告「『這是詐騙嗎』模式不留任何記錄」。兩個模式共用記錄點
-    之後，那句話在有掛記錄器的部署上是假的，而一個會說謊的隱私說明比沒有隱私說明
-    更糟 —— 讀它的人正是因為在意才點開它。
-
-    掛上時的文字明講會被寫進記錄，並指出遮蔽只涵蓋四個類型；
-    MUST NOT 說成「已去識別化」。
-    """
-    first = PRIVACY_NOT_LOGGED if logger is None else PRIVACY_LOGGED
-    return (
-        "<details><summary>你的訊息會被怎麼處理</summary>"
-        f'<div class="note">{first}{PRIVACY_REST}</div></details>'
-    )
-
-
-def samples_listing() -> str:
-    """範例庫的出處清單。CC BY-SA 4.0 的姓名標示要求以每筆的連結滿足。
-
-    收在頁尾的可展開區塊：授權標示是法律要求，必須留著，但它不是使用者來這裡
-    要解決的問題，不該佔掉第一眼的版面。
-    """
-    items = "".join(
-        f"<li>{demo_ui.escaped(sample.label)} —— "
-        f'<a href="{demo_ui.escaped(sample.source_uri)}" target="_blank" rel="noopener">出處</a>'
-        "</li>"
-        for sample in SAMPLES
-    )
-    return (
-        "<details><summary>範例訊息的來源與授權（Cofacts，CC BY-SA 4.0）</summary>"
-        '<div class="note"><p>範例訊息取自 '
-        '<a href="https://cofacts.tw" target="_blank" rel="noopener">Cofacts 真的假的</a>'
-        " 的開放資料，依 CC BY-SA 4.0 釋出，與本專案其餘部分的 MIT 授權不同；"
-        f"散布它或其衍生內容時須以相同條款釋出。</p><ul>{items}</ul></div></details>"
-    )
 
 
 def transcript_notice(logger: TranscriptLogger | None) -> str:
@@ -637,6 +585,7 @@ def build_demo() -> gr.Blocks:
                                 gr.Button(sample.short_label, size="sm", scale=0)
                                 for sample in SAMPLES
                             ]
+                        gr.HTML(SYNTHETIC_SAMPLE_NOTE)
                         inquiry_send = gr.Button("看看這是不是詐騙", variant="primary")
                         inquiry_echo = gr.HTML()
                     with gr.Column(elem_classes="detail-column"):
@@ -659,6 +608,7 @@ def build_demo() -> gr.Blocks:
                                 gr.Button(sample.short_label, size="sm", scale=0)
                                 for sample in SAMPLES
                             ]
+                        gr.HTML(SYNTHETIC_SAMPLE_NOTE)
                         practice_send = gr.Button("送出", variant="primary")
                         practice_status = gr.HTML(
                             f'<div class="note">{demo_ui.POLISH_NOT_INJECTED}</div>'
@@ -669,8 +619,6 @@ def build_demo() -> gr.Blocks:
                 practice_messages_state = gr.State([])
                 practice_replies_state = gr.State([])
                 practice_spoken_state = gr.State([])
-
-        gr.HTML(f'<div class="sg-foot">{privacy_note(TRANSCRIPT_LOGGER)}{samples_listing()}</div>')
 
         practice_inputs = [practice_messages_state, practice_replies_state, practice_spoken_state]
         practice_outputs = [
