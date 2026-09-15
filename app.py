@@ -42,6 +42,7 @@ from scam_guard.redact import RedactedText
 from scam_guard.rules.evasion import register_evasion_checks
 from scam_guard.rules.quotation import QuotationCheck
 from scam_guard.rules.speech_act import register_speech_act_rules
+from scam_guard.ngram import load_model, register_ngram_check
 from scam_guard.types import Message, Request, Verdict
 from scam_guard.weights import load_weights
 
@@ -135,6 +136,10 @@ def log_transcript(verdict: Verdict) -> None:
         TRANSCRIPT_LOGGER(verdict.redacted)
 
 
+TABLE = load_weights()
+NGRAM_MODEL = load_model()
+
+
 def build_registry() -> CheckRegistry:
     """建立本介面唯一的檢查註冊表。每落地一項檢查，此處多一行。
 
@@ -148,12 +153,11 @@ def build_registry() -> CheckRegistry:
     register_speech_act_rules(registry)
     register_evasion_checks(registry)
     registry.register(QuotationCheck())
+    register_ngram_check(registry, TABLE, model=NGRAM_MODEL)
     return registry
 
 
 REGISTRY: CheckRegistry = build_registry()
-
-TABLE = load_weights()
 """權重表的單一來源。`detect()` 的必填參數 —— 一個有預設表的 `detect()`
 會讓呼叫端在沒有表的情況下跑出一個看起來正常的結果。
 

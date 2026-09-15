@@ -123,15 +123,15 @@ def test_real_table_loads(table: WeightTable) -> None:
     assert table.path == DEFAULT_WEIGHTS_PATH
 
 
-def test_thirty_five_signals_with_unique_names(table: WeightTable) -> None:
-    """35 個訊號：規則層 21、引述 1、規避 5、URL 層 5、網域年齡 1、LLM 語意 2。"""
-    assert len(table.signals) == 35
+def test_thirty_six_signals_with_unique_names(table: WeightTable) -> None:
+    """既有 35 個訊號加上字元 n-gram 分類器。"""
+    assert len(table.signals) == 36
     assert all(name == signal.name for name, signal in table.signals.items())
 
 
 def test_every_signal_declares_a_group(table: WeightTable) -> None:
     assert all(signal.group for signal in table.signals.values())
-    assert sum(len(names) for names in table.groups.values()) == 35
+    assert sum(len(names) for names in table.groups.values()) == 36
 
 
 def test_non_unit_groups_have_a_rationale() -> None:
@@ -161,8 +161,9 @@ def test_url_shortener_is_its_own_group(table: WeightTable) -> None:
 def test_every_placeholder_value_is_in_the_allowed_set(table: WeightTable) -> None:
     values = set()
     for signal in table.signals.values():
-        values.add(signal.weight_soft.value)
-        if signal.weight_hard is not None:
+        if signal.weight_soft.basis == "placeholder":
+            values.add(signal.weight_soft.value)
+        if signal.weight_hard is not None and signal.weight_hard.basis == "placeholder":
             values.add(signal.weight_hard.value)
 
     assert values <= PLACEHOLDER_WEIGHTS
@@ -179,16 +180,12 @@ def test_allowed_set_is_exactly_four_traceable_values() -> None:
     assert PLACEHOLDER_WEIGHTS == frozenset({2.5, 0.6, 0.0, -1.5})
 
 
-def test_no_measured_entry_exists_yet(table: WeightTable) -> None:
-    """目前一個實測值都沒有。`add-testset` 之後這條測試會被改寫，而改寫本身就是進度。"""
-    bases = {signal.weight_soft.basis for signal in table.signals.values()}
-    bases |= {
-        signal.weight_hard.basis
-        for signal in table.signals.values()
-        if signal.weight_hard is not None
-    }
-
-    assert bases == {"placeholder"}
+def test_ngram_is_the_first_measured_signal(table: WeightTable) -> None:
+    measured = [
+        signal.name for signal in table.signals.values() if signal.weight_soft.basis == "measured"
+    ]
+    assert measured == ["ngram_classifier"]
+    assert table.thresholds["ngram_threshold"].basis == "measured"
 
 
 def test_thresholds_section_exists(table: WeightTable) -> None:

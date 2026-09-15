@@ -505,6 +505,19 @@ basis = "placeholder"
 inherited_from = "add-speech-act-rules 的 Tier-B 佔位值；由 add-llm-validate 登錄"
 blocked_on = "add-testset"
 
+# ══ 字元 n-gram 分類器（1 條）════════════════════════════════════════
+
+[[signal]]
+name = "ngram_classifier"
+group = "ngram_classifier"
+hard_capable = false
+[signal.weight_soft]
+value = 4.467675
+basis = "measured"
+p_hit_given_scam = 0.846154
+p_hit_given_ham = 0.009709
+measured_on = "testset/manifest.json 的 tune 切分（572 則 scam、824 則 ham；門檻亦在同一切分選定）"
+
 # ══ 門檻 ══════════════════════════════════════════════════════════════
 #
 # scoring 相關的全部常數集中於此，MUST NOT 於程式碼中出現任何未登錄的判定門檻。
@@ -517,6 +530,13 @@ blocked_on = "add-testset"
 [thresholds]
 # 此區段的骨架由 add-weight-table 建立，條目由
 # add-score-compute、add-confidence、add-verdict-render 各自填入。
+
+[thresholds.ngram_threshold]
+value = 0.376648
+basis = "measured"
+p_hit_given_scam = 0.846154
+p_hit_given_ham = 0.009709
+measured_on = "testset/manifest.json 的 tune 切分（572 則 scam、824 則 ham；門檻亦在同一切分選定）"
 
 # ── add-score-compute ──
 [thresholds.prior_log_odds]

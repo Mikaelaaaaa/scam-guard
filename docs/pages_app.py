@@ -40,6 +40,7 @@ from scam_guard.pii import find_pii
 from scam_guard.rules.evasion import register_evasion_checks
 from scam_guard.rules.quotation import QuotationCheck
 from scam_guard.rules.speech_act import register_speech_act_rules
+from scam_guard.ngram import load_model, register_ngram_check
 from scam_guard.types import Message, Request
 from scam_guard.url import PublicSuffixList
 from scam_guard.url_check import load_tables, register_url_checks
@@ -89,6 +90,10 @@ BLANK_LINE = re.compile(r"\n[^\S\n]*\n")
 LINE 版本與語言設定改變，猜錯的後果是把一則訊息切成六則、每則半句話，座標系跟著錯。"""
 
 
+TABLE = load_weights()
+NGRAM_MODEL = load_model()
+
+
 def build_registry() -> CheckRegistry:
     """建立本介面唯一的檢查註冊表。每落地一項檢查，此處多一行。
 
@@ -105,12 +110,11 @@ def build_registry() -> CheckRegistry:
         PublicSuffixList.load(PSL_DIR, max_age_days=PSL_MAX_AGE_DAYS),
         load_tables(),
     )
+    register_ngram_check(registry, TABLE, model=NGRAM_MODEL)
     return registry
 
 
 REGISTRY: CheckRegistry = build_registry()
-
-TABLE = load_weights()
 """權重表的單一來源。`detect()` 的必填參數，且在 import 時就載入並驗證整張表 ——
 缺漏會在頁面啟動時炸，不是在第一次命中時。"""
 
