@@ -292,17 +292,35 @@ def test_the_token_expires_after_one_use() -> None:
     two_pass = a_two_pass()
     first = two_pass.first_pass(Request.from_text(PHISHING))
     two_pass.second_pass(first.token, an_output([[0, 0]]))
-    with pytest.raises(ValueError, match=re.escape(first.token)):
+    with pytest.raises(ValueError, match=f"{re.escape(first.token)}.*已被消費"):
         two_pass.second_pass(first.token, an_output([[0, 0]]))
 
 
-def test_resubmitting_invalidates_the_previous_token() -> None:
-    """使用者改了輸入重新送出：先前那次的生成回來時撞上一個已作廢的識別字。"""
+def test_resubmitting_does_not_invalidate_the_previous_token() -> None:
+    """另一個 first pass 只新增自己的 token，不覆蓋仍在飛的判讀。"""
     two_pass = a_two_pass()
-    stale = two_pass.first_pass(Request.from_text(PHISHING))
+    original = two_pass.first_pass(Request.from_text(PHISHING))
     two_pass.first_pass(Request.from_text("明天見"))
-    with pytest.raises(ValueError, match=re.escape(stale.token)):
-        two_pass.second_pass(stale.token, an_output([[0, 0]]))
+    result = two_pass.second_pass(original.token, an_output([[0, 0]]))
+    assert result.document.sentences == original.document.sentences
+
+
+def test_consuming_a_newer_token_does_not_invalidate_an_older_one() -> None:
+    two_pass = a_two_pass()
+    older = two_pass.first_pass(Request.from_text(PHISHING))
+    newer = two_pass.first_pass(Request.from_text("明天見"))
+    two_pass.without_model(newer.token)
+    result = two_pass.second_pass(older.token, an_output([[0, 0]]))
+    assert result.document.sentences == older.document.sentences
+
+
+def test_an_evicted_token_reports_that_it_was_too_old() -> None:
+    two_pass = a_two_pass()
+    oldest = two_pass.first_pass(Request.from_text("第 0 則"))
+    for index in range(browser_llm.MAX_PENDING):
+        two_pass.first_pass(Request.from_text(f"第 {index + 1} 則"))
+    with pytest.raises(ValueError, match="已因過舊被淘汰"):
+        two_pass.without_model(oldest.token)
 
 
 def test_an_unknown_token_raises_instead_of_passing_off_the_rule_layer_result() -> None:
@@ -487,7 +505,7 @@ def test_a_violating_chunk_aborts_and_the_whole_line_falls_back() -> None:
     assert "87" not in violating["conversation"]
     assert second["polish_status"] == browser_llm.demo_ui.POLISH_STREAMING
 
-    with pytest.raises(ValueError, match="沒有進行中的潤飾"):
+    with pytest.raises(ValueError, match="沒有進行中的 persona 生成"):
         practice.polish_feed("後面還有")
 
 
@@ -501,14 +519,55 @@ def test_an_accepted_polish_replaces_the_line() -> None:
     assert "你叫我不要跟家人講" in ended["conversation"]
 
 
-def test_the_polish_prompt_carries_the_victim_line_and_nothing_else() -> None:
-    """潤飾的輸入只有受害方那一句，**沒有訊息原文**。"""
+def test_the_persona_prompt_carries_detection_xml_without_message_text() -> None:
     practice = a_practice()
     spoken = "請把簡訊驗證碼給我，不要告訴家人。"
     first = practice.first(spoken, LlmState.READY)
     second = practice.second(first["token"], an_output([[0, 0]], category=None))
     assert spoken not in second["polish_prompt"]
-    assert practice._replies[-1] in second["polish_prompt"]
+    assert "善良市民" in second["polish_prompt"]
+    assert "<detection>" in second["polish_prompt"]
+    assert "<signal>索取簡訊驗證碼</signal>" in second["polish_prompt"]
+
+
+def test_two_modes_can_share_one_two_pass_without_invalidating_each_other() -> None:
+    two_pass = a_two_pass()
+    practice = PracticeMode(two_pass, PRESENTATION)
+    inquiry = InquiryMode(two_pass, PRESENTATION)
+    practice_first = practice.first("請把簡訊驗證碼給我。", LlmState.READY)
+    inquiry_first = inquiry.first(Request.from_text("明天見。"), LlmState.READY)
+    inquiry.without_model(inquiry_first["token"], LlmState.NOT_LOADED)
+    completed = practice.second(practice_first["token"], an_output([[0, 0]], category=None))
+    assert completed["conversation"]
+
+
+def test_persona_generation_failure_falls_back_to_the_baseline() -> None:
+    practice = a_practice()
+    first = practice.first("請把簡訊驗證碼給我。", LlmState.READY)
+    practice.second(first["token"], an_output([[0, 0]], category=None))
+    baseline = practice._replies[-1]
+    practice.polish_feed("先讓我想想")
+    failed = practice.polish_fail()
+    assert practice._replies[-1] == baseline
+    assert failed["polish_status"] == browser_llm.demo_ui.POLISH_FAILED
+
+
+def test_static_practice_serializes_rounds_until_generation_finishes() -> None:
+    page = (Path(__file__).resolve().parents[1] / "docs" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    practice_round = page.partition("async function practiceRound(text)")[2].partition(
+        "function switchMode"
+    )[0]
+    assert "if (practiceBusy)" in practice_round
+    assert "setPracticeBusy(true)" in practice_round
+    assert "finally" in practice_round
+    assert "setPracticeBusy(false)" in practice_round
+    busy_control = page.partition("function setPracticeBusy(busy)")[2].partition(
+        "async function polish"
+    )[0]
+    assert '$("practice-run").disabled = busy' in busy_control
+    assert '$("mode-inquiry").disabled = busy' in busy_control
 
 
 def test_a_round_accumulates_messages() -> None:

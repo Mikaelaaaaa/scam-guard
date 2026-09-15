@@ -479,7 +479,7 @@
         state: NOT_LOADED,
         tokenizer: null,
         instance: null,
-        // 判讀與潤飾**共用同一個實例**：兩份權重在瀏覽器裡是一點五 GB 的圖形記憶體，
+        // 判讀與 persona 生成**共用同一個實例**：兩份權重會佔一點五 GB 圖形記憶體，
         // 而兩者是序列呼叫的。
       };
 
@@ -737,6 +737,16 @@
         }
       }
 
+      let practiceBusy = false;
+
+      function setPracticeBusy(busy) {
+        practiceBusy = busy;
+        $("practice-run").disabled = busy;
+        $("practice-input").disabled = busy;
+        $("mode-inquiry").disabled = busy;
+        $("mode-practice").disabled = busy;
+      }
+
       async function polish(prompt) {
         const transformers = await transformersModule;
         const criteria = new transformers.InterruptableStoppingCriteria();
@@ -758,40 +768,55 @@
             }
           },
         });
-        // 潤飾是自由文字：不帶預填、不帶任何結構約束，而且與判讀共用同一個模型實例。
-        await generate(prompt, { prefill: "", streamer, criteria, maxNewTokens: 128 });
+        // persona 回應是自由文字：不帶預填、不帶結構約束，並與判讀共用模型實例。
+        try {
+          await generate(prompt, { prefill: "", streamer, criteria, maxNewTokens: 128 });
+        } catch (reason) {
+          if (!aborted) {
+            renderPractice(JSON.parse(app.practice_polish_fail()));
+          }
+          throw reason;
+        }
         if (!aborted) {
           renderPractice(JSON.parse(app.practice_polish_end()));
         }
       }
 
       async function practiceRound(text) {
-        errorBox.hidden = true;
-        let first;
-        try {
-          first = JSON.parse(app.practice_first(text, model.state));
-        } catch (reason) {
-          showError(reason);
+        if (practiceBusy) {
           return;
         }
-        // 1. 規則層那一趟：判定卡與排行立刻上畫面，**還沒有受害方台詞**。
-        renderPractice(first);
-
+        setPracticeBusy(true);
         try {
-          // 2 與 3. 判讀生成，然後含 LlmCheck 的那一趟 —— 卡片與排行再更新一次，
-          //    而受害方台詞取自**這一趟**的 Verdict。
-          const second =
-            model.state === READY && first.prompt
-              ? JSON.parse(app.practice_second(first.token, await readingGeneration(first.prompt)))
-              : JSON.parse(app.practice_without_model(first.token, model.state));
-          renderPractice(second);
-
-          // 4. 措辭潤飾。模型沒開的時候這一段整段不發生，狀態文字說的就是那件事。
-          if (model.state === READY) {
-            await polish(second.polish_prompt);
+          errorBox.hidden = true;
+          let first;
+          try {
+            first = JSON.parse(app.practice_first(text, model.state));
+          } catch (reason) {
+            showError(reason);
+            return;
           }
-        } catch (reason) {
-          showError(reason);
+          // 1. 規則層那一趟：判定卡與排行立刻上畫面，**還沒有受害方台詞**。
+          renderPractice(first);
+
+          try {
+            // 2 與 3. 判讀生成，然後含 LlmCheck 的那一趟 —— 卡片與排行再更新一次，
+            //    而受害方台詞取自**這一趟**的 Verdict。
+            const second =
+              model.state === READY && first.prompt
+                ? JSON.parse(app.practice_second(first.token, await readingGeneration(first.prompt)))
+                : JSON.parse(app.practice_without_model(first.token, model.state));
+            renderPractice(second);
+
+            // 4. persona 生成。模型沒開時不發生，畫面保留確定性底稿。
+            if (model.state === READY) {
+              await polish(second.polish_prompt);
+            }
+          } catch (reason) {
+            showError(reason);
+          }
+        } finally {
+          setPracticeBusy(false);
         }
       }
 

@@ -60,19 +60,15 @@ def run_practice(
 
 
 # ---------------------------------------------------------------------------
-# 潤飾驗證 —— 只剩需要 `app.practice_submit()` 的那一條，
+# persona 驗證 —— 只剩需要 `app.practice_submit()` 的那一條，
 # 其餘已隨 `PolishValidator` 一起移到 `tests/test_polish_validator.py`
 # ---------------------------------------------------------------------------
 
 
-def test_the_victim_line_carries_no_percentage_so_the_polisher_cannot_invent_one(
+def test_persona_cannot_invent_a_percentage_absent_from_the_verdict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """受害方改為每輪一條依據之後，`allowed_numbers()` 自動收緊。
-
-    確定性層的輸出不再含機率，潤飾層就再也不能吐出任何百分比 ——
-    不需要為它加規則。
-    """
+    """這份 Verdict 的全部確定性素材都沒有百分比，persona 因此不能發明一個。"""
     monkeypatch.setattr(app, "POLISHER", None)
     outputs = list(app.practice_submit(SCAM_LINE, [], [], []))
     victim = outputs[-1][REPLIES][-1]
@@ -80,7 +76,7 @@ def test_the_victim_line_carries_no_percentage_so_the_polisher_cannot_invent_one
 
     request = Request.from_text(SCAM_LINE)
     verdict = detect(request, app.REGISTRY, app.TABLE, limits=app.LIMITS)
-    validator = demo_ui.PolishValidator([victim], verdict)
+    validator = demo_ui.PolishValidator(demo_ui.verdict_segments(verdict), verdict)
     assert validator.feed("這則訊息有 92% 的可能") is False
 
 
@@ -189,6 +185,70 @@ class SlowPolisher:
         yield "嗯"
         time.sleep(0.5)
         yield "，我先不要照做。"
+
+
+class RecordingPersona:
+    def __init__(self) -> None:
+        self.segments = None
+
+    def __call__(self, segments):
+        self.segments = segments
+        yield "我不會照做，這個要求不太對勁。"
+
+
+class FailingPersona:
+    def __call__(self, segments):
+        raise RuntimeError("模型生成失敗")
+        yield from ()
+
+
+class FailingSynchronousPersona:
+    def __call__(self, segments):
+        raise RuntimeError("模型初始化失敗")
+
+
+def test_gradio_persona_receives_detection_xml_without_the_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    persona = RecordingPersona()
+    monkeypatch.setattr(app, "POLISHER", persona)
+    list(app.practice_submit(SCAM_LINE, [], [], []))
+    assert persona.segments is not None
+    prompt = persona.segments[0]
+    assert "善良市民" in prompt
+    assert "<detection>" in prompt
+    assert SCAM_LINE not in prompt
+
+
+def test_gradio_persona_failure_falls_back_and_says_it_was_not_generated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(app, "POLISHER", FailingPersona())
+    outputs = list(app.practice_submit(SCAM_LINE, [], [], []))
+    assert outputs[-1][REPLIES][-1] == outputs[0][REPLIES][-1]
+    assert outputs[-1][STATUS] == demo_ui.POLISH_FAILED
+    assert "未經模型生成" in outputs[-1][STATUS]
+
+
+def test_synchronous_persona_setup_failure_also_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(app, "POLISHER", FailingSynchronousPersona())
+    outputs = list(app.practice_submit(SCAM_LINE, [], [], []))
+    assert outputs[-1][REPLIES][-1] == outputs[0][REPLIES][-1]
+    assert outputs[-1][STATUS] == demo_ui.POLISH_FAILED
+
+
+def test_character_avatar_assets_are_the_user_selected_files() -> None:
+    assert (app.ASSETS_PATH / "2.png").is_file()
+    assert (app.ASSETS_PATH / "3.png").is_file()
+    rendered = app.render_practice_conversation(
+        [Message(text="測試")], ["拒絕"], build_document([Message(text="測試")], app.LIMITS)
+    )
+    assert app.SCAMMER_AVATAR in rendered
+    assert app.PERSONA_AVATAR in rendered
+    assert "邪惡詐騙犯" in rendered
+    assert "善良市民" in rendered
 
 
 def test_card_completes_before_the_model_produces_any_character(

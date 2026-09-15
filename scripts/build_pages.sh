@@ -27,6 +27,7 @@ mkdir -p "$out"
 # ⚠️ 模型檔不在這裡，也不該在這裡：那 783,858,998 bytes 由使用者的瀏覽器直接向
 # huggingface.co 取得。站台的 1 GB 上限與 100 GB／月頻寬都不被它佔用。
 cp docs/index.html docs/pages_app.py demo_ui.py browser_llm.py demo_samples.json "$out/"
+cp -R assets "$out/"
 
 # 偵測核心以 wheel 交付，由瀏覽器內的 micropip 安裝。
 python3 -m build --wheel --outdir "$out"
@@ -72,6 +73,13 @@ fi
 for module in demo_ui.py browser_llm.py pages_app.py; do
   if [ ! -f "$out/$module" ]; then
     echo "建置失敗：$out 下沒有 $module，頁面會在 pyimport 階段找不到模組" >&2
+    exit 1
+  fi
+done
+
+for avatar in 2.png 3.png; do
+  if [ ! -f "$out/assets/$avatar" ]; then
+    echo "建置失敗：$out/assets/$avatar 不存在，角色頭像會載入失敗" >&2
     exit 1
   fi
 done

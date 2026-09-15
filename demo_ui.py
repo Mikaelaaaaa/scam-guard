@@ -14,10 +14,10 @@
 文案層由 `add-verdict-render` 在 `scam_guard/` 內持有（`Verdict.evidence` 與
 `Verdict.actions` 本來就是它產的），而本模組是**標記層**，那一層本來就不該進核心。
 
-**措辭潤飾層的驗證住在這裡，理由與標記層相同。** `PolishValidator` 與它的兩個
+**persona 生成層的驗證住在這裡，理由與標記層相同。** `PolishValidator` 與它的兩個
 允許集合原本在 `app.py`，而兩個載體（Gradio 與瀏覽器）都需要它 —— 兩份實作各改
 一次，第二次就是它的利息。它不碰任何介面框架，搬家是機械的。
-**它驗證的是措辭，不產生措辭**：產生那一段文字的是模型，而模型住在載體那一側。
+**它驗證的是輸出，不產生輸出**：產生那一段文字的是模型，而模型住在載體那一側。
 
 **本模組已知而刻意不解的一件事：** `CheckResult.indeterminate=True` 落在五個
 狀態術語之外。`check_state()` 對它會 `raise` 而不是猜一個術語 —— 今天不會發生
@@ -85,6 +85,27 @@ NOTE_SEPARATOR = "；"
 TITLE_SCAM = "很可能是詐騙"
 TITLE_SIGNALS = "有可疑訊號，但不足以判定"
 TITLE_UNDECIDED = "無法判定"
+
+PRACTICE_PERSONA = """你是一位角色名稱叫「善良市民」的普通台灣市民，
+個性善良、有禮貌，也有基本的防詐意識。
+遇到陌生或可疑的要求，你會禮貌但堅定地拒絕，並用一兩句話說出你為什麼覺得
+不對勁。你不會辱罵對方，也不會長篇說教。你只根據系統已經看出來的線索起疑，
+不會編造你不知道的細節，也不會提供任何個人資料、驗證碼、帳號或金錢。"""
+
+PRACTICE_INSTRUCTIONS = """你是收到下面這則訊息的市民。
+系統對這則訊息的偵測結果放在 `<detection>` 標籤裡。
+請你以善良市民的口氣，禮貌但堅定地拒絕對方的要求，並用一兩句話說明你為什麼起疑。
+只根據 `<detection>` 裡的線索，不要提到任何裡面沒有的數字、網址或詐騙類型。
+只輸出你要說的那一兩句話。
+
+{context}"""
+
+PRACTICE_AVATAR_ALT = "善良市民的頭像"
+SCAMMER_AVATAR_ALT = "邪惡詐騙犯的頭像"
+DETECTION_PERCENTAGE = re.compile(r"\d+(?:\.\d+)?%")
+DETECTION_URL = re.compile(
+    r"(?i)(?:https?://|www\.)[^\s，。；）]+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/[^\s，。；）]*)?"
+)
 
 LEAD_SIGNALS = "找到 {count} 項訊號，但它們加起來還不夠下結論"
 LEAD_UNDECIDED = "系統沒有找到足夠的依據。這不代表它安全，只代表系統沒有看出訊號。"
@@ -284,6 +305,45 @@ def verdict_state(verdict: Verdict, table: WeightTable) -> str:
     if is_decision(score, verdict, table):
         return TITLE_SCAM
     return TITLE_SIGNALS
+
+
+def build_detection_context(verdict: Verdict, table: WeightTable) -> str:
+    """把確定性偵測結果組成 persona 可見的 XML；不帶原文、機率或信心。"""
+    lines = [
+        "<detection>",
+        f"  <verdict>系統判定：{html.escape(verdict_state(verdict, table))}</verdict>",
+    ]
+    if verdict.scam_type is not None:
+        lines.append(f"  <type>{html.escape(verdict.scam_type.value)}</type>")
+    lines.append("  <signals>")
+    lines.extend(
+        f"    <signal>{html.escape(detection_signal_title(line))}</signal>"
+        for line in verdict.evidence
+    )
+    lines.extend(("  </signals>", "</detection>"))
+    return "\n".join(lines)
+
+
+def detection_signal_title(evidence_line: str) -> str:
+    """取依據標題並移除可能嵌在確定性 detail 裡的 URL 與百分比。"""
+    title = split_evidence_line(evidence_line).title
+    without_urls = DETECTION_URL.sub("[網址已省略]", title)
+    return DETECTION_PERCENTAGE.sub("[比率已省略]", without_urls)
+
+
+def practice_prompt(verdict: Verdict, table: WeightTable) -> str:
+    """組出善良市民的 system persona 與只含偵測結果的生成指引。"""
+    context = build_detection_context(verdict, table)
+    return f"{PRACTICE_PERSONA}\n\n{PRACTICE_INSTRUCTIONS.format(context=context)}"
+
+
+def verdict_segments(verdict: Verdict) -> tuple[str, ...]:
+    """可供 persona 引用的全部確定性素材；刻意去掉每一行的原文引用。"""
+    segments: list[str] = []
+    for line in verdict.evidence:
+        parsed = split_evidence_line(line)
+        segments.extend((parsed.title, *parsed.notes))
+    return tuple(segments)
 
 
 # ---------------------------------------------------------------------------
@@ -696,24 +756,21 @@ def victim_reply(verdict: Verdict, spoken: Sequence[str]) -> tuple[str, list[str
 
 
 # ---------------------------------------------------------------------------
-# 措辭潤飾層的驗證 —— 三條前綴可判定的條件
+# persona 生成層的驗證 —— 三條前綴可判定的條件
 # ---------------------------------------------------------------------------
 
 DIGITS = re.compile(r"\d+")
 URL_MARKERS = ("http", "www.")
 
-POLISH_NOT_INJECTED = "這句回應直接來自判定結果，沒有經過語言模型改寫。"
-POLISH_STREAMING = "語言模型正在改寫這句回應的措辭。"
-POLISH_ACCEPTED = "改寫後的措辭通過檢查，沒有加入判定結果以外的內容。"
-POLISH_DISCARDED = "改寫加進了判定結果沒有的內容，已整句丟棄，改用原本的回應。"
+POLISH_NOT_INJECTED = "這句回應直接來自判定結果，沒有經過語言模型生成。"
+POLISH_STREAMING = "語言模型正在以善良市民的角色生成回應。"
+POLISH_ACCEPTED = "善良市民的回應通過數字、網址與詐騙類型三項檢查。"
+POLISH_DISCARDED = "生成內容加入了判定結果沒有的資訊，已整句丟棄，改用原本的回應。"
+POLISH_FAILED = "語言模型生成失敗，已改用直接來自判定結果、未經模型生成的回應。"
 
 
 def allowed_numbers(segments: Sequence[str]) -> frozenset[str]:
-    """確定性層輸出中的每一段連續數字。潤飾層只能使用這些數字。
-
-    受害方的回應改為每輪至多一條依據之後，這個集合自動收緊：輸出不再含機率，
-    潤飾層就再也不能吐出任何百分比。不需要為它加規則。
-    """
+    """確定性層全部素材裡的連續數字。persona 只能使用這些數字。"""
     return frozenset(match.group() for part in segments for match in DIGITS.finditer(part))
 
 
@@ -733,7 +790,7 @@ def allowed_types(verdict: Verdict) -> frozenset[str]:
 
 
 class PolishValidator:
-    """「不得新增事實」的三條可驗證條件，逐字元判定。
+    """persona 輸出的三條可驗證條件，逐字元判定。
 
     三條都是**前綴可判定的**：一旦違規字元出現，後續文字不可能讓它變回合規。
     因此驗證可以在串流過程中即時進行，違規即中止 —— 若等全文產生完才驗證，
@@ -952,6 +1009,7 @@ def render_message(
     doc: Document,
     sender_label: str,
     recognizer: PiiRecognizer | None,
+    sender_avatar: str | None = None,
 ) -> str:
     """單一則訊息的氣泡，逐句渲染並帶錨點。
 
@@ -961,13 +1019,19 @@ def render_message(
     個資標在**字元上**，不在句尾掛類型計數標籤：字元層級的標註落地之後，
     句尾再掛一個「身分證字號 ×1」就是同一行裡把同一件事講兩次。
     """
+    avatar = (
+        f'<img class="persona-avatar" src="{html.escape(sender_avatar, quote=True)}" '
+        f'alt="{SCAMMER_AVATAR_ALT}">'
+        if sender_avatar is not None
+        else ""
+    )
     positions = doc.message_range(message_index)
     if not positions:
         return (
-            '<div class="bubble them dropped">'
+            f'<div class="persona-sender"><div class="bubble them dropped">'
             f'<div class="who">{escaped(sender_label)} · 第 {message_index + 1} 則 · '
             f"{DROPPED_LABEL}</div>"
-            f'<div class="lines">{escaped(message.text)}</div></div>'
+            f'<div class="lines">{escaped(message.text)}</div></div>{avatar}</div>'
         )
     parts = [
         f'<span class="sentence" id="{anchor_id(doc.coords[position])}">'
@@ -975,9 +1039,9 @@ def render_message(
         for position in positions
     ]
     return (
-        '<div class="bubble them">'
+        f'<div class="persona-sender"><div class="bubble them">'
         f'<div class="who">{escaped(sender_label)} · 第 {message_index + 1} 則</div>'
-        f'<div class="lines">{"".join(parts)}</div></div>'
+        f'<div class="lines">{"".join(parts)}</div></div>{avatar}</div>'
     )
 
 
@@ -988,6 +1052,8 @@ def render_conversation(
     sender_label: str,
     reply_label: str,
     recognizer: PiiRecognizer | None = None,
+    reply_avatar: str | None = None,
+    sender_avatar: str | None = None,
 ) -> str:
     """對話（對練模式）或輸入回顯（「這是詐騙嗎」模式）。
 
@@ -998,11 +1064,20 @@ def render_conversation(
     """
     blocks: list[str] = []
     for message_index, message in enumerate(messages):
-        blocks.append(render_message(message_index, message, doc, sender_label, recognizer))
+        blocks.append(
+            render_message(message_index, message, doc, sender_label, recognizer, sender_avatar)
+        )
         if message_index < len(replies):
+            avatar = (
+                f'<img class="persona-avatar" src="{html.escape(reply_avatar, quote=True)}" '
+                f'alt="{PRACTICE_AVATAR_ALT}">'
+                if reply_avatar is not None
+                else ""
+            )
             blocks.append(
-                f'<div class="bubble me"><div class="who">{escaped(reply_label)}</div>'
-                f'<div class="lines">{escaped(replies[message_index])}</div></div>'
+                f'<div class="persona-reply">{avatar}<div class="bubble me">'
+                f'<div class="who">{escaped(reply_label)}</div>'
+                f'<div class="lines">{escaped(replies[message_index])}</div></div></div>'
             )
     return (
         f'<div class="conversation">{"".join(blocks)}{pii_conversation_note(doc, recognizer)}</div>'
@@ -1158,6 +1233,14 @@ a.quote { font-size: .8rem; line-height: 1.6; color: var(--color-accent);
   background: var(--block-background-fill); color: var(--body-text-color); }
 .bubble.them { align-self: flex-end; background: var(--color-accent-soft); }
 .bubble.me { align-self: flex-start; }
+.persona-reply { align-self: flex-start; display: flex; align-items: flex-end; gap: .45rem;
+  max-width: 92%; }
+.persona-sender { align-self: flex-end; display: flex; align-items: flex-end; gap: .45rem;
+  max-width: 92%; }
+.persona-reply .bubble.me { align-self: auto; max-width: 100%; }
+.persona-sender .bubble.them { align-self: auto; max-width: 100%; }
+.persona-avatar { width: 2.5rem; height: 2.5rem; flex: 0 0 2.5rem; border-radius: 50%;
+  object-fit: cover; border: 1px solid var(--border-color-primary); }
 .bubble.dropped { opacity: .6; border-style: dashed; background: transparent; }
 .who { font-size: .7rem; color: var(--body-text-color-subdued); margin-bottom: .2rem; }
 .lines { white-space: pre-wrap; line-height: 1.75; }

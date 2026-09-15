@@ -32,7 +32,7 @@ Web，而它在瀏覽器裡跑得起來。對練模式的展示重點（判定�
 剩下的五條是已知且刻意留下的，而它們留在這裡是因為一份寫在 design 裡的清單
 沒有人會在改動這個檔案時讀到：
 
-1. **LLM 措辭潤飾層的 llama.cpp 那一半在瀏覽器裡不存在**（`llama-cpp-python`
+1. **善良市民 persona 生成層的 llama.cpp 那一半在瀏覽器裡不存在**（`llama-cpp-python`
    沒有 Pyodide 版本）。瀏覽器側走的是 transformers.js + ONNX Runtime Web，
    兩者是不同的推論引擎，同一個 prompt 的輸出不保證逐字相同。
 2. **`domain_age` 兩邊都不註冊**，理由相同：本頁不對外連線。它在
@@ -193,7 +193,9 @@ def unregistered_checks(blocklist_reason: str) -> tuple[demo_ui.UnregisteredChec
 SENDER_LABEL = "你貼上的訊息"
 REPLY_LABEL = "對方"
 PRACTICE_SENDER_LABEL = "你（扮演詐騙方）"
-PRACTICE_REPLY_LABEL = "對方"
+PRACTICE_REPLY_LABEL = "善良市民"
+SCAMMER_AVATAR = "assets/2.png"
+PERSONA_AVATAR = "assets/3.png"
 
 BLANK_LINE = re.compile(r"\n[^\S\n]*\n")
 """多則轉傳的分隔符。**以空行分隔，不解析時間戳行與暱稱行** —— 那個格式隨
@@ -296,13 +298,14 @@ PRACTICE = browser_llm.PracticeMode(
         sender_label=PRACTICE_SENDER_LABEL,
         reply_label=PRACTICE_REPLY_LABEL,
         recognizer=recognize_pii,
+        reply_avatar=PERSONA_AVATAR,
+        sender_avatar=SCAMMER_AVATAR,
     ),
 )
 """對練模式的跨輪狀態就是這個實例：`messages` / `replies` / `spoken` 都在它裡面。
 
-兩個模式共用**同一個** `TwoPass`，所以也共用同一個一次性 token 的槽位 ——
-切換模式會讓另一個模式等待中的那次判讀作廢，而那正是想要的：
-一次只有一個判讀在飛。
+兩個模式共用**同一個** `TwoPass`，但各自的判讀以 token 索引、互不干擾；
+切換模式或交錯送出不會讓另一個模式等待中的判讀作廢。
 """
 
 
@@ -363,18 +366,23 @@ def practice_second(token: str, raw: str) -> str:
 
 
 def practice_without_model(token: str, llm_state: str) -> str:
-    """模式一在沒有生成發生時收尾。台詞與潤飾驗證器仍然吃同一個 `Verdict`。"""
+    """模式一在沒有生成發生時收尾。底稿與 persona 驗證器使用同一個 `Verdict`。"""
     return _json(PRACTICE.without_model(token, _state(llm_state)))
 
 
 def practice_polish_feed(chunk: str) -> str:
-    """餵入潤飾生成的一塊。`ok` 為 `false` 時 JavaScript MUST 立刻中止生成。"""
+    """餵入 persona 生成的一塊。`ok` 為 `false` 時 JavaScript MUST 立刻中止生成。"""
     return _json(PRACTICE.polish_feed(chunk))
 
 
 def practice_polish_end() -> str:
-    """潤飾生成正常結束。"""
+    """persona 生成正常結束。"""
     return _json(PRACTICE.polish_end())
+
+
+def practice_polish_fail() -> str:
+    """persona 生成失敗時退回確定性底稿。"""
+    return _json(PRACTICE.polish_fail())
 
 
 def styles() -> str:

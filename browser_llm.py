@@ -91,17 +91,8 @@ PRACTICE_SENDER_FIELD = "them"
 `SENDER_THEM` 同一個值、同一個理由，`project.md` 的輸入契約範例寫的就是它。
 """
 
-POLISH_INSTRUCTIONS = """把下面這句話改寫得更像一個人在對話裡會說的口氣。
-只能改措辭：不可以加入這句話沒有的數字、網址或詐騙類型，也不要加任何說明。
-只輸出改寫後的那一句。
-
-{sentence}"""
-"""措辭潤飾的指令。**輸入只有受害方那一句，沒有訊息原文。**
-
-這與 `app.py` 的 `Polisher` 契約一致（「簽章中沒有訊息原文」）。指令寫了三條限制，
-但**真正擋住違規的不是這段文字**，是 `demo_ui.PolishValidator` 的逐字元判定 ——
-指令是請求，驗證才是保證。
-"""
+MAX_PENDING = 8
+"""同時保存的判讀上限。介面在生成期間停用按鈕，實際在飛的數量遠小於此值。"""
 
 
 # ---------------------------------------------------------------------------
@@ -287,12 +278,6 @@ class SecondPass:
     outcome: LlmOutcome | None
 
 
-@dataclass(frozen=True)
-class _Pending:
-    token: str
-    request: Request
-
-
 class TwoPass:
     """一次線上判讀的兩趟，以及那個一次性 token 的生命週期。
 
@@ -323,7 +308,8 @@ class TwoPass:
         self._budget = budget
         self._deadline_s = deadline_s
         self._counter = counter
-        self._pending: _Pending | None = None
+        self._pending: dict[str, Request] = {}
+        self._expired: dict[str, str] = {}
 
     def first_pass(self, request: Request) -> FirstPass:
         """規則層那一趟。回傳判定、文件、這次判讀的 prompt 與一次性 token。
@@ -332,14 +318,17 @@ class TwoPass:
         `build_prompt()` 對空 `Document` 拋例外，而那個例外的意思是「呼叫端算錯了」，
         不是這裡的狀態。呼叫端看到空字串就不要生成。
 
-        **先前發出的 token 在這裡失效。** 使用者改了輸入重新送出時，上一次的生成
-        可能還在跑；它稍後回來會撞上一個已經作廢的 token 而拋例外，
-        而不是拿著對前一段文字的答案去判讀新的文字。
+        每筆 request 以自己的 token 索引；另一個模式或另一輪送出不會覆蓋它。
+        超過上限時淘汰最舊的一筆，避免中途離頁的 first pass 永久累積。
         """
         verdict = detect(request, self._registry, self._table, limits=self._limits)
         document = build_document(request.messages, self._limits)
         token = secrets.token_hex(8)
-        self._pending = _Pending(token=token, request=request)
+        if len(self._pending) >= MAX_PENDING:
+            evicted = next(iter(self._pending))
+            self._pending.pop(evicted)
+            self._remember_expired(evicted, "已因過舊被淘汰")
+        self._pending[token] = request
         prompt = self._prompt_for(verdict, document)
         return FirstPass(
             token=token,
@@ -418,15 +407,18 @@ class TwoPass:
 
     def _consume(self, token: str) -> Request:
         """取出並作廢一個 token。不認得的一律拋例外，**不回傳規則層的結果冒充成功**。"""
-        if self._pending is None:
-            raise ValueError(f"判讀識別字 {token!r} 已經失效：目前沒有等待中的判讀")
-        if self._pending.token != token:
-            raise ValueError(
-                f"判讀識別字 {token!r} 不是目前等待中的那一個：輸入重新送出時先前的識別字即失效"
-            )
-        request = self._pending.request
-        self._pending = None
+        if token not in self._pending:
+            reason = self._expired.get(token, "從未發出、已被重送取代，或失效原因已過期")
+            raise ValueError(f"判讀識別字 {token!r} 已經失效：{reason}")
+        request = self._pending.pop(token)
+        self._remember_expired(token, "已被消費")
         return request
+
+    def _remember_expired(self, token: str, reason: str) -> None:
+        """有界保存失效原因，讓近期 token 大聲說明是已消費或被淘汰。"""
+        if len(self._expired) >= MAX_PENDING:
+            self._expired.pop(next(iter(self._expired)))
+        self._expired[token] = reason
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +439,8 @@ class Presentation:
     sender_label: str
     reply_label: str
     recognizer: demo_ui.PiiRecognizer | None = None
+    reply_avatar: str | None = None
+    sender_avatar: str | None = None
 
 
 def _llm_hit(verdict: Verdict) -> bool:
@@ -571,7 +565,7 @@ class InquiryMode:
 
 @dataclass
 class _Polish:
-    """一輪的潤飾狀態。`document` 留著是為了每一塊都能重畫整段對話。"""
+    """一輪的 persona 生成狀態。`document` 留著是為了每一塊都能重畫對話。"""
 
     validator: demo_ui.PolishValidator
     baseline: str
@@ -588,14 +582,14 @@ class PracticeMode:
     2  （JavaScript）      判讀生成
     3  second()           含 LlmCheck 的那一趟 → 判定卡 + 排行再更新
                           → victim_reply(最終 Verdict) → baseline 氣泡出現
-    4  （JavaScript）      潤飾生成，逐塊回來
+    4  （JavaScript）      persona 生成，逐塊回來
     5  polish_feed()      逐塊驗證，違規即回報 False（呼叫端 MUST 中止生成）
     6  polish_end()       整句通過
     ```
 
     **受害方台詞取自第二趟的 `Verdict`。** `victim_reply()` 與 `PolishValidator`
     吃的是**同一個** `Verdict` 物件 —— 用兩個不同的會讓「判定卡說是假借包裹招領、
-    而潤飾層禁止提到假借包裹招領」這種矛盾成為可能。
+    而 persona 驗證層禁止提到假借包裹招領」這種矛盾成為可能。
     代價是台詞比規則層晚一次生成的時間出現，而那正是這個模式要展示的東西。
 
     **`first()` 的回傳值裡沒有受害方台詞，這是刻意的。** 更新順序是 requirement
@@ -646,7 +640,7 @@ class PracticeMode:
         return self._finish(self._two_pass.without_model(token), state, polished=False)
 
     def polish_feed(self, chunk: str) -> dict[str, object]:
-        """餵入潤飾生成的一塊。`ok` 為 `False` 時呼叫端 MUST 立刻中止生成。
+        """餵入 persona 生成的一塊。`ok` 為 `False` 時呼叫端 MUST 立刻中止生成。
 
         違規時整句退回 `baseline`，**不只丟棄違規的那一塊** —— 前面通過的部分是
         同一次改寫的一部分，留著它等於留下半句被判定為在唬爛的話。
@@ -668,7 +662,7 @@ class PracticeMode:
         }
 
     def polish_end(self) -> dict[str, object]:
-        """潤飾生成正常結束。整句已逐字元通過三條條件。"""
+        """persona 生成正常結束。整句已逐字元通過三條條件。"""
         polish = self._require_polish()
         self._replies[-1] = polish.validator.text
         self._polish = None
@@ -677,11 +671,23 @@ class PracticeMode:
             "polish_status": demo_ui.POLISH_ACCEPTED,
         }
 
+    def polish_fail(self) -> dict[str, object]:
+        """persona 生成失敗時整句退回確定性底稿，並清掉串流狀態。"""
+        polish = self._require_polish()
+        self._replies[-1] = polish.baseline
+        self._polish = None
+        return {
+            "conversation": self._conversation(polish.document),
+            "polish_status": demo_ui.POLISH_FAILED,
+        }
+
     def _finish(self, result: SecondPass, state: LlmState, *, polished: bool) -> dict[str, object]:
         baseline, self._spoken = demo_ui.victim_reply(result.verdict, self._spoken)
         self._replies.append(baseline)
         self._polish = _Polish(
-            validator=demo_ui.PolishValidator([baseline], result.verdict),
+            validator=demo_ui.PolishValidator(
+                demo_ui.verdict_segments(result.verdict), result.verdict
+            ),
             baseline=baseline,
             document=result.document,
         )
@@ -693,7 +699,7 @@ class PracticeMode:
             ),
             "ranking": demo_ui.render_ranking(result.verdict.checks, len(self._messages)),
             "conversation": self._conversation(result.document),
-            "polish_prompt": POLISH_INSTRUCTIONS.format(sentence=baseline),
+            "polish_prompt": demo_ui.practice_prompt(result.verdict, self._presentation.table),
             "status": second_pass_status(result) if state is LlmState.READY else "",
             "polish_status": (
                 demo_ui.POLISH_STREAMING if polished else demo_ui.POLISH_NOT_INJECTED
@@ -703,7 +709,7 @@ class PracticeMode:
 
     def _require_polish(self) -> _Polish:
         if self._polish is None:
-            raise ValueError("這一輪沒有進行中的潤飾：違規已整句丟棄，或這一輪已經結束")
+            raise ValueError("這一輪沒有進行中的 persona 生成：違規已丟棄，或生成已結束")
         return self._polish
 
     def _card(
@@ -724,4 +730,6 @@ class PracticeMode:
             self._presentation.sender_label,
             self._presentation.reply_label,
             self._presentation.recognizer,
+            self._presentation.reply_avatar,
+            self._presentation.sender_avatar,
         )

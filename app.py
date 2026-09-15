@@ -12,14 +12,14 @@ repo 根目錄的 `app.py`。
     demo_ui                  標記層（純 Python，無 gradio，兩份介面層共用）
         ↓
     ├─ 模式二「這是詐騙嗎」：直接顯示，MUST NOT 經過模型
-    └─ 模式一「詐騙對練」：可選的措辭潤飾層，受三條前綴可判定的條件約束
+    └─ 模式一「詐騙對練」：可選的善良市民 persona 生成層，受三條前綴條件約束
 
 交棒事項：文案與標記現在的中繼站是 `demo_ui.py`（`docs/pages_app.py` 也 import
 它）。終點不變 —— `add-verdict-render` 在 `scam_guard/` 內持有文案層，
 `Verdict.evidence` 與 `Verdict.actions` 本來就是它產的；`demo_ui` 留下的是標記，
 那一層不該進核心。
 
-更新順序是 requirement 而非實作細節：判定卡與排行 MUST 在潤飾層產生任何字元之前
+更新順序是 requirement 而非實作細節：判定卡與排行 MUST 在 persona 產生任何字元之前
 完成更新，受害方的回應 MUST 以 streaming 呈現。因此送出的 handler 是 generator
 function，第一次 `yield` 已含完整的判定卡。
 """
@@ -35,7 +35,7 @@ import gradio as gr
 
 import demo_ui
 from scam_guard.check import CheckRegistry
-from scam_guard.normalize import DEFAULT_LIMITS, Limits, build_document
+from scam_guard.normalize import DEFAULT_LIMITS, Document, Limits, build_document
 from scam_guard.pii import find_pii
 from scam_guard.pipeline import detect
 from scam_guard.redact import RedactedText
@@ -65,6 +65,10 @@ SENDER_THEM = "them"
 """
 
 SAMPLES_PATH = Path(__file__).with_name("demo_samples.json")
+ASSETS_PATH = Path(__file__).with_name("assets")
+SCAMMER_AVATAR = "/gradio_api/file=assets/2.png"
+PERSONA_AVATAR = "/gradio_api/file=assets/3.png"
+gr.set_static_paths(paths=[ASSETS_PATH])
 
 UNREGISTERED_CHECKS: tuple[demo_ui.UnregisteredCheck, ...] = (
     ("domain_age", "網域年齡查詢", "需要向網域註冊局查詢，本服務不對外連線"),
@@ -113,7 +117,7 @@ PII_RECOGNIZER: PiiRecognizer | None = recognize_pii
 前者是沒有人在看，後者是看過了沒有。"""
 
 POLISHER: Polisher | None = None
-"""模式一的措辭潤飾層。輸入只有受害方那一句，**簽章中沒有訊息原文**。"""
+"""模式一的 persona 生成層。輸入只有偵測結果 XML，**簽章中沒有訊息原文**。"""
 
 TRANSCRIPT_LOGGER: TranscriptLogger | None = None
 """**兩個模式共用**的記錄器。以掛載與否表達而非布林開關 —— 一個預設為 False
@@ -297,8 +301,24 @@ def build_inquiry_request(text: str) -> Request:
 # ---------------------------------------------------------------------------
 
 PRACTICE_SENDER = "你（扮演詐騙方）"
-PRACTICE_REPLY = "對方"
+PRACTICE_REPLY = "善良市民"
 INQUIRY_SENDER = "你貼上的訊息"
+
+
+def render_practice_conversation(
+    messages: Sequence[Message], replies: Sequence[str], document: Document
+) -> str:
+    """以兩個固定角色頭像畫出對練對話；頭像不進入台詞或判定資料。"""
+    return demo_ui.render_conversation(
+        messages,
+        replies,
+        document,
+        PRACTICE_SENDER,
+        PRACTICE_REPLY,
+        PII_RECOGNIZER,
+        PERSONA_AVATAR,
+        SCAMMER_AVATAR,
+    )
 
 
 def practice_submit(
@@ -310,7 +330,7 @@ def practice_submit(
     """模式一的送出處理，**generator function**。
 
     第一次 `yield` 帶完整的判定卡、排行與受害方那一句；其後每次 `yield` 追加
-    潤飾層的新片段。判定卡 MUST 在模型產生任何字元之前完成更新 —— 若實作成
+    persona 的新片段。判定卡 MUST 在模型產生任何字元之前完成更新 —— 若實作成
     「等模型跑完再一起更新」，畫面仍然正確，只是慢，而**沒有任何測試會報告
     展示效果消失**。因此測試驗證的是第一次產出的內容，不是最終畫面。
 
@@ -332,31 +352,54 @@ def practice_submit(
         verdict, document, TABLE, UNREGISTERED_CHECKS, PII_RECOGNIZER
     )
     ranking = demo_ui.render_ranking(verdict.checks, len(updated))
-    conversation = demo_ui.render_conversation(
-        updated, updated_replies, document, PRACTICE_SENDER, PRACTICE_REPLY, PII_RECOGNIZER
-    )
+    conversation = render_practice_conversation(updated, updated_replies, document)
     status = demo_ui.POLISH_NOT_INJECTED if POLISHER is None else demo_ui.POLISH_STREAMING
     yield updated, updated_replies, updated_spoken, conversation, card, ranking, status, ""
 
     if POLISHER is None:
         return
 
-    validator = demo_ui.PolishValidator([baseline], verdict)
-    for chunk in POLISHER([baseline]):
+    validator = demo_ui.PolishValidator(demo_ui.verdict_segments(verdict), verdict)
+    try:
+        generated = iter(POLISHER([demo_ui.practice_prompt(verdict, TABLE)]))
+    except (OSError, RuntimeError, TimeoutError, TypeError, ValueError):
+        updated_replies[-1] = baseline
+        yield (
+            updated,
+            updated_replies,
+            updated_spoken,
+            render_practice_conversation(updated, updated_replies, document),
+            card,
+            ranking,
+            demo_ui.POLISH_FAILED,
+            "",
+        )
+        return
+    while True:
+        try:
+            chunk = next(generated)
+        except StopIteration:
+            break
+        except (OSError, RuntimeError, TimeoutError, TypeError, ValueError):
+            updated_replies[-1] = baseline
+            yield (
+                updated,
+                updated_replies,
+                updated_spoken,
+                render_practice_conversation(updated, updated_replies, document),
+                card,
+                ranking,
+                demo_ui.POLISH_FAILED,
+                "",
+            )
+            return
         if not validator.feed(chunk):
             updated_replies[-1] = baseline
             yield (
                 updated,
                 updated_replies,
                 updated_spoken,
-                demo_ui.render_conversation(
-                    updated,
-                    updated_replies,
-                    document,
-                    PRACTICE_SENDER,
-                    PRACTICE_REPLY,
-                    PII_RECOGNIZER,
-                ),
+                render_practice_conversation(updated, updated_replies, document),
                 card,
                 ranking,
                 demo_ui.POLISH_DISCARDED,
@@ -368,9 +411,7 @@ def practice_submit(
             updated,
             updated_replies,
             updated_spoken,
-            demo_ui.render_conversation(
-                updated, updated_replies, document, PRACTICE_SENDER, PRACTICE_REPLY, PII_RECOGNIZER
-            ),
+            render_practice_conversation(updated, updated_replies, document),
             card,
             ranking,
             demo_ui.POLISH_STREAMING,
@@ -380,9 +421,7 @@ def practice_submit(
         updated,
         updated_replies,
         updated_spoken,
-        demo_ui.render_conversation(
-            updated, updated_replies, document, PRACTICE_SENDER, PRACTICE_REPLY, PII_RECOGNIZER
-        ),
+        render_practice_conversation(updated, updated_replies, document),
         card,
         ranking,
         demo_ui.POLISH_ACCEPTED,
@@ -408,7 +447,7 @@ def practice_from_sample(
 def inquiry_submit(text: str) -> tuple[str, str]:
     """模式二的送出處理。
 
-    **不呼叫潤飾層，即使已注入。** 這是產品路徑，使用者在問一個關於自己安危的
+    **不呼叫 persona 生成層，即使已注入。** 這是產品路徑，使用者在問一個關於自己安危的
     問題，模型在這條路徑上連措辭都不經手 —— 這是「LLM 不能有最終話語權」最直接
     的實作。而且模式二未來要給 LINE 用，那裡沒有串流可以展示速度差。
 

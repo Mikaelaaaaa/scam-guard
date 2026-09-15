@@ -6,7 +6,7 @@
 **本檔因此不 `importorskip("gradio")`**，斷言的預期值與搬家前逐字相同。
 """
 
-from demo_ui import PolishValidator, allowed_numbers
+from demo_ui import PolishValidator, allowed_numbers, verdict_segments
 from scam_guard.redact import RedactedText
 from scam_guard.types import ScamType, Verdict
 
@@ -93,3 +93,28 @@ def test_polish_allows_prefix_of_allowed_number() -> None:
 
 def test_allowed_numbers_extracts_every_digit_run() -> None:
     assert allowed_numbers(["撥打 165 查證", "共 27 項"]) == frozenset({"165", "27"})
+
+
+def test_persona_may_use_a_number_from_the_second_evidence_line() -> None:
+    verdict = verdict_with(
+        evidence=[
+            "第一項依據：「使用者原文」",
+            "網域註冊於 6 天前；門檻為 30 天：「另一段使用者原文」",
+        ]
+    )
+    segments = verdict_segments(verdict)
+    validator = PolishValidator(segments, verdict)
+    assert validator.feed("這個網域才註冊 6 天，我不會照做。") is True
+    assert all("使用者原文" not in segment for segment in segments)
+
+
+def test_persona_still_rejects_a_type_absent_from_the_full_verdict() -> None:
+    verdict = verdict_with(evidence=["網域註冊於 6 天前：「原文」"])
+    validator = PolishValidator(verdict_segments(verdict), verdict)
+    assert validator.feed(f"這是{ScamType.FAKE_AUTHORITY.value}") is False
+
+
+def test_persona_still_rejects_a_url_with_the_full_verdict_allowlist() -> None:
+    verdict = verdict_with(evidence=["網域註冊於 6 天前：「原文」"])
+    validator = PolishValidator(verdict_segments(verdict), verdict)
+    assert validator.feed("請看 http") is False
