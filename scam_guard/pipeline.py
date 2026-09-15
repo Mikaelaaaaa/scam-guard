@@ -17,13 +17,22 @@ NOT_HIT = "未命中"
 SKIPPED = "因短路未執行"
 
 
-def _run(check: Check, req: Request, doc: Document) -> list[CheckResult]:
+def _run(
+    check: Check, req: Request, doc: Document, prior: tuple[CheckResult, ...]
+) -> list[CheckResult]:
     """執行單一檢查，未回傳結果時補上 `hit=False` 記錄。
 
     檢查未命中時回傳空陣列（見 `add-check-protocol`），但 `Verdict.checks`
     須保留全部執行記錄，因此由 pipeline 補 —— pipeline 知道執行過哪些檢查。
+
+    分派以**屬性的存在與否**判定，不以函式簽章的內省判定：內省在
+    `functools.partial`、`__call__` 與裝飾器之下會得到不同的答案，
+    而一個宣告式的屬性只有一個答案。手法與 `CheckRegistry.register()` 相同。
     """
-    results = check(req, doc)
+    if getattr(check, "wants_prior", False):
+        results = check(req, doc, prior=prior)
+    else:
+        results = check(req, doc)
     if results:
         return results
     return [CheckResult(name=check.name, hit=False, detail=NOT_HIT)]
@@ -67,6 +76,15 @@ def detect(
     這個不變式。
 
     執行順序為先全部 `LOCAL`、再視短路結果決定是否執行 `EXPENSIVE`。
+
+    宣告 `wants_prior` 的 `EXPENSIVE` 檢查（見 `check.ContextualCheck`）以
+    `check(req, doc, prior=...)` 呼叫，`prior` 是一個 `tuple`，**只含 `LOCAL`
+    階段的結果**。不含其他 `EXPENSIVE` 的結果，理由與那些檢查之間沒有定義順序
+    相同 —— 納入它們會讓一個檢查的輸出依賴註冊順序。
+    這也意味著 `domain_age` 的結果不在 `prior` 裡；可以接受，因為需要它的那一層
+    要的是規則層的方向，而規則層與 URL 層都是 `LOCAL`。
+    `wants_prior` **不改變短路的判定**。
+
     短路的三條規則：
 
     1. 只有**硬證據命中**（`hit and hard`）才短路。弱訊號（Tier-B）命中
@@ -113,13 +131,17 @@ def detect(
 
     results: list[CheckResult] = []
     for check in local:
-        results.extend(_run(check, req, doc))
+        # `LOCAL` 檢查的 `prior` 恆為空 —— 它們之間沒有定義順序，
+        # 而 `CheckRegistry.register()` 已經擋下 `wants_prior` 的 `LOCAL` 檢查。
+        results.extend(_run(check, req, doc, ()))
+
+    prior = tuple(results)
 
     if short_circuit and _should_short_circuit(results):
         results.extend(_skipped(check) for check in expensive)
     else:
         for check in expensive:
-            results.extend(_run(check, req, doc))
+            results.extend(_run(check, req, doc, prior))
 
     score = compute_score(results, table)
     confidence = compute_confidence(results, doc, score.contradicted, table)

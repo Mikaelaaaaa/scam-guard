@@ -47,6 +47,19 @@ api = [
     "uvicorn>=0.30",
 ]
 
+# LLM 層的執行期依賴。`scam_guard/` 的 `dependencies` 維持 `[]` ——
+# 核心只產生 prompt 與 grammar 這兩段字串，推論引擎的實際呼叫在 `llm_runtime/`，
+# 而核心的 import 圖裡沒有那個節點，所以未安裝此 extra 時零個 `try: import`。
+#
+# ⚠️ PyPI 上的 `llama-cpp-python` 0.3.35 **只有 sdist**（74.9 MB），`pip install`
+# 會在安裝時編譯 C++。作者維護的預編譯 wheel index 是
+# `https://abetlen.github.io/llama-cpp-python/whl/cpu`，安裝指令要帶
+# `--extra-index-url`；那是一個第三方託管的 GitHub Pages，掛掉時安裝會落回編譯。
+llm = [
+    "llama-cpp-python>=0.3.35",
+    "huggingface-hub>=0.26",
+]
+
 [tool.setuptools.packages.find]
 include = ["scam_guard*"]
 
@@ -89,6 +102,15 @@ select = ["E", "F", "TID"]
 # banned-api 登記錯名稱等於沒有界線，而且是那種寫在設定檔裡看起來很有效的沒有界線。
 "privacy_filter".msg = "架構界線違規：privacy-filter 為選配依賴，不得在 scam_guard/ 內 import，請放在 pii_nlp/"
 
+# LLM runtime 與模型下載的界線。登記的是**實際的 top-level import 名稱**
+# （`llama_cpp`、`huggingface_hub`；PyPI 發佈名為 `llama-cpp-python`、
+# `huggingface-hub`，與 import 名不同），已以實際安裝後 import 驗證。
+# 偵測核心只定義 `LlmRuntime` 這個 Protocol，實作在頂層的 `llm_runtime/` ——
+# 核心的 import 圖裡沒有那個節點，所以未安裝 `llm` extra 時核心的 import
+# 不可能失敗，系統中也因此不需要任何 `try: import`。
+"llama_cpp".msg = "架構界線違規：偵測核心不得 import 推論引擎，請放在 llm_runtime/"
+"huggingface_hub".msg = "架構界線違規：偵測核心不得 import 模型倉庫下載函式庫，請放在 llm_runtime/"
+
 # 介面層自身當然要 import 介面層模組，豁免之。新增介面層目錄時須同步更新此清單。
 [tool.ruff.lint.per-file-ignores]
 "api/*" = ["TID251"]
@@ -106,6 +128,10 @@ select = ["E", "F", "TID"]
 "tests/*" = ["TID251"]
 # pii_nlp/ 是選配 NLP 套件的唯一容身處，與 api/、adapters/ 同層。
 "pii_nlp/*" = ["TID251"]
+# llm_runtime/ 是推論引擎的唯一容身處，與 net/、pii_nlp/、api/ 同層。
+# 不叫 `llm/`：核心側已經有 `scam_guard/llm/`，兩個同名的套件在 import 敘述裡
+# 看起來一樣（`from llm import ...` vs `from scam_guard.llm import ...`）。
+"llm_runtime/*" = ["TID251"]
 
 # 對照表（TLD 風險、短網址、品牌）是人工整理的內容，必須進版控並隨套件安裝。
 # 少了這一段，`pip install .`（非 `-e`）之後檔案不存在 —— 而這種錯在可編輯安裝下

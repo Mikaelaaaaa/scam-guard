@@ -123,15 +123,15 @@ def test_real_table_loads(table: WeightTable) -> None:
     assert table.path == DEFAULT_WEIGHTS_PATH
 
 
-def test_thirty_three_signals_with_unique_names(table: WeightTable) -> None:
-    """33 個訊號：規則層 21、引述 1、規避 5、URL 層 5、網域年齡 1。"""
-    assert len(table.signals) == 33
+def test_thirty_five_signals_with_unique_names(table: WeightTable) -> None:
+    """35 個訊號：規則層 21、引述 1、規避 5、URL 層 5、網域年齡 1、LLM 語意 2。"""
+    assert len(table.signals) == 35
     assert all(name == signal.name for name, signal in table.signals.items())
 
 
 def test_every_signal_declares_a_group(table: WeightTable) -> None:
     assert all(signal.group for signal in table.signals.values())
-    assert sum(len(names) for names in table.groups.values()) == 33
+    assert sum(len(names) for names in table.groups.values()) == 35
 
 
 def test_non_unit_groups_have_a_rationale() -> None:
@@ -147,6 +147,7 @@ def test_non_unit_groups_have_a_rationale() -> None:
         "too_good_offer",
         "url_reputation",
         "evasion",
+        "llm_semantic",
     }
     assert all(document["group_rationale"][group] for group in multi)
 

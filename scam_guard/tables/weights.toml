@@ -57,6 +57,7 @@ advance_fee = "一次「先付一筆才能拿到」的要求；add-speech-act-ru
 too_good_offer = "一個不合理的報酬承諾"
 url_reputation = "一個連結不可信；add-url-check 的 Impact 已寫明五者同群組，取 max 避免重複計數"
 evasion = "一次規避行為。零寬字元與全形半形混用常是同一次操作留下的兩個痕跡"
+llm_semantic = "一次語意判讀。一次呼叫只會產出 llm_scam 或 llm_suspicious 其中之一，同群組讓重複計數在結構上也不可能。⚠️ 兩條目前必然同值，那是 PLACEHOLDER_WEIGHTS 這個封閉集合的直接後果不是判斷：2.5 是硬證據強度、0.0 的語意是資訊不足、-1.5 是負的，可用的只剩 0.6。後果是在 add-testset 有實測之前，label 的三級在計分上只有兩級（有訊號 / 無訊號）"
 
 # ══ 規則層 Tier-A（10 條）══════════════════════════════════════════════
 # hard_capable = true：自帶碼豁免會把 hard 由 True 降為 False，
@@ -467,6 +468,41 @@ hard_capable = false
 value = 0.6
 basis = "placeholder"
 inherited_from = "add-domain-age 的新註冊網域訊號，沿用 Tier-B 佔位值"
+blocked_on = "add-testset"
+
+# ══ LLM 語意判讀（2 條）═══════════════════════════════════════════════
+#
+# hard_capable = false 是**單調升級的條件 B**，不是一個排版上的選擇：
+# hard 的定義是「存在一個可陳述的事實，使合法機構或正常使用者不可能送出這個
+# 言語行為」，而模型的判讀是**推論**不是事實。載入層對「宣告 hard_capable = false
+# 卻回報 hard=True」拋例外，所以這條有一道自動的交叉檢查。
+#
+# 兩個連帶後果都是我們要的：LLM 不可能觸發短路（要 hit and hard），
+# 也不可能把信心的基準值拉到 base_hard 那一級。
+#
+# 條件 A 在程式碼（validate.py：label 為最低級時回傳空陣列），
+# 條件 C 在上方的 [roles]（三個角色的值都不是這兩個名稱 —— 若 LLM 擔任
+# quotation 角色，它就能觸發 contradicted 而使系統拒答，那是一條**降低風險**
+# 的路徑，而單調升級禁止那種路徑）。
+
+[[signal]]
+name = "llm_scam"
+group = "llm_semantic"
+hard_capable = false
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的 Tier-B 佔位值；由 add-llm-validate 登錄"
+blocked_on = "add-testset"
+
+[[signal]]
+name = "llm_suspicious"
+group = "llm_semantic"
+hard_capable = false
+[signal.weight_soft]
+value = 0.6
+basis = "placeholder"
+inherited_from = "add-speech-act-rules 的 Tier-B 佔位值；由 add-llm-validate 登錄"
 blocked_on = "add-testset"
 
 # ══ 門檻 ══════════════════════════════════════════════════════════════

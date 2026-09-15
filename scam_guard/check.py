@@ -3,6 +3,7 @@
 新增檢查不需修改主流程；任一檢查可被停用，供消融實驗使用。
 """
 
+from collections.abc import Sequence
 from enum import Enum
 from typing import Protocol
 
@@ -54,12 +55,51 @@ class Check(Protocol):
 
     注意 `Protocol` 不在執行期強制：註冊一個簽章不符的物件不會立刻報錯，
     只在呼叫時才炸。`CheckRegistry.register()` 因此做基本驗證。
+
+    需要看到同一次 `detect()` 中已產出的結果時，見 `ContextualCheck` ——
+    **本協定一個字都不改**，既有的檢查不需要任何修改。
     """
 
     name: str
     stage: Stage
 
     def __call__(self, req: Request, doc: Document) -> list[CheckResult]: ...
+
+
+class ContextualCheck(Protocol):
+    """一個需要看到同一次 `detect()` 中**已產出結果**的檢查。
+
+    `Check.__call__(req, doc)` 拿不到其他檢查說了什麼，而 `pipeline` 手上有
+    （它先跑完全部 `LOCAL` 才跑 `EXPENSIVE`）。缺的只是把它傳進去。
+
+    **這是一個非破壞性的擴充。** `pipeline` 以
+    `getattr(check, "wants_prior", False)` 分派，既有的檢查沒有這個屬性、
+    走原本的呼叫路徑，**一行都不用改**。手法與 `CheckRegistry.register()`
+    既有的 `getattr` 驗證相同。
+
+    三條配套約束：
+
+    1. **`wants_prior` 為真的檢查 MUST 為 `Stage.EXPENSIVE`。** `LOCAL` 階段的
+       檢查之間沒有定義順序，一個 `LOCAL` 檢查拿到的 `prior` 會依註冊順序而變，
+       而結果不得依賴註冊順序。`register()` 對此拋 `TypeError`。
+    2. **`prior` 為不可變序列**（`tuple`），使檢查不可能修改 pipeline 的中間
+       狀態 —— 與 `Request` 用 `frozen=True` 做同一件事，理由也一樣。
+    3. **`prior` 只含 `LOCAL` 的結果**，不含其他 `EXPENSIVE` 的結果，理由同第 1 條。
+
+    ⚠️ **這是為 `add-llm-prompt` 的規則層摘要而加的，而目前只有一個檢查用得到。**
+    它同時引入一個真實的耦合：關掉一條規則時，LLM 這一層的 prompt 也跟著變，
+    所以逐層消融的結果不純。`add-ablation` 的「給群組名 / 完全不給」對照組
+    正好也是這個耦合的量測 —— **若無差異，本擴充應連同 `wants_prior` 一起移除**，
+    而移除的成本同樣是既有檢查一行不改。
+    """
+
+    name: str
+    stage: Stage
+    wants_prior: bool
+
+    def __call__(
+        self, req: Request, doc: Document, *, prior: Sequence[CheckResult]
+    ) -> list[CheckResult]: ...
 
 
 class CheckRegistry:
@@ -86,9 +126,7 @@ class CheckRegistry:
         """加入一個檢查。介面不符時拋 `TypeError`，名稱重複時拋 `ValueError`。"""
         name = getattr(check, "name", None)
         if not isinstance(name, str) or not name:
-            raise TypeError(
-                f"檢查必須具備非空的字串 name 屬性，{check!r} 不符合 Check 介面"
-            )
+            raise TypeError(f"檢查必須具備非空的字串 name 屬性，{check!r} 不符合 Check 介面")
         if not callable(check):
             raise TypeError(
                 f"檢查必須可呼叫，簽章為 (req, doc) -> list[CheckResult]，"
@@ -99,6 +137,12 @@ class CheckRegistry:
             raise TypeError(
                 f"檢查必須具備 Stage 型別的 stage 屬性（LOCAL 或 EXPENSIVE），"
                 f"{name!r} 的 stage 為 {stage!r}"
+            )
+        if getattr(check, "wants_prior", False) and stage is Stage.LOCAL:
+            raise TypeError(
+                f"宣告 wants_prior 的檢查必須是 Stage.EXPENSIVE，{name!r} 的 stage 為 "
+                f"{stage!r}：LOCAL 階段的檢查之間沒有定義順序，它拿到的 prior "
+                f"會依註冊順序而變"
             )
         if name in self._checks:
             raise ValueError(f"檢查名稱重複：{name!r} 已註冊於此 registry")
