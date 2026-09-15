@@ -116,7 +116,7 @@ def test_the_check_is_expensive_and_wants_prior() -> None:
 def test_an_empty_document_never_reaches_the_model() -> None:
     runtime = FakeRuntime(an_output())
     check = a_check(runtime)
-    empty = Document(sentences=[], raw_sentences=[], coords=[])
+    empty = Document(sentences=[], raw_sentences=[], coords=[], sentence_offsets=())
 
     assert check(a_request(), empty, prior=()) == []
     assert runtime.prompts == []

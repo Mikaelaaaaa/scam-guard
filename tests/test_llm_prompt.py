@@ -78,6 +78,7 @@ def a_document(
         sentences=sentences,
         raw_sentences=list(sentences),
         coords=coords,
+        sentence_offsets=tuple(tuple(range(len(text) + 1)) for text in sentences),
         truncated=dropped_messages > 0,
         dropped_messages=dropped_messages,
     )
@@ -270,7 +271,7 @@ def test_no_truncation_means_no_context_note_at_all() -> None:
 
 
 def test_an_empty_document_raises() -> None:
-    doc = Document(sentences=[], raw_sentences=[], coords=[])
+    doc = Document(sentences=[], raw_sentences=[], coords=[], sentence_offsets=())
 
     with pytest.raises(ValueError, match="doc.coords"):
         build_prompt(doc, hit_groups=[], nonce=NONCE)
