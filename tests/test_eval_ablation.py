@@ -98,16 +98,25 @@ def test_splitting_groups_makes_every_signal_its_own_group_without_touching_the_
     assert split.path == TABLE.path
 
 
-def test_six_non_unit_groups_exist_and_are_the_split_targets() -> None:
+def test_non_unit_groups_are_the_split_targets() -> None:
+    """非單元群組即分群拆解的對象。
+
+    不斷言「恰好六個」——`llm-layer` 落地時多了 `llm_semantic`，而那是預期的
+    擴充不是回歸。改為斷言規則層與 URL 層的六個群組都在（那是拆解一定要涵蓋
+    的），並要求每個非單元群組的成員都確實登記在表中。
+    """
     non_unit = {name for name, members in TABLE.groups.items() if len(members) > 1}
-    assert non_unit == {
+    assert {
         "authority_script",
         "credential_solicit",
         "advance_fee",
         "too_good_offer",
         "url_reputation",
         "evasion",
-    }
+    } <= non_unit
+    for name in non_unit:
+        for member in TABLE.groups[name]:
+            assert member in TABLE.signals, f"群組 {name!r} 的成員 {member!r} 不在表中"
 
 
 # --- 門檻掃描的範圍守住相對關係 -------------------------------------------
