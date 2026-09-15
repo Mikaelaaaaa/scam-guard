@@ -14,10 +14,10 @@
 文案層由 `add-verdict-render` 在 `scam_guard/` 內持有（`Verdict.evidence` 與
 `Verdict.actions` 本來就是它產的），而本模組是**標記層**，那一層本來就不該進核心。
 
-**措辭潤飾層的驗證住在這裡，理由與標記層相同。** `PolishValidator` 與它的兩個
+**persona 生成層的驗證住在這裡，理由與標記層相同。** `PolishValidator` 與它的兩個
 允許集合原本在 `app.py`，而兩個載體（Gradio 與瀏覽器）都需要它 —— 兩份實作各改
 一次，第二次就是它的利息。它不碰任何介面框架，搬家是機械的。
-**它驗證的是措辭，不產生措辭**：產生那一段文字的是模型，而模型住在載體那一側。
+**它驗證的是輸出，不產生輸出**：產生那一段文字的是模型，而模型住在載體那一側。
 
 **本模組已知而刻意不解的一件事：** `CheckResult.indeterminate=True` 落在五個
 狀態術語之外。`check_state()` 對它會 `raise` 而不是猜一個術語 —— 今天不會發生
@@ -86,13 +86,28 @@ TITLE_SCAM = "很可能是詐騙"
 TITLE_SIGNALS = "有可疑訊號，但不足以判定"
 TITLE_UNDECIDED = "無法判定"
 
+PRACTICE_PERSONA = """你是一位角色名稱叫「善良市民」的普通台灣市民，
+個性善良、有禮貌，也有基本的防詐意識。
+遇到陌生或可疑的要求，你會禮貌但堅定地拒絕，並用一兩句話說出你為什麼覺得
+不對勁。你不會辱罵對方，也不會長篇說教。你只根據系統已經看出來的線索起疑，
+不會編造你不知道的細節，也不會提供任何個人資料、驗證碼、帳號或金錢。"""
+
+PRACTICE_INSTRUCTIONS = """你是收到下面這則訊息的市民。
+系統對這則訊息的偵測結果放在 `<detection>` 標籤裡。
+請你以善良市民的口氣，禮貌但堅定地拒絕對方的要求，並用一兩句話說明你為什麼起疑。
+只根據 `<detection>` 裡的線索，不要提到任何裡面沒有的數字、網址或詐騙類型。
+只輸出你要說的那一兩句話。
+
+{context}"""
+
+PRACTICE_AVATAR_ALT = "善良市民的頭像"
+SCAMMER_AVATAR_ALT = "邪惡詐騙犯的頭像"
+DETECTION_PERCENTAGE = re.compile(r"\d+(?:\.\d+)?%")
+DETECTION_URL = re.compile(
+    r"(?i)(?:https?://|www\.)[^\s，。；）]+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/[^\s，。；）]*)?"
+)
+
 LEAD_SIGNALS = "找到 {count} 項訊號，但它們加起來還不夠下結論"
-SCORE_LABEL = "詐騙分數 {value:.2f}"
-GATE_LABEL = "判定門檻 {gate:.2f}"
-SCORING_SCORE = "分數 {value:.2f}"
-SCORING_GATE = "門檻 {gate:.2f}"
-SCORING_PROBABILITY = "機率 {probability:.0%}"
-SCORING_CONFIDENCE = "信心 {confidence:.2f}"
 LEAD_UNDECIDED = "系統沒有找到足夠的依據。這不代表它安全，只代表系統沒有看出訊號。"
 VERIFY_LINE = "不確定的時候，撥打 165 反詐騙專線查證。"
 """無法判定卡上的固定內容。
@@ -116,8 +131,6 @@ RANKING_HEADING = "累積命中的訊號（第 {turns} 輪）"
 RANKING_EMPTY = "這 {turns} 輪裡沒有任何訊號命中。"
 RANKING_NO_COORD = "—"
 
-DETAILS_SUMMARY = "偵測細節（共 {total} 項）"
-DETAILS_SUMMARY_WITH_HITS = "偵測細節（共 {total} 項，{hits} 項命中）"
 QUIET_SUMMARY = "其餘 {count} 項沒有命中（{breakdown}）"
 TRUNCATION_LINE = "訊息太長，最舊的 {dropped} 則沒有納入這次判定。"
 DROPPED_LABEL = "未納入本次判定"
@@ -155,20 +168,6 @@ PII_LABELS: Mapping[str, str] = MappingProxyType(
 `TW_ID` 的顯示名刻意**不排他**。駕照號與軍人補給證號與國民身分證共用
 `[A-Z][12]\\d{8}` 的形狀並通過**同一個** checksum，在字元層不可區分 ——
 標到它們標到的確實是個資，只是不必然是國民身分證。
-"""
-
-GATE_HEADROOM = 1.5
-SCORE_HEADROOM = 1.2
-"""刻度尺右界的兩個係數：右界 = `max(門檻 × 1.5, 分數 × 1.2)`。
-
-**分數沒有上限**（一條 Tier-A 就 2.5，多條可以到 5 以上），所以刻度尺不能把
-判定門檻畫成右端點 —— 那會讀成「滿分是 1.50，而 1.20 快滿了」，
-而實際意義完全相反：1.20 是**還沒到門檻**。門檻因此必須落在軸的中間某處，
-分數在它左邊或右邊都畫得下。
-
-兩個係數是編出來的，記在這裡：1.5 讓門檻落在軸長的三分之二處（分數為 0 時
-軸仍有意義），1.2 讓超過門檻的分數右邊仍留一段空白，不會頂到邊。
-它們不影響任何 requirement，改動只改變留白多寡。
 """
 
 MIN_BAR_WIDTH = 12.0
@@ -308,6 +307,50 @@ def verdict_state(verdict: Verdict, table: WeightTable) -> str:
     return TITLE_SIGNALS
 
 
+def build_detection_context(verdict: Verdict, table: WeightTable) -> str:
+    """把確定性偵測結果組成 persona 可見的 XML；不帶原文、機率或信心。"""
+    lines = [
+        "<detection>",
+        f"  <verdict>系統判定：{html.escape(verdict_state(verdict, table))}</verdict>",
+    ]
+    if verdict.scam_type is not None:
+        lines.append(f"  <type>{html.escape(verdict.scam_type.value)}</type>")
+    lines.append("  <signals>")
+    lines.extend(
+        f"    <signal>{html.escape(detection_signal_title(line))}</signal>"
+        for line in verdict.evidence
+    )
+    lines.extend(("  </signals>", "</detection>"))
+    return "\n".join(lines)
+
+
+def detection_signal_title(evidence_line: str) -> str:
+    """取依據標題並移除可能嵌在確定性 detail 裡的 URL 與百分比。"""
+    title = split_evidence_line(evidence_line).title
+    without_urls = DETECTION_URL.sub("[網址已省略]", title)
+    return DETECTION_PERCENTAGE.sub("[比率已省略]", without_urls)
+
+
+def practice_prompt(verdict: Verdict, table: WeightTable) -> str:
+    """組出善良市民的 system persona 與只含偵測結果的生成指引。"""
+    return f"{PRACTICE_PERSONA}\n\n{practice_instructions(verdict, table)}"
+
+
+def practice_instructions(verdict: Verdict, table: WeightTable) -> str:
+    """組出 persona 的 user 指引；瀏覽器側會另以 system role 傳入 persona。"""
+    context = build_detection_context(verdict, table)
+    return PRACTICE_INSTRUCTIONS.format(context=context)
+
+
+def verdict_segments(verdict: Verdict) -> tuple[str, ...]:
+    """可供 persona 引用的全部確定性素材；刻意去掉每一行的原文引用。"""
+    segments: list[str] = []
+    for line in verdict.evidence:
+        parsed = split_evidence_line(line)
+        segments.extend((parsed.title, *parsed.notes))
+    return tuple(segments)
+
+
 # ---------------------------------------------------------------------------
 # 判定卡
 # ---------------------------------------------------------------------------
@@ -318,15 +361,13 @@ def _facts(verdict: Verdict, state: str, table: WeightTable) -> str:
 
     三個狀態各自帶不同的量，而這不是版面偷懶：
     「很可能是詐騙」帶機率、類型與信心等級 —— 系統做了判定，三者都是那個判定的一部分。
-    「有可疑訊號」只帶信心等級 —— 機率是一個計分層不認可的數字，印出來就是把
-    「未達門檻」包裝成「七成七像詐騙」；類型是一個關於「這是哪一種詐騙」的主張，
-    而此時系統連「是不是」都還沒下結論。信心等級答的是「有沒有足夠依據」，
-    那正是這張卡在講的事，所以留著。
+    「有可疑訊號」帶目前的機率、類型與信心等級，但標題仍由判定門檻決定；
+    刻度尺只把同一個機率圖形化，不另造級距。
     「無法判定」什麼都不帶。
     """
     band = confidence_band(verdict.confidence, table)
     cells: list[str] = []
-    if state == TITLE_SCAM:
+    if state != TITLE_UNDECIDED and verdict.scam_probability is not None:
         cells.append(f'<span class="fact-main">{verdict.scam_probability:.0%}</span>')
         if verdict.scam_type is not None:
             cells.append(f'<span class="fact">{escaped(verdict.scam_type.value)}</span>')
@@ -347,57 +388,19 @@ def _lead(verdict: Verdict, state: str) -> str:
     return ""
 
 
-def scale_bound(value: float, gate: float) -> float:
-    """刻度尺的右界。門檻**永遠不在最右端**，分數超過門檻時也畫得下。"""
-    return max(gate * GATE_HEADROOM, value * SCORE_HEADROOM)
+def render_score_scale(score: Score) -> str:
+    """把同一個機率畫成刻度尺，不另外印第二份百分比。
 
-
-def render_score_scale(score: Score, table: WeightTable) -> str:
-    """「還差多遠」的刻度尺 —— 只出現在「有可疑訊號，但不足以判定」這一態。
-
-    這一態的畫面上不放機率百分比：`77%` 與判定成立時的 `92%` 長得一模一樣，
-    使用者分不出哪一個是系統認可的判定、哪一個是未達門檻的中間值。
-    分數與門檻的相對位置自己說明了為什麼不判定，不需要再寫一句解釋。
-
-    **不寫成「1.20 / 1.50」。** 那個斜線的意思是「滿分 1.50」，而 1.50 是**門檻**
-    不是滿分 —— 分數沒有上限。門檻值向 `WeightTable` 取，不寫死。
+    `width` 是同一個機率的圖形屬性，不是文字節點；尺上不寫數字、不劃級距，
+    避免把未校準的機率包裝成另一套風險分類。
     """
-    gate = table.threshold("decision_score")
-    bound = scale_bound(score.value, gate)
+    probability = min(max(score.probability, 0.0), 1.0)
     return (
-        '<div class="scale">'
-        f'<div class="scale-labels"><span class="scale-score">'
-        f"{SCORE_LABEL.format(value=score.value)}</span>"
-        f'<span class="scale-gate">{GATE_LABEL.format(gate=gate)}</span></div>'
+        '<div class="scale" role="img" aria-label="機率刻度尺">'
         '<div class="scale-axis">'
-        f'<i class="scale-fill" style="width:{100.0 * score.value / bound:.1f}%"></i>'
-        f'<i class="scale-mark" style="left:{100.0 * gate / bound:.1f}%"></i></div>'
-        f'<div class="scale-ticks"><span>0</span>'
-        f'<span class="scale-tick-gate" style="left:{100.0 * gate / bound:.1f}%">'
-        f"{gate:.2f}</span></div>"
+        f'<i class="scale-fill" style="width:{100.0 * probability:.1f}%"></i></div>'
         "</div>"
     )
-
-
-def scoring_line(
-    verdict: Verdict, score: Score | None, table: WeightTable, show_probability: bool
-) -> str:
-    """偵測細節最上面的計分摘要。
-
-    機率只在**卡上沒有印它**的時候出現在這裡：一個未達判定門檻的百分比放在
-    卡片第一層會被讀成判定，放在這裡則有脈絡 —— 旁邊就是分數、門檻與逐項訊號。
-    卡上已經印了機率時再印一次，就是這個 change 要消掉的那種重複。
-    """
-    if score is None:
-        return ""
-    parts = [
-        SCORING_SCORE.format(value=score.value),
-        SCORING_GATE.format(gate=table.threshold("decision_score")),
-    ]
-    if show_probability:
-        parts.append(SCORING_PROBABILITY.format(probability=score.probability))
-    parts.append(SCORING_CONFIDENCE.format(confidence=verdict.confidence))
-    return f'<div class="scoring">{" · ".join(parts)}</div>'
 
 
 def render_why(verdict: Verdict) -> str:
@@ -445,22 +448,69 @@ def render_verdict_card(
     取代了原本的「判定列 + 判定結果散文段 + 右欄面板」三個區塊：同一則假檢警
     訊息原本會在三個地方各講一次機率、信心與類型。
     """
+    return (
+        '<div class="demo-result">'
+        f"{render_analysis_panel(verdict, table)}"
+        f"{render_detection_details(verdict, doc, unregistered, recognizer)}"
+        "</div>"
+    )
+
+
+def split_result(rendered: str) -> tuple[str, str]:
+    """把共用完整輸出投影到載體的全寬面板與右欄，不複製畫面上的事實。"""
+    prefix = '<div class="demo-result">'
+    divider = '</section><section class="detection-detail">'
+    suffix = "</section></div>"
+    if not rendered.startswith(prefix) or not rendered.endswith(suffix):
+        raise ValueError("共用判定標記缺少 demo-result 外框")
+    body = rendered.removeprefix(prefix).removesuffix(suffix)
+    panel, separator, details = body.partition(divider)
+    if not separator:
+        raise ValueError("共用判定標記缺少分析面板或偵測細節")
+    return f"{panel}</section>", f'<section class="detection-detail">{details}</section>'
+
+
+def render_analysis_panel(verdict: Verdict, table: WeightTable) -> str:
+    """全寬判定摘要：三態、唯一一份機率、信心、類型與圖形刻度。"""
     state = verdict_state(verdict, table)
     score = None if verdict.scam_probability is None else compute_score(verdict.checks, table)
-    scale = ""
-    if state == TITLE_SIGNALS and score is not None:
-        scale = render_score_scale(score, table)
-    scoring = scoring_line(verdict, score, table, show_probability=state != TITLE_SCAM)
+    scale = "" if score is None else render_score_scale(score)
     return (
-        '<div class="card">'
+        '<section class="analysis-panel card">'
         f'<div class="card-head"><div class="card-title">{escaped(state)}</div>'
         f"{_facts(verdict, state, table)}</div>"
         f"{scale}"
         f"{_lead(verdict, state)}"
+        "</section>"
+    )
+
+
+def render_detection_details(
+    verdict: Verdict,
+    doc: Document,
+    unregistered: Sequence[UnregisteredCheck],
+    recognizer: PiiRecognizer | None = None,
+) -> str:
+    """右欄內容；判定摘要的機率、信心與類型不在這裡重複。"""
+    hits = [result for result in verdict.checks if result.hit]
+    hit_rows = []
+    for result in hits:
+        title, notes = split_detail(result.detail)
+        body = "".join(f'<div class="item-note">{escaped(note)}</div>' for note in notes)
+        hit_rows.append(
+            _item(title, result.name, check_state(result), body + render_quote(result, doc))
+        )
+    hit_markup = "".join(hit_rows) or '<p class="detail-empty">這次沒有檢查命中。</p>'
+    return (
+        '<section class="detection-detail">'
+        "<h3>命中的檢查</h3>"
+        f'<div class="hit-checks">{hit_markup}</div>'
+        "<h3>PII 標註</h3>"
+        f"{render_pii_block(doc, recognizer)}"
         f"{render_why(verdict)}"
+        f"{render_details(verdict, doc, unregistered)}"
         f"{render_actions(verdict)}"
-        f"{render_details(verdict, doc, unregistered, recognizer, scoring)}"
-        "</div>"
+        "</section>"
     )
 
 
@@ -527,8 +577,6 @@ def render_details(
     verdict: Verdict,
     doc: Document,
     unregistered: Sequence[UnregisteredCheck],
-    recognizer: PiiRecognizer | None = None,
-    scoring: str = "",
 ) -> str:
     """偵測細節：預設收合，命中與未開啟的項目在第一層，未命中的再收一層。
 
@@ -537,14 +585,13 @@ def render_details(
     會讓使用者先讀完一整排看不懂的東西才找得到那一行。
 
     本區塊不重述判定：沒有信心等級的標籤、沒有詐騙類型，只有中文名、識別字、
-    狀態、原文引用與計分的數值。`scoring` 那一行是**數值**不是判定 ——
-    它與逐項訊號放在一起才有脈絡，而卡片第一層已經印過的東西不會再印一次。
+    狀態與原文引用。判定摘要的機率、信心分級與類型不在這裡重複。
     """
     hits = [result for result in verdict.checks if result.hit]
     quiet = [result for result in verdict.checks if not result.hit]
     total = len(verdict.checks) + len(unregistered)
 
-    rows: list[str] = [scoring]
+    rows: list[str] = []
     if doc.truncated:
         rows.append(
             f'<div class="truncation">{TRUNCATION_LINE.format(dropped=doc.dropped_messages)}</div>'
@@ -566,15 +613,8 @@ def render_details(
             f'<details class="quiet"><summary>{_quiet_summary(terms)}</summary>{inner}</details>'
         )
 
-    summary = (
-        DETAILS_SUMMARY_WITH_HITS.format(total=total, hits=len(hits))
-        if hits
-        else DETAILS_SUMMARY.format(total=total)
-    )
-    return (
-        f'<details class="details"><summary>{summary}</summary>'
-        f"{''.join(rows)}{render_pii_block(doc, recognizer)}</details>"
-    )
+    summary = f"完整檢查（{total} 項）"
+    return f'<details class="details"><summary>{summary}</summary>{"".join(rows)}</details>'
 
 
 # ---------------------------------------------------------------------------
@@ -716,24 +756,21 @@ def victim_reply(verdict: Verdict, spoken: Sequence[str]) -> tuple[str, list[str
 
 
 # ---------------------------------------------------------------------------
-# 措辭潤飾層的驗證 —— 三條前綴可判定的條件
+# persona 生成層的驗證 —— 三條前綴可判定的條件
 # ---------------------------------------------------------------------------
 
 DIGITS = re.compile(r"\d+")
 URL_MARKERS = ("http", "www.")
 
-POLISH_NOT_INJECTED = "這句回應直接來自判定結果，沒有經過語言模型改寫。"
-POLISH_STREAMING = "語言模型正在改寫這句回應的措辭。"
-POLISH_ACCEPTED = "改寫後的措辭通過檢查，沒有加入判定結果以外的內容。"
-POLISH_DISCARDED = "改寫加進了判定結果沒有的內容，已整句丟棄，改用原本的回應。"
+POLISH_NOT_INJECTED = "這句回應直接來自判定結果，沒有經過語言模型生成。"
+POLISH_STREAMING = "語言模型正在以善良市民的角色生成回應。"
+POLISH_ACCEPTED = "善良市民的回應通過數字、網址與詐騙類型三項檢查。"
+POLISH_DISCARDED = "生成內容加入了判定結果沒有的資訊，已整句丟棄，改用原本的回應。"
+POLISH_FAILED = "語言模型生成失敗，已改用直接來自判定結果、未經模型生成的回應。"
 
 
 def allowed_numbers(segments: Sequence[str]) -> frozenset[str]:
-    """確定性層輸出中的每一段連續數字。潤飾層只能使用這些數字。
-
-    受害方的回應改為每輪至多一條依據之後，這個集合自動收緊：輸出不再含機率，
-    潤飾層就再也不能吐出任何百分比。不需要為它加規則。
-    """
+    """確定性層全部素材裡的連續數字。persona 只能使用這些數字。"""
     return frozenset(match.group() for part in segments for match in DIGITS.finditer(part))
 
 
@@ -753,7 +790,7 @@ def allowed_types(verdict: Verdict) -> frozenset[str]:
 
 
 class PolishValidator:
-    """「不得新增事實」的三條可驗證條件，逐字元判定。
+    """persona 輸出的三條可驗證條件，逐字元判定。
 
     三條都是**前綴可判定的**：一旦違規字元出現，後續文字不可能讓它變回合規。
     因此驗證可以在串流過程中即時進行，違規即中止 —— 若等全文產生完才驗證，
@@ -972,6 +1009,7 @@ def render_message(
     doc: Document,
     sender_label: str,
     recognizer: PiiRecognizer | None,
+    sender_avatar: str | None = None,
 ) -> str:
     """單一則訊息的氣泡，逐句渲染並帶錨點。
 
@@ -981,13 +1019,19 @@ def render_message(
     個資標在**字元上**，不在句尾掛類型計數標籤：字元層級的標註落地之後，
     句尾再掛一個「身分證字號 ×1」就是同一行裡把同一件事講兩次。
     """
+    avatar = (
+        f'<img class="persona-avatar" src="{html.escape(sender_avatar, quote=True)}" '
+        f'alt="{SCAMMER_AVATAR_ALT}">'
+        if sender_avatar is not None
+        else ""
+    )
     positions = doc.message_range(message_index)
     if not positions:
         return (
-            '<div class="bubble them dropped">'
+            f'<div class="persona-sender"><div class="bubble them dropped">'
             f'<div class="who">{escaped(sender_label)} · 第 {message_index + 1} 則 · '
             f"{DROPPED_LABEL}</div>"
-            f'<div class="lines">{escaped(message.text)}</div></div>'
+            f'<div class="lines">{escaped(message.text)}</div></div>{avatar}</div>'
         )
     parts = [
         f'<span class="sentence" id="{anchor_id(doc.coords[position])}">'
@@ -995,9 +1039,9 @@ def render_message(
         for position in positions
     ]
     return (
-        '<div class="bubble them">'
+        f'<div class="persona-sender"><div class="bubble them">'
         f'<div class="who">{escaped(sender_label)} · 第 {message_index + 1} 則</div>'
-        f'<div class="lines">{"".join(parts)}</div></div>'
+        f'<div class="lines">{"".join(parts)}</div></div>{avatar}</div>'
     )
 
 
@@ -1008,6 +1052,8 @@ def render_conversation(
     sender_label: str,
     reply_label: str,
     recognizer: PiiRecognizer | None = None,
+    reply_avatar: str | None = None,
+    sender_avatar: str | None = None,
 ) -> str:
     """對話（對練模式）或輸入回顯（「這是詐騙嗎」模式）。
 
@@ -1018,11 +1064,20 @@ def render_conversation(
     """
     blocks: list[str] = []
     for message_index, message in enumerate(messages):
-        blocks.append(render_message(message_index, message, doc, sender_label, recognizer))
+        blocks.append(
+            render_message(message_index, message, doc, sender_label, recognizer, sender_avatar)
+        )
         if message_index < len(replies):
+            avatar = (
+                f'<img class="persona-avatar" src="{html.escape(reply_avatar, quote=True)}" '
+                f'alt="{PRACTICE_AVATAR_ALT}">'
+                if reply_avatar is not None
+                else ""
+            )
             blocks.append(
-                f'<div class="bubble me"><div class="who">{escaped(reply_label)}</div>'
-                f'<div class="lines">{escaped(replies[message_index])}</div></div>'
+                f'<div class="persona-reply">{avatar}<div class="bubble me">'
+                f'<div class="who">{escaped(reply_label)}</div>'
+                f'<div class="lines">{escaped(replies[message_index])}</div></div></div>'
             )
     return (
         f'<div class="conversation">{"".join(blocks)}{pii_conversation_note(doc, recognizer)}</div>'
@@ -1062,6 +1117,24 @@ CSS = """
   color: var(--body-text-color); }
 .sg-head p { margin: .2rem 0; font-size: .92rem; line-height: 1.7;
   color: var(--body-text-color); }
+
+/* 共用產品版面：tab 由載體放在最上，分析面板全寬，下面兩欄等寬。 */
+.demo-main { width: 100%; max-width: 72rem; margin: 0 auto; overflow-x: clip; }
+.analysis-slot { width: 100%; margin: .8rem 0 1rem; }
+.analysis-slot .detection-detail { display: none; }
+.demo-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1rem; align-items: start; }
+.input-column, .detail-column { min-width: 0; }
+.detail-column .analysis-panel { display: none; }
+.detection-detail { border: 1px solid var(--border-color-primary); border-radius: 14px;
+  padding: 1rem; background: var(--block-background-fill); color: var(--body-text-color); }
+.detection-detail h3 { margin: 0 0 .55rem; font-size: .9rem;
+  color: var(--body-text-color); }
+.detection-detail h3:not(:first-child) { margin-top: 1rem; }
+.detail-empty { margin: 0; font-size: .85rem; color: var(--body-text-color-subdued); }
+@media (max-width: 48rem) {
+  .demo-columns { grid-template-columns: minmax(0, 1fr); }
+}
 
 /* 判定卡 */
 .card { border: 1px solid var(--border-color-primary); border-radius: 14px;
@@ -1105,9 +1178,6 @@ CSS = """
   color: var(--body-text-color-subdued); }
 .scale-ticks span { position: absolute; left: 0; transform: translateX(-50%); }
 .scale-ticks span:first-child { transform: none; }
-.scoring { font-family: ui-monospace, monospace; font-size: .76rem; margin-bottom: .5rem;
-  color: var(--body-text-color-subdued); }
-
 /* 偵測細節 */
 .details { margin-top: 1.1rem; padding-top: .7rem;
   border-top: 1px solid var(--border-color-primary); }
@@ -1163,6 +1233,14 @@ a.quote { font-size: .8rem; line-height: 1.6; color: var(--color-accent);
   background: var(--block-background-fill); color: var(--body-text-color); }
 .bubble.them { align-self: flex-end; background: var(--color-accent-soft); }
 .bubble.me { align-self: flex-start; }
+.persona-reply { align-self: flex-start; display: flex; align-items: flex-end; gap: .45rem;
+  max-width: 92%; }
+.persona-sender { align-self: flex-end; display: flex; align-items: flex-end; gap: .45rem;
+  max-width: 92%; }
+.persona-reply .bubble.me { align-self: auto; max-width: 100%; }
+.persona-sender .bubble.them { align-self: auto; max-width: 100%; }
+.persona-avatar { width: 2.5rem; height: 2.5rem; flex: 0 0 2.5rem; border-radius: 50%;
+  object-fit: cover; border: 1px solid var(--border-color-primary); }
 .bubble.dropped { opacity: .6; border-style: dashed; background: transparent; }
 .who { font-size: .7rem; color: var(--body-text-color-subdued); margin-bottom: .2rem; }
 .lines { white-space: pre-wrap; line-height: 1.75; }

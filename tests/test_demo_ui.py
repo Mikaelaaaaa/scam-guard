@@ -19,6 +19,7 @@ import demo_ui
 from scam_guard import pii
 from scam_guard.check import CheckRegistry, Stage
 from scam_guard.normalize import DEFAULT_LIMITS, Document, Limits, build_document
+from scam_guard.ngram import NGRAM_DETAIL
 from scam_guard.pipeline import NOT_HIT, SKIPPED, detect
 from scam_guard.redact import RedactedText
 from scam_guard.render import CONTRADICTION_NOTE, TRUNCATION_NOTE
@@ -223,6 +224,11 @@ def test_confidence_band_moves_with_the_weight_table() -> None:
     assert demo_ui.confidence_band(confidence, raised) == demo_ui.BAND_MEDIUM
 
 
+def test_single_strong_confidence_is_the_medium_band() -> None:
+    """單一強訊號的 0.70 由表上的既有切點自然落在「中」，不另寫特例。"""
+    assert demo_ui.confidence_band(0.70, TABLE) == demo_ui.BAND_MEDIUM
+
+
 def test_hard_evidence_hit_is_a_scam_decision() -> None:
     verdict, _document = verdict_for(DECIDED_TEXT)
     assert demo_ui.verdict_state(verdict, TABLE) == demo_ui.TITLE_SCAM
@@ -247,29 +253,98 @@ def test_two_weak_signals_below_the_gate_are_not_a_scam_decision() -> None:
     assert demo_ui.TITLE_SCAM not in card
 
 
-def test_signals_card_shows_the_gate_instead_of_the_probability() -> None:
-    """第三態的卡上是「分數與門檻的距離」，不是一個未達門檻的百分比。
+@pytest.mark.parametrize(
+    ("text", "title"),
+    [
+        (DECIDED_TEXT, demo_ui.TITLE_SCAM),
+        (SIGNALS_TEXT, demo_ui.TITLE_SIGNALS),
+        (QUIET_TEXT, demo_ui.TITLE_UNDECIDED),
+    ],
+)
+def test_detection_context_carries_the_three_state_title(text: str, title: str) -> None:
+    verdict, _document = verdict_for(text)
+    context = demo_ui.build_detection_context(verdict, TABLE)
+    assert f"<verdict>系統判定：{title}</verdict>" in context
 
-    `77%` 與判定成立時的 `92%` 長得一模一樣，使用者分不出哪一個是系統認可的
-    判定。百分比移進偵測細節，在那裡它旁邊就是分數、門檻與逐項訊號。
-    """
+
+def test_detection_context_uses_the_same_weight_table_as_the_card() -> None:
+    verdict, _document = verdict_for(DECIDED_TEXT)
+    raised_gate = TABLE.with_overrides(thresholds={"decision_score": 99.0})
+    context = demo_ui.build_detection_context(verdict, raised_gate)
+    assert f"<verdict>系統判定：{demo_ui.TITLE_SIGNALS}</verdict>" in context
+
+
+def test_detection_context_contains_type_and_escaped_signal_titles_only() -> None:
+    verdict = verdict_with(
+        scam_type=ScamType.FAKE_AUTHORITY,
+        evidence=["要求 A < B；只採信系統線索：「這段是使用者原文」"],
+    )
+    context = demo_ui.build_detection_context(verdict, TABLE)
+    assert f"<type>{ScamType.FAKE_AUTHORITY.value}</type>" in context
+    assert "<signal>要求 A &lt; B</signal>" in context
+    assert "只採信系統線索" not in context
+    assert "這段是使用者原文" not in context
+
+
+def test_detection_context_omits_type_probability_and_confidence() -> None:
+    verdict, _document = verdict_for(QUIET_TEXT)
+    context = demo_ui.build_detection_context(verdict, TABLE)
+    assert "<type>" not in context
+    assert not re.search(r"\d+%", context)
+    assert "信心" not in context
+
+
+def test_detection_context_strips_url_and_ngram_percentage_from_real_detail_shapes() -> None:
+    ngram = NGRAM_DETAIL.format(
+        n_scam=100,
+        p_scam=0.123,
+        n_ham=200,
+        p_ham=0.045,
+        n_sentences=2,
+    )
+    raw_url = "https://reurl.cc/secret-path"
+    verdict = verdict_with(
+        evidence=[
+            f"短網址 {raw_url}（reurl），目的地未知：「{raw_url}」",
+            f"{ngram}：「使用者訊息」",
+        ]
+    )
+    context = demo_ui.build_detection_context(verdict, TABLE)
+    assert raw_url not in context
+    assert not re.search(r"\d+(?:\.\d+)?%", context)
+    assert "[網址已省略]" in context
+    assert "[比率已省略]" in context
+
+
+def test_persona_prompt_uses_the_user_selected_character_name() -> None:
+    verdict, _document = verdict_for(DECIDED_TEXT)
+    prompt = demo_ui.practice_prompt(verdict, TABLE)
+    assert "善良市民" in prompt
+    assert "不會提供任何個人資料、驗證碼、帳號或金錢" in prompt
+
+
+def test_persona_system_role_is_separate_from_detection_instructions() -> None:
+    verdict, _document = verdict_for(DECIDED_TEXT)
+    instructions = demo_ui.practice_instructions(verdict, TABLE)
+    assert "<detection>" in instructions
+    assert "善良市民" in demo_ui.PRACTICE_PERSONA
+    assert demo_ui.practice_prompt(verdict, TABLE) == (
+        f"{demo_ui.PRACTICE_PERSONA}\n\n{instructions}"
+    )
+
+
+def test_signals_panel_shows_probability_once_and_no_grade_labels() -> None:
+    """新版分析面板顯示同一機率，刻度只以圖形呈現且不劃級距。"""
     verdict, document = verdict_for(SIGNALS_TEXT)
     card = demo_ui.render_verdict_card(verdict, document, TABLE, UNREGISTERED)
-    head, _, details = card.partition('<details class="details">')
+    panel, _, details = card.partition('<section class="detection-detail">')
     probability = f"{verdict.scam_probability:.0%}"
 
-    assert probability not in head
-    assert not re.search(r"\d+%", re.sub(r'style="width:[^"]*"|style="left:[^"]*"', "", head))
-    assert f"{TABLE.threshold('decision_score'):.2f}" in head
-    assert probability in details
-    assert "/ 1.50" not in card
-
-
-def test_score_scale_keeps_the_gate_away_from_the_right_edge() -> None:
-    """刻度尺的右界超過門檻 —— 它讀起來不能像「進度條快滿了」。"""
-    gate = TABLE.threshold("decision_score")
-    assert demo_ui.scale_bound(1.2, gate) > gate
-    assert demo_ui.scale_bound(5.0, gate) > 5.0
+    assert panel.count(probability) == 1
+    assert probability not in details
+    assert 'role="img" aria-label="機率刻度尺"' in panel
+    for grade in ("很可能區", "可能區", "不太可能區"):
+        assert grade not in panel
 
 
 def test_undecided_card_says_it_is_not_a_clean_bill() -> None:
@@ -374,6 +449,45 @@ def test_raw_quotes_do_not_appear_in_the_why_block() -> None:
             assert document.raw_at(coord) not in why
 
 
+def test_analysis_panel_and_detail_column_do_not_repeat_verdict_facts() -> None:
+    verdict, document = verdict_for(DECIDED_TEXT)
+    panel = demo_ui.render_analysis_panel(verdict, TABLE)
+    details = demo_ui.render_detection_details(verdict, document, UNREGISTERED)
+    probability = f"{verdict.scam_probability:.0%}"
+    band = demo_ui.confidence_band(verdict.confidence, TABLE)
+
+    assert panel.count(probability) == 1
+    assert panel.count(f"{demo_ui.CONFIDENCE_PREFIX} {band}") == 1
+    assert verdict.scam_type is not None
+    assert panel.count(verdict.scam_type.value) == 1
+    assert demo_ui.WHY_HEADING not in panel
+    assert probability not in details
+    assert f"{demo_ui.CONFIDENCE_PREFIX} {band}" not in details
+    assert verdict.scam_type.value not in details
+
+
+def test_complete_result_splits_into_one_panel_and_one_detail_column() -> None:
+    rendered = card_for(DECIDED_TEXT)
+    panel, details = demo_ui.split_result(rendered)
+    assert panel.count('class="analysis-panel card"') == 1
+    assert "detection-detail" not in panel
+    assert details.count('class="detection-detail"') == 1
+    assert "analysis-panel" not in details
+
+
+def test_detail_column_uses_the_required_product_order() -> None:
+    verdict, document = verdict_for(DECIDED_TEXT)
+    details = demo_ui.render_detection_details(verdict, document, UNREGISTERED)
+    positions = [
+        details.index("命中的檢查"),
+        details.index("PII 標註"),
+        details.index(demo_ui.WHY_HEADING),
+        details.index("完整檢查（"),
+    ]
+    assert positions == sorted(positions)
+    assert '<details class="details">' in details
+
+
 # ---------------------------------------------------------------------------
 # 5. 偵測細節
 # ---------------------------------------------------------------------------
@@ -470,12 +584,11 @@ def test_details_summary_counts_items_and_hits() -> None:
     verdict, document = verdict_for(DECIDED_TEXT)
     details = demo_ui.render_details(verdict, document, UNREGISTERED)
     total = len(verdict.checks) + len(UNREGISTERED)
-    hits = sum(1 for result in verdict.checks if result.hit)
-    assert f"共 {total} 項，{hits} 項命中" in details
+    assert f"完整檢查（{total} 項）" in details
 
     quiet, quiet_document = verdict_for(QUIET_TEXT)
     quiet_details = demo_ui.render_details(quiet, quiet_document, UNREGISTERED)
-    assert f"共 {len(quiet.checks) + len(UNREGISTERED)} 項" in quiet_details
+    assert f"完整檢查（{len(quiet.checks) + len(UNREGISTERED)} 項）" in quiet_details
     assert "項命中" not in quiet_details
 
 
@@ -741,6 +854,28 @@ def test_bubbles_keep_the_detection_semantics_in_their_class_names() -> None:
     )
     assert 'class="bubble them"' in conversation
     assert 'class="bubble me"' in conversation
+
+
+def test_character_avatars_do_not_change_lines_or_verdict_card() -> None:
+    verdict, document = verdict_for(DECIDED_TEXT)
+    messages = [Message(text=DECIDED_TEXT, sender="them")]
+    replies = ["我不會照做，這個要求不太對勁。"]
+    without = demo_ui.render_conversation(messages, replies, document, "邪惡詐騙犯", "善良市民")
+    with_avatars = demo_ui.render_conversation(
+        messages,
+        replies,
+        document,
+        "邪惡詐騙犯",
+        "善良市民",
+        reply_avatar="assets/3.png",
+        sender_avatar="assets/2.png",
+    )
+    lines = re.compile(r'<div class="lines">(.*?)</div>')
+    assert lines.findall(without) == lines.findall(with_avatars)
+    assert 'src="assets/2.png"' in with_avatars
+    assert 'src="assets/3.png"' in with_avatars
+    card = demo_ui.render_verdict_card(verdict, document, TABLE, UNREGISTERED)
+    assert card == card_for(DECIDED_TEXT)
 
 
 def test_sentence_anchors_match_the_evidence_links() -> None:
@@ -1146,6 +1281,39 @@ def test_css_only_references_the_declared_theme_variables() -> None:
     used = set(re.findall(r"var\((--[a-z-]+)\)", demo_ui.CSS))
     assert used
     assert used <= set(demo_ui.THEME_VARIABLES)
+
+
+def test_layout_is_equal_columns_and_stacks_on_narrow_screens() -> None:
+    assert "grid-template-columns: minmax(0, 1fr) minmax(0, 1fr)" in demo_ui.CSS
+    assert "@media (max-width: 48rem)" in demo_ui.CSS
+    assert "grid-template-columns: minmax(0, 1fr);" in demo_ui.CSS
+    assert "overflow-x: clip" in demo_ui.CSS
+
+
+def test_static_page_initializes_model_without_a_load_control() -> None:
+    page = (Path(__file__).resolve().parents[1] / "docs" / "index.html").read_text(encoding="utf-8")
+    assert 'id="entry-progress"' in page
+    assert 'id="model-load"' not in page
+    assert "await initializeModel()" in page
+    assert "Promise.race([prepareModel(), timeout])" in page
+    assert "MODEL_INIT_TIMEOUT_MS" in page
+    assert "const adapter = await navigator.gpu.requestAdapter()" in page
+    assert "model.state = LOAD_FAILED" in page
+    assert '$("main-app").hidden = false' in page
+    assert 'entryProgress.dataset.state = "failed"' in page
+    assert "通常只下載一次" in page
+    assert "第三方 CDN" in page
+    assert "if (inquiryBusy)" in page
+    assert "setInquiryBusy(true)" in page
+
+
+def test_static_page_tabs_precede_both_shared_mode_layouts() -> None:
+    page = (Path(__file__).resolve().parents[1] / "docs" / "index.html").read_text(encoding="utf-8")
+    assert page.index('id="modes"') < page.index('id="card"')
+    for panel_id in ("panel-inquiry", "panel-practice"):
+        panel = page.partition(f'id="{panel_id}"')[2].partition("</section>")[0]
+        assert panel.index("analysis-slot") < panel.index("demo-columns")
+        assert panel.index("input-column") < panel.index("detail-column")
 
 
 def test_the_static_page_defines_every_theme_variable_in_both_schemes() -> None:

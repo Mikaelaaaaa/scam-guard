@@ -35,6 +35,7 @@ from scam_guard.pipeline import detect
 from scam_guard.rules.evasion import register_evasion_checks
 from scam_guard.rules.quotation import QuotationCheck
 from scam_guard.rules.speech_act import register_speech_act_rules
+from scam_guard.scoring import compute_score, is_decision
 from scam_guard.types import CheckResult, Message, Request, ScamType
 from scam_guard.weights import load_weights
 
@@ -291,17 +292,35 @@ def test_the_token_expires_after_one_use() -> None:
     two_pass = a_two_pass()
     first = two_pass.first_pass(Request.from_text(PHISHING))
     two_pass.second_pass(first.token, an_output([[0, 0]]))
-    with pytest.raises(ValueError, match=re.escape(first.token)):
+    with pytest.raises(ValueError, match=f"{re.escape(first.token)}.*已被消費"):
         two_pass.second_pass(first.token, an_output([[0, 0]]))
 
 
-def test_resubmitting_invalidates_the_previous_token() -> None:
-    """使用者改了輸入重新送出：先前那次的生成回來時撞上一個已作廢的識別字。"""
+def test_resubmitting_does_not_invalidate_the_previous_token() -> None:
+    """另一個 first pass 只新增自己的 token，不覆蓋仍在飛的判讀。"""
     two_pass = a_two_pass()
-    stale = two_pass.first_pass(Request.from_text(PHISHING))
+    original = two_pass.first_pass(Request.from_text(PHISHING))
     two_pass.first_pass(Request.from_text("明天見"))
-    with pytest.raises(ValueError, match=re.escape(stale.token)):
-        two_pass.second_pass(stale.token, an_output([[0, 0]]))
+    result = two_pass.second_pass(original.token, an_output([[0, 0]]))
+    assert result.document.sentences == original.document.sentences
+
+
+def test_consuming_a_newer_token_does_not_invalidate_an_older_one() -> None:
+    two_pass = a_two_pass()
+    older = two_pass.first_pass(Request.from_text(PHISHING))
+    newer = two_pass.first_pass(Request.from_text("明天見"))
+    two_pass.without_model(newer.token)
+    result = two_pass.second_pass(older.token, an_output([[0, 0]]))
+    assert result.document.sentences == older.document.sentences
+
+
+def test_an_evicted_token_reports_that_it_was_too_old() -> None:
+    two_pass = a_two_pass()
+    oldest = two_pass.first_pass(Request.from_text("第 0 則"))
+    for index in range(browser_llm.MAX_PENDING):
+        two_pass.first_pass(Request.from_text(f"第 {index + 1} 則"))
+    with pytest.raises(ValueError, match="已因過舊被淘汰"):
+        two_pass.without_model(oldest.token)
 
 
 def test_an_unknown_token_raises_instead_of_passing_off_the_rule_layer_result() -> None:
@@ -323,21 +342,12 @@ def test_the_second_pass_signature_carries_no_message_text() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 掛上這一層之後，那則釣魚訊息**仍然**不會被判為詐騙
+# 掛上這一層之後，強訊號跨過信心閘門，但仍由分數決定是否判定
 # ---------------------------------------------------------------------------
 
 
-def test_the_model_layer_supplies_a_type_and_confidence_but_not_a_decision() -> None:
-    """這條測試存在的目的是釘住一件事：**掛上模型也不會讓那則訊息被判為詐騙**。
-
-    `weights.toml` 的 `base_single_group = 0.35` 低於 `confidence_floor = 0.40`，
-    單一群組命中依設計必定拒答。LLM 這一層在今天的權重表下補的是
-    **類型、依據與信心，不是判定**。要跨過門檻需要第二個群組命中，
-    或需要 `add-testset` / `add-metrics` 取代那張表裡的佔位值 ——
-    兩者都不在 `add-browser-llm` 的範圍內。
-
-    這條測試若有一天紅了，先確認是不是權重表改了，不要改這條斷言。
-    """
+def test_the_model_layer_opens_confidence_but_not_the_decision_gate() -> None:
+    """LLM 是 strong，所以單獨命中會給機率；0.6 的分數仍低於判定門檻。"""
     two_pass = a_two_pass()
     first = two_pass.first_pass(Request.from_text(PHISHING))
     assert first.verdict.scam_probability is None
@@ -346,8 +356,10 @@ def test_the_model_layer_supplies_a_type_and_confidence_but_not_a_decision() -> 
 
     second = two_pass.second_pass(first.token, an_output([[0, 0]]))
     assert second.outcome is LlmOutcome.OK
-    assert second.verdict.scam_probability is None
-    assert second.verdict.confidence == pytest.approx(0.35)
+    score = compute_score(second.verdict.checks, TABLE)
+    assert second.verdict.scam_probability == pytest.approx(0.6456563062257954)
+    assert second.verdict.confidence == pytest.approx(0.70)
+    assert is_decision(score, second.verdict, TABLE) is False
     assert second.verdict.scam_type is ScamType.FAKE_PARCEL
     assert [result.name for result in second.verdict.checks if result.hit] == [SCAM_SIGNAL]
 
@@ -409,7 +421,7 @@ def test_a_failed_reading_stays_on_the_unregistered_list_with_its_own_reason() -
 def test_the_inquiry_card_is_complete_before_any_generation() -> None:
     mode = InquiryMode(a_two_pass(), PRESENTATION)
     first = mode.first(Request.from_text(PHISHING), LlmState.READY)
-    assert '<div class="card">' in first["card"]
+    assert '<section class="analysis-panel card">' in first["card"]
     assert first["prompt"]
     assert first["status"] == browser_llm.STATUS_RUNNING
 
@@ -493,7 +505,7 @@ def test_a_violating_chunk_aborts_and_the_whole_line_falls_back() -> None:
     assert "87" not in violating["conversation"]
     assert second["polish_status"] == browser_llm.demo_ui.POLISH_STREAMING
 
-    with pytest.raises(ValueError, match="沒有進行中的潤飾"):
+    with pytest.raises(ValueError, match="沒有進行中的 persona 生成"):
         practice.polish_feed("後面還有")
 
 
@@ -507,14 +519,54 @@ def test_an_accepted_polish_replaces_the_line() -> None:
     assert "你叫我不要跟家人講" in ended["conversation"]
 
 
-def test_the_polish_prompt_carries_the_victim_line_and_nothing_else() -> None:
-    """潤飾的輸入只有受害方那一句，**沒有訊息原文**。"""
+def test_the_persona_prompt_carries_detection_xml_without_message_text() -> None:
     practice = a_practice()
     spoken = "請把簡訊驗證碼給我，不要告訴家人。"
     first = practice.first(spoken, LlmState.READY)
     second = practice.second(first["token"], an_output([[0, 0]], category=None))
     assert spoken not in second["polish_prompt"]
-    assert practice._replies[-1] in second["polish_prompt"]
+    assert second["polish_system"] == browser_llm.demo_ui.PRACTICE_PERSONA
+    assert "善良市民" in second["polish_system"]
+    assert "<detection>" in second["polish_prompt"]
+    assert "<signal>索取簡訊驗證碼</signal>" in second["polish_prompt"]
+
+
+def test_two_modes_can_share_one_two_pass_without_invalidating_each_other() -> None:
+    two_pass = a_two_pass()
+    practice = PracticeMode(two_pass, PRESENTATION)
+    inquiry = InquiryMode(two_pass, PRESENTATION)
+    practice_first = practice.first("請把簡訊驗證碼給我。", LlmState.READY)
+    inquiry_first = inquiry.first(Request.from_text("明天見。"), LlmState.READY)
+    inquiry.without_model(inquiry_first["token"], LlmState.NOT_LOADED)
+    completed = practice.second(practice_first["token"], an_output([[0, 0]], category=None))
+    assert completed["conversation"]
+
+
+def test_persona_generation_failure_falls_back_to_the_baseline() -> None:
+    practice = a_practice()
+    first = practice.first("請把簡訊驗證碼給我。", LlmState.READY)
+    practice.second(first["token"], an_output([[0, 0]], category=None))
+    baseline = practice._replies[-1]
+    practice.polish_feed("先讓我想想")
+    failed = practice.polish_fail()
+    assert practice._replies[-1] == baseline
+    assert failed["polish_status"] == browser_llm.demo_ui.POLISH_FAILED
+
+
+def test_static_practice_serializes_rounds_until_generation_finishes() -> None:
+    page = (Path(__file__).resolve().parents[1] / "docs" / "index.html").read_text(encoding="utf-8")
+    practice_round = page.partition("async function practiceRound(text)")[2].partition(
+        "function switchMode"
+    )[0]
+    assert "if (practiceBusy)" in practice_round
+    assert "setPracticeBusy(true)" in practice_round
+    assert "finally" in practice_round
+    assert "setPracticeBusy(false)" in practice_round
+    busy_control = page.partition("function setPracticeBusy(busy)")[2].partition(
+        "async function polish"
+    )[0]
+    assert '$("practice-run").disabled = busy' in busy_control
+    assert '$("mode-inquiry").disabled = busy' in busy_control
 
 
 def test_a_round_accumulates_messages() -> None:

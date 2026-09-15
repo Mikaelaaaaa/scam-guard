@@ -12,14 +12,14 @@ repo 根目錄的 `app.py`。
     demo_ui                  標記層（純 Python，無 gradio，兩份介面層共用）
         ↓
     ├─ 模式二「這是詐騙嗎」：直接顯示，MUST NOT 經過模型
-    └─ 模式一「詐騙對練」：可選的措辭潤飾層，受三條前綴可判定的條件約束
+    └─ 模式一「詐騙對練」：可選的善良市民 persona 生成層，受三條前綴條件約束
 
 交棒事項：文案與標記現在的中繼站是 `demo_ui.py`（`docs/pages_app.py` 也 import
 它）。終點不變 —— `add-verdict-render` 在 `scam_guard/` 內持有文案層，
 `Verdict.evidence` 與 `Verdict.actions` 本來就是它產的；`demo_ui` 留下的是標記，
 那一層不該進核心。
 
-更新順序是 requirement 而非實作細節：判定卡與排行 MUST 在潤飾層產生任何字元之前
+更新順序是 requirement 而非實作細節：判定卡與排行 MUST 在 persona 產生任何字元之前
 完成更新，受害方的回應 MUST 以 streaming 呈現。因此送出的 handler 是 generator
 function，第一次 `yield` 已含完整的判定卡。
 """
@@ -35,7 +35,7 @@ import gradio as gr
 
 import demo_ui
 from scam_guard.check import CheckRegistry
-from scam_guard.normalize import DEFAULT_LIMITS, Limits, build_document
+from scam_guard.normalize import DEFAULT_LIMITS, Document, Limits, build_document
 from scam_guard.pii import find_pii
 from scam_guard.pipeline import detect
 from scam_guard.redact import RedactedText
@@ -65,6 +65,10 @@ SENDER_THEM = "them"
 """
 
 SAMPLES_PATH = Path(__file__).with_name("demo_samples.json")
+ASSETS_PATH = Path(__file__).with_name("assets")
+SCAMMER_AVATAR = "/gradio_api/file=assets/2.png"
+PERSONA_AVATAR = "/gradio_api/file=assets/3.png"
+gr.set_static_paths(paths=[ASSETS_PATH])
 
 UNREGISTERED_CHECKS: tuple[demo_ui.UnregisteredCheck, ...] = (
     ("domain_age", "網域年齡查詢", "需要向網域註冊局查詢，本服務不對外連線"),
@@ -113,7 +117,7 @@ PII_RECOGNIZER: PiiRecognizer | None = recognize_pii
 前者是沒有人在看，後者是看過了沒有。"""
 
 POLISHER: Polisher | None = None
-"""模式一的措辭潤飾層。輸入只有受害方那一句，**簽章中沒有訊息原文**。"""
+"""模式一的 persona 生成層。輸入只有偵測結果 XML，**簽章中沒有訊息原文**。"""
 
 TRANSCRIPT_LOGGER: TranscriptLogger | None = None
 """**兩個模式共用**的記錄器。以掛載與否表達而非布林開關 —— 一個預設為 False
@@ -177,7 +181,7 @@ SHORT_LABEL_MAX = 6
 
 @dataclass(frozen=True)
 class Sample:
-    """一則進版控的範例訊息。`source_uri` 為 CC BY-SA 4.0 的姓名標示要求。
+    """一則進版控的合成範例訊息。
 
     `short_label` 是畫面上那顆按鈕的字，**不從 `label` 推導**：八筆的 `label`
     是「類型：說明」的形式，在 `：` 切開會得到兩筆都叫「假借補助金」的標籤，
@@ -187,7 +191,6 @@ class Sample:
     label: str
     short_label: str
     text: str
-    source_uri: str
 
 
 def load_samples(path: Path = SAMPLES_PATH) -> list[Sample]:
@@ -214,7 +217,7 @@ def load_samples(path: Path = SAMPLES_PATH) -> list[Sample]:
     samples: list[Sample] = []
     seen: set[str] = set()
     for entry in loaded["samples"]:
-        for field_name in ("label", "short_label", "text", "source_uri"):
+        for field_name in ("label", "short_label", "text"):
             if field_name not in entry:
                 raise ValueError(
                     f"範例庫的一筆資料缺少 {field_name} 欄位：{path.name}，該筆為 {entry!r}"
@@ -233,7 +236,6 @@ def load_samples(path: Path = SAMPLES_PATH) -> list[Sample]:
                 label=entry["label"],
                 short_label=short_label,
                 text=entry["text"],
-                source_uri=entry["source_uri"],
             )
         )
     return samples
@@ -296,9 +298,25 @@ def build_inquiry_request(text: str) -> Request:
 # Event handlers —— 全部定義於模組層，狀態以顯式參數傳入與傳出
 # ---------------------------------------------------------------------------
 
-PRACTICE_SENDER = "你（扮演詐騙方）"
-PRACTICE_REPLY = "對方"
+PRACTICE_SENDER = "邪惡詐騙犯"
+PRACTICE_REPLY = "善良市民"
 INQUIRY_SENDER = "你貼上的訊息"
+
+
+def render_practice_conversation(
+    messages: Sequence[Message], replies: Sequence[str], document: Document
+) -> str:
+    """以兩個固定角色頭像畫出對練對話；頭像不進入台詞或判定資料。"""
+    return demo_ui.render_conversation(
+        messages,
+        replies,
+        document,
+        PRACTICE_SENDER,
+        PRACTICE_REPLY,
+        PII_RECOGNIZER,
+        PERSONA_AVATAR,
+        SCAMMER_AVATAR,
+    )
 
 
 def practice_submit(
@@ -310,7 +328,7 @@ def practice_submit(
     """模式一的送出處理，**generator function**。
 
     第一次 `yield` 帶完整的判定卡、排行與受害方那一句；其後每次 `yield` 追加
-    潤飾層的新片段。判定卡 MUST 在模型產生任何字元之前完成更新 —— 若實作成
+    persona 的新片段。判定卡 MUST 在模型產生任何字元之前完成更新 —— 若實作成
     「等模型跑完再一起更新」，畫面仍然正確，只是慢，而**沒有任何測試會報告
     展示效果消失**。因此測試驗證的是第一次產出的內容，不是最終畫面。
 
@@ -332,31 +350,54 @@ def practice_submit(
         verdict, document, TABLE, UNREGISTERED_CHECKS, PII_RECOGNIZER
     )
     ranking = demo_ui.render_ranking(verdict.checks, len(updated))
-    conversation = demo_ui.render_conversation(
-        updated, updated_replies, document, PRACTICE_SENDER, PRACTICE_REPLY, PII_RECOGNIZER
-    )
+    conversation = render_practice_conversation(updated, updated_replies, document)
     status = demo_ui.POLISH_NOT_INJECTED if POLISHER is None else demo_ui.POLISH_STREAMING
     yield updated, updated_replies, updated_spoken, conversation, card, ranking, status, ""
 
     if POLISHER is None:
         return
 
-    validator = demo_ui.PolishValidator([baseline], verdict)
-    for chunk in POLISHER([baseline]):
+    validator = demo_ui.PolishValidator(demo_ui.verdict_segments(verdict), verdict)
+    try:
+        generated = iter(POLISHER([demo_ui.practice_prompt(verdict, TABLE)]))
+    except (OSError, RuntimeError, TimeoutError, TypeError, ValueError):
+        updated_replies[-1] = baseline
+        yield (
+            updated,
+            updated_replies,
+            updated_spoken,
+            render_practice_conversation(updated, updated_replies, document),
+            card,
+            ranking,
+            demo_ui.POLISH_FAILED,
+            "",
+        )
+        return
+    while True:
+        try:
+            chunk = next(generated)
+        except StopIteration:
+            break
+        except (OSError, RuntimeError, TimeoutError, TypeError, ValueError):
+            updated_replies[-1] = baseline
+            yield (
+                updated,
+                updated_replies,
+                updated_spoken,
+                render_practice_conversation(updated, updated_replies, document),
+                card,
+                ranking,
+                demo_ui.POLISH_FAILED,
+                "",
+            )
+            return
         if not validator.feed(chunk):
             updated_replies[-1] = baseline
             yield (
                 updated,
                 updated_replies,
                 updated_spoken,
-                demo_ui.render_conversation(
-                    updated,
-                    updated_replies,
-                    document,
-                    PRACTICE_SENDER,
-                    PRACTICE_REPLY,
-                    PII_RECOGNIZER,
-                ),
+                render_practice_conversation(updated, updated_replies, document),
                 card,
                 ranking,
                 demo_ui.POLISH_DISCARDED,
@@ -368,9 +409,7 @@ def practice_submit(
             updated,
             updated_replies,
             updated_spoken,
-            demo_ui.render_conversation(
-                updated, updated_replies, document, PRACTICE_SENDER, PRACTICE_REPLY, PII_RECOGNIZER
-            ),
+            render_practice_conversation(updated, updated_replies, document),
             card,
             ranking,
             demo_ui.POLISH_STREAMING,
@@ -380,9 +419,7 @@ def practice_submit(
         updated,
         updated_replies,
         updated_spoken,
-        demo_ui.render_conversation(
-            updated, updated_replies, document, PRACTICE_SENDER, PRACTICE_REPLY, PII_RECOGNIZER
-        ),
+        render_practice_conversation(updated, updated_replies, document),
         card,
         ranking,
         demo_ui.POLISH_ACCEPTED,
@@ -408,7 +445,7 @@ def practice_from_sample(
 def inquiry_submit(text: str) -> tuple[str, str]:
     """模式二的送出處理。
 
-    **不呼叫潤飾層，即使已注入。** 這是產品路徑，使用者在問一個關於自己安危的
+    **不呼叫 persona 生成層，即使已注入。** 這是產品路徑，使用者在問一個關於自己安危的
     問題，模型在這條路徑上連措辭都不經手 —— 這是「LLM 不能有最終話語權」最直接
     的實作。而且模式二未來要給 LINE 用，那裡沒有串流可以展示速度差。
 
@@ -436,6 +473,42 @@ def inquiry_from_sample(short_label: str) -> tuple[str, str, str]:
     return text, card, echo
 
 
+def inquiry_layout_submit(text: str) -> tuple[str, str, str]:
+    """Gradio 版面用輸出：同一份共用標記分別投影到分析與細節欄。"""
+    card, echo = inquiry_submit(text)
+    panel, details = demo_ui.split_result(card)
+    return panel, details, echo
+
+
+def inquiry_layout_from_sample(short_label: str) -> tuple[str, str, str, str]:
+    """範例標籤的一步操作，另帶右欄所需的同源標記。"""
+    text, card, echo = inquiry_from_sample(short_label)
+    panel, details = demo_ui.split_result(card)
+    return text, panel, details, echo
+
+
+def practice_layout_submit(
+    text: str,
+    messages: list[Message],
+    replies: list[str],
+    spoken: list[str],
+) -> Iterator[tuple[list[Message], list[str], list[str], str, str, str, str, str, str]]:
+    """對練版面用串流：保留既有輸出順序，末端加上同源的右欄標記。"""
+    for output in practice_submit(text, messages, replies, spoken):
+        panel, details = demo_ui.split_result(output[4])
+        yield (*output[:4], panel, *output[5:], details)
+
+
+def practice_layout_from_sample(
+    short_label: str,
+    messages: list[Message],
+    replies: list[str],
+    spoken: list[str],
+) -> Iterator[tuple[list[Message], list[str], list[str], str, str, str, str, str, str]]:
+    """對練範例的版面投影。"""
+    yield from practice_layout_submit(sample_text(short_label), messages, replies, spoken)
+
+
 # ---------------------------------------------------------------------------
 # 介面組裝
 # ---------------------------------------------------------------------------
@@ -448,64 +521,14 @@ HEADER = """
 """
 
 PRACTICE_NOTE = (
-    '<div class="note">你扮演詐騙方打字，對方由系統扮演。'
+    '<div class="note">你扮演「邪惡詐騙犯」打字，「善良市民」由系統扮演。'
     "對方每一輪只會講一條新看到的訊號，<b>聊不起來是正常的</b>。</div>"
 )
 
-PRIVACY_NOT_LOGGED = (
-    "<p><b>不會被儲存。</b>這個版本兩個模式都不留任何記錄；對話內容只存在於這個"
-    "瀏覽器分頁，關掉或重新整理就消失。</p>"
+SYNTHETIC_SAMPLE_NOTE = (
+    '<p class="note">這些是示範用的合成範例，用來展示系統怎麼判讀；'
+    "系統對真實訊息的實際表現見評估報告。</p>"
 )
-
-PRIVACY_LOGGED = (
-    "<p><b>你貼上的內容會被寫進記錄，兩個模式都一樣。</b>寫進去之前會先蓋掉"
-    "身分證字號、手機號碼、市話與信用卡號四種。<b>姓名、地址與銀行帳號不在這四種"
-    "裡面</b>，會原樣留在記錄裡。不要在這裡貼上你不想被留下來的東西。</p>"
-)
-
-PRIVACY_REST = """
-<p><b>不會送到外部服務。</b>比對用的名單與規則都在本機，判斷過程不對外連線。</p>
-<p>伺服器的連線記錄只有網址與狀態碼，不含你打的字。若這個服務是跑在別人的雲端平台上，
-該平台自己的系統記錄不在我們控制範圍內 —— 未被接住的錯誤訊息可能落在那裡。</p>
-"""
-
-
-def privacy_note(logger: TranscriptLogger | None) -> str:
-    """隱私說明。**依記錄器掛了沒有產生，不是一段無條件的固定文字。**
-
-    原本那段常數無條件宣告「『這是詐騙嗎』模式不留任何記錄」。兩個模式共用記錄點
-    之後，那句話在有掛記錄器的部署上是假的，而一個會說謊的隱私說明比沒有隱私說明
-    更糟 —— 讀它的人正是因為在意才點開它。
-
-    掛上時的文字明講會被寫進記錄，並指出遮蔽只涵蓋四個類型；
-    MUST NOT 說成「已去識別化」。
-    """
-    first = PRIVACY_NOT_LOGGED if logger is None else PRIVACY_LOGGED
-    return (
-        "<details><summary>你的訊息會被怎麼處理</summary>"
-        f'<div class="note">{first}{PRIVACY_REST}</div></details>'
-    )
-
-
-def samples_listing() -> str:
-    """範例庫的出處清單。CC BY-SA 4.0 的姓名標示要求以每筆的連結滿足。
-
-    收在頁尾的可展開區塊：授權標示是法律要求，必須留著，但它不是使用者來這裡
-    要解決的問題，不該佔掉第一眼的版面。
-    """
-    items = "".join(
-        f"<li>{demo_ui.escaped(sample.label)} —— "
-        f'<a href="{demo_ui.escaped(sample.source_uri)}" target="_blank" rel="noopener">出處</a>'
-        "</li>"
-        for sample in SAMPLES
-    )
-    return (
-        "<details><summary>範例訊息的來源與授權（Cofacts，CC BY-SA 4.0）</summary>"
-        '<div class="note"><p>範例訊息取自 '
-        '<a href="https://cofacts.tw" target="_blank" rel="noopener">Cofacts 真的假的</a>'
-        " 的開放資料，依 CC BY-SA 4.0 釋出，與本專案其餘部分的 MIT 授權不同；"
-        f"散布它或其衍生內容時須以相同條款釋出。</p><ul>{items}</ul></div></details>"
-    )
 
 
 def transcript_notice(logger: TranscriptLogger | None) -> str:
@@ -546,44 +569,56 @@ def build_demo() -> gr.Blocks:
     with gr.Blocks(title="這是詐騙嗎 · scam-guard", analytics_enabled=False) as demo:
         gr.HTML(HEADER)
 
-        with gr.Tabs():
+        with gr.Tabs(elem_classes="demo-tabs"):
             with gr.Tab("這是詐騙嗎"):
                 gr.HTML(transcript_notice(TRANSCRIPT_LOGGER))
-                inquiry_input = gr.Textbox(
-                    label="貼上你收到的訊息",
-                    lines=5,
-                    placeholder="把整則訊息貼進來。若是一段轉傳的對話，請在每則之間空一行。",
-                )
-                with gr.Row(elem_classes="chips"):
-                    inquiry_chips = [
-                        gr.Button(sample.short_label, size="sm", scale=0) for sample in SAMPLES
-                    ]
-                inquiry_send = gr.Button("看看這是不是詐騙", variant="primary")
-                inquiry_card = gr.HTML()
-                inquiry_echo = gr.HTML()
+                inquiry_card = gr.HTML(elem_classes="analysis-slot")
+                with gr.Row(elem_classes="demo-columns"):
+                    with gr.Column(elem_classes="input-column"):
+                        inquiry_input = gr.Textbox(
+                            label="貼上你收到的訊息",
+                            lines=5,
+                            placeholder="把整則訊息貼進來。若是一段轉傳的對話，請在每則之間空一行。",
+                        )
+                        with gr.Row(elem_classes="chips"):
+                            inquiry_chips = [
+                                gr.Button(sample.short_label, size="sm", scale=0)
+                                for sample in SAMPLES
+                            ]
+                        gr.HTML(SYNTHETIC_SAMPLE_NOTE)
+                        inquiry_send = gr.Button("看看這是不是詐騙", variant="primary")
+                        inquiry_echo = gr.HTML()
+                    with gr.Column(elem_classes="detail-column"):
+                        inquiry_details = gr.HTML()
 
             with gr.Tab("詐騙對練"):
                 gr.HTML(PRACTICE_NOTE)
                 gr.HTML(transcript_notice(TRANSCRIPT_LOGGER))
-                practice_card = gr.HTML()
-                practice_ranking = gr.HTML()
-                practice_conversation = gr.HTML()
-                practice_input = gr.Textbox(
-                    label="你（扮演詐騙方）",
-                    lines=2,
-                    placeholder="打一句詐騙方會說的話",
-                )
-                with gr.Row(elem_classes="chips"):
-                    practice_chips = [
-                        gr.Button(sample.short_label, size="sm", scale=0) for sample in SAMPLES
-                    ]
-                practice_send = gr.Button("送出", variant="primary")
-                practice_status = gr.HTML(f'<div class="note">{demo_ui.POLISH_NOT_INJECTED}</div>')
+                practice_card = gr.HTML(elem_classes="analysis-slot")
+                with gr.Row(elem_classes="demo-columns"):
+                    with gr.Column(elem_classes="input-column"):
+                        practice_conversation = gr.HTML()
+                        practice_input = gr.Textbox(
+                            label="邪惡詐騙犯（你）",
+                            lines=2,
+                            placeholder="打一句詐騙方會說的話",
+                        )
+                        with gr.Row(elem_classes="chips"):
+                            practice_chips = [
+                                gr.Button(sample.short_label, size="sm", scale=0)
+                                for sample in SAMPLES
+                            ]
+                        gr.HTML(SYNTHETIC_SAMPLE_NOTE)
+                        practice_send = gr.Button("送出", variant="primary")
+                        practice_status = gr.HTML(
+                            f'<div class="note">{demo_ui.POLISH_NOT_INJECTED}</div>'
+                        )
+                    with gr.Column(elem_classes="detail-column"):
+                        practice_details = gr.HTML()
+                        practice_ranking = gr.HTML()
                 practice_messages_state = gr.State([])
                 practice_replies_state = gr.State([])
                 practice_spoken_state = gr.State([])
-
-        gr.HTML(f'<div class="sg-foot">{privacy_note(TRANSCRIPT_LOGGER)}{samples_listing()}</div>')
 
         practice_inputs = [practice_messages_state, practice_replies_state, practice_spoken_state]
         practice_outputs = [
@@ -595,24 +630,27 @@ def build_demo() -> gr.Blocks:
             practice_ranking,
             practice_status,
             practice_input,
+            practice_details,
         ]
-        inquiry_outputs = [inquiry_card, inquiry_echo]
+        inquiry_outputs = [inquiry_card, inquiry_details, inquiry_echo]
 
-        inquiry_send.click(inquiry_submit, inputs=[inquiry_input], outputs=inquiry_outputs)
+        inquiry_send.click(inquiry_layout_submit, inputs=[inquiry_input], outputs=inquiry_outputs)
         practice_send.click(
-            practice_submit, inputs=[practice_input, *practice_inputs], outputs=practice_outputs
+            practice_layout_submit,
+            inputs=[practice_input, *practice_inputs],
+            outputs=practice_outputs,
         )
         # 標籤的身分以一個常數 `gr.State` 進 handler。迴圈裡不定義任何函式 ——
         # 捕獲迴圈變數的寫法會讓八顆按鈕全部送出最後一筆。
         for sample, chip in zip(SAMPLES, inquiry_chips):
             chip.click(
-                inquiry_from_sample,
+                inquiry_layout_from_sample,
                 inputs=[gr.State(sample.short_label)],
                 outputs=[inquiry_input, *inquiry_outputs],
             )
         for sample, chip in zip(SAMPLES, practice_chips):
             chip.click(
-                practice_from_sample,
+                practice_layout_from_sample,
                 inputs=[gr.State(sample.short_label), *practice_inputs],
                 outputs=practice_outputs,
             )

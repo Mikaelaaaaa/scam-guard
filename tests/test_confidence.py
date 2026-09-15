@@ -1,4 +1,4 @@
-"""信心值：四級基準、三個上限、取 min，以及八個門檻之間的六條關係。"""
+"""信心值：五級基準、三個上限、取 min，以及門檻之間的關係。"""
 
 import inspect
 import random
@@ -12,7 +12,7 @@ from scam_guard.normalize import Document, build_document
 from scam_guard.pipeline import NOT_HIT, SKIPPED, detect
 from scam_guard.scoring import compute_score
 from scam_guard.types import CheckResult, Message, Request, ScamType
-from scam_guard.weights import load_weights
+from scam_guard.weights import WeightTable, load_weights
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TABLE = load_weights()
@@ -51,7 +51,16 @@ def skipped(name: str) -> CheckResult:
 AUTHORITY = (ScamType.FAKE_AUTHORITY,)
 
 
-# --- 四級基準值 ---------------------------------------------------------
+def assert_strong_threshold_relationships(table: WeightTable) -> None:
+    assert table.threshold("base_single_strong") > table.threshold("confidence_floor")
+    assert (
+        table.threshold("base_multi_group")
+        < table.threshold("base_single_strong")
+        < table.threshold("base_hard")
+    )
+
+
+# --- 五級基準值 ---------------------------------------------------------
 
 
 def test_no_hit_is_the_fourth_level_and_abstains() -> None:
@@ -65,6 +74,42 @@ def test_hard_evidence_is_the_first_level() -> None:
     results = [hit("safe_account", hard=True, types=AUTHORITY)]
 
     assert compute_confidence(results, a_document(), False, TABLE) == 0.90
+
+
+def test_single_strong_signal_is_the_second_level() -> None:
+    results = [hit("ngram_classifier", types=(ScamType.PHISHING_LINK,))]
+
+    assert compute_confidence(results, a_document(), False, TABLE) == TABLE.threshold(
+        "base_single_strong"
+    )
+
+
+def test_strong_signal_with_another_group_keeps_the_strong_level() -> None:
+    results = [
+        hit("ngram_classifier", types=(ScamType.PHISHING_LINK,)),
+        hit("guaranteed_return", types=(ScamType.FAKE_INVESTMENT,)),
+    ]
+
+    assert compute_confidence(results, a_document(), False, TABLE) == TABLE.threshold(
+        "base_single_strong"
+    )
+
+
+def test_hard_evidence_precedes_a_strong_signal() -> None:
+    results = [
+        hit("safe_account", hard=True, types=AUTHORITY),
+        hit("ngram_classifier", types=(ScamType.PHISHING_LINK,)),
+    ]
+
+    assert compute_confidence(results, a_document(), False, TABLE) == TABLE.threshold("base_hard")
+
+
+def test_single_tier_b_remains_below_the_floor() -> None:
+    results = [hit("guaranteed_return", types=(ScamType.FAKE_INVESTMENT,))]
+    confidence = compute_confidence(results, a_document(), False, TABLE)
+
+    assert confidence == TABLE.threshold("base_single_group")
+    assert confidence < TABLE.threshold("confidence_floor")
 
 
 def test_two_groups_is_the_second_level() -> None:
@@ -133,6 +178,13 @@ def test_only_evasion_triggers_unseen_pattern() -> None:
     results = [hit("evasion_invisible"), hit("evasion_width_mix")]
 
     assert compute_confidence(results, a_document(), False, TABLE) <= 0.35
+
+
+def test_untyped_classifier_and_evasion_share_the_unseen_pattern_cap() -> None:
+    classifier = compute_confidence([hit("ngram_classifier")], a_document(), False, TABLE)
+    evasion = compute_confidence([hit("evasion_invisible")], a_document(), False, TABLE)
+
+    assert classifier == evasion == TABLE.threshold("cap_unseen_pattern")
 
 
 def test_only_shortener_triggers_unseen_pattern() -> None:
@@ -295,7 +347,18 @@ def test_module_does_not_import_pipeline_or_rules() -> None:
     assert not any("scam_guard.rules" in line for line in imports)
 
 
-# --- 八個門檻之間的六條關係 ---------------------------------------------
+def test_decision_modules_do_not_name_detector_implementations() -> None:
+    detector_names = ("ngram_classifier", "llm_scam", "llm_suspicious", "guaranteed_return")
+    for relative in (
+        "scam_guard/confidence.py",
+        "scam_guard/scoring.py",
+        "scam_guard/type_resolve.py",
+    ):
+        source = (REPO_ROOT / relative).read_text(encoding="utf-8")
+        assert not any(name in source for name in detector_names)
+
+
+# --- 門檻之間的關係 -----------------------------------------------------
 
 
 def test_no_hit_base_is_below_the_floor() -> None:
@@ -304,6 +367,24 @@ def test_no_hit_base_is_below_the_floor() -> None:
 
 def test_single_group_base_is_below_the_floor() -> None:
     assert TABLE.threshold("base_single_group") < TABLE.threshold("confidence_floor")
+
+
+def test_single_strong_base_is_above_the_floor() -> None:
+    assert_strong_threshold_relationships(TABLE)
+
+
+def test_single_strong_base_is_between_multi_group_and_hard() -> None:
+    assert_strong_threshold_relationships(TABLE)
+
+
+def test_strong_relationships_fail_after_invalid_threshold_overrides() -> None:
+    lowered_hard = TABLE.with_overrides(thresholds={"base_hard": 0.60})
+    raised_floor = TABLE.with_overrides(thresholds={"confidence_floor": 0.75})
+
+    with pytest.raises(AssertionError):
+        assert_strong_threshold_relationships(lowered_hard)
+    with pytest.raises(AssertionError):
+        assert_strong_threshold_relationships(raised_floor)
 
 
 def test_hard_base_is_above_the_floor() -> None:
@@ -353,6 +434,21 @@ def test_no_signal_request_abstains_with_near_zero_confidence() -> None:
 
     assert verdict.scam_probability is None
     assert verdict.confidence == TABLE.threshold("base_no_hit")
+
+
+def test_typed_strong_signal_crosses_the_confidence_gate() -> None:
+    registry = CheckRegistry()
+    registry.register(
+        StaticCheck(
+            "llm_scam",
+            [hit("llm_scam", types=(ScamType.FAKE_PARCEL,))],
+        )
+    )
+
+    verdict = detect(Request.from_text("包裹因關稅未繳而暫扣"), registry, TABLE)
+
+    assert verdict.confidence == TABLE.threshold("base_single_strong")
+    assert verdict.scam_probability is not None
 
 
 def test_awareness_post_abstains_at_the_contradiction_cap() -> None:

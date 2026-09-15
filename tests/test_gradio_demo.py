@@ -60,19 +60,15 @@ def run_practice(
 
 
 # ---------------------------------------------------------------------------
-# 潤飾驗證 —— 只剩需要 `app.practice_submit()` 的那一條，
+# persona 驗證 —— 只剩需要 `app.practice_submit()` 的那一條，
 # 其餘已隨 `PolishValidator` 一起移到 `tests/test_polish_validator.py`
 # ---------------------------------------------------------------------------
 
 
-def test_the_victim_line_carries_no_percentage_so_the_polisher_cannot_invent_one(
+def test_persona_cannot_invent_a_percentage_absent_from_the_verdict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """受害方改為每輪一條依據之後，`allowed_numbers()` 自動收緊。
-
-    確定性層的輸出不再含機率，潤飾層就再也不能吐出任何百分比 ——
-    不需要為它加規則。
-    """
+    """這份 Verdict 的全部確定性素材都沒有百分比，persona 因此不能發明一個。"""
     monkeypatch.setattr(app, "POLISHER", None)
     outputs = list(app.practice_submit(SCAM_LINE, [], [], []))
     victim = outputs[-1][REPLIES][-1]
@@ -80,7 +76,7 @@ def test_the_victim_line_carries_no_percentage_so_the_polisher_cannot_invent_one
 
     request = Request.from_text(SCAM_LINE)
     verdict = detect(request, app.REGISTRY, app.TABLE, limits=app.LIMITS)
-    validator = demo_ui.PolishValidator([victim], verdict)
+    validator = demo_ui.PolishValidator(demo_ui.verdict_segments(verdict), verdict)
     assert validator.feed("這則訊息有 92% 的可能") is False
 
 
@@ -189,6 +185,70 @@ class SlowPolisher:
         yield "嗯"
         time.sleep(0.5)
         yield "，我先不要照做。"
+
+
+class RecordingPersona:
+    def __init__(self) -> None:
+        self.segments = None
+
+    def __call__(self, segments):
+        self.segments = segments
+        yield "我不會照做，這個要求不太對勁。"
+
+
+class FailingPersona:
+    def __call__(self, segments):
+        raise RuntimeError("模型生成失敗")
+        yield from ()
+
+
+class FailingSynchronousPersona:
+    def __call__(self, segments):
+        raise RuntimeError("模型初始化失敗")
+
+
+def test_gradio_persona_receives_detection_xml_without_the_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    persona = RecordingPersona()
+    monkeypatch.setattr(app, "POLISHER", persona)
+    list(app.practice_submit(SCAM_LINE, [], [], []))
+    assert persona.segments is not None
+    prompt = persona.segments[0]
+    assert "善良市民" in prompt
+    assert "<detection>" in prompt
+    assert SCAM_LINE not in prompt
+
+
+def test_gradio_persona_failure_falls_back_and_says_it_was_not_generated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(app, "POLISHER", FailingPersona())
+    outputs = list(app.practice_submit(SCAM_LINE, [], [], []))
+    assert outputs[-1][REPLIES][-1] == outputs[0][REPLIES][-1]
+    assert outputs[-1][STATUS] == demo_ui.POLISH_FAILED
+    assert "未經模型生成" in outputs[-1][STATUS]
+
+
+def test_synchronous_persona_setup_failure_also_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(app, "POLISHER", FailingSynchronousPersona())
+    outputs = list(app.practice_submit(SCAM_LINE, [], [], []))
+    assert outputs[-1][REPLIES][-1] == outputs[0][REPLIES][-1]
+    assert outputs[-1][STATUS] == demo_ui.POLISH_FAILED
+
+
+def test_character_avatar_assets_are_the_user_selected_files() -> None:
+    assert (app.ASSETS_PATH / "2.png").is_file()
+    assert (app.ASSETS_PATH / "3.png").is_file()
+    rendered = app.render_practice_conversation(
+        [Message(text="測試")], ["拒絕"], build_document([Message(text="測試")], app.LIMITS)
+    )
+    assert app.SCAMMER_AVATAR in rendered
+    assert app.PERSONA_AVATAR in rendered
+    assert "邪惡詐騙犯" in rendered
+    assert "善良市民" in rendered
 
 
 def test_card_completes_before_the_model_produces_any_character(
@@ -324,12 +384,11 @@ def test_modes_do_not_share_state(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_samples_load_with_source_uri_and_short_label() -> None:
+def test_samples_load_with_unique_short_labels() -> None:
     assert 6 <= len(app.SAMPLES) <= 10
     labels = [sample.short_label for sample in app.SAMPLES]
     assert len(labels) == len(set(labels))
     for sample in app.SAMPLES:
-        assert sample.source_uri.startswith("https://cofacts.tw/article/")
         assert sample.text.strip()
         assert sample.label.strip()
         assert 0 < len(sample.short_label) <= app.SHORT_LABEL_MAX
@@ -338,9 +397,17 @@ def test_samples_load_with_source_uri_and_short_label() -> None:
 def test_samples_file_declares_its_own_license() -> None:
     with app.SAMPLES_PATH.open(encoding="utf-8") as handle:
         loaded = json.load(handle)
-    assert loaded["license"] == "CC BY-SA 4.0"
-    assert "MIT" in loaded["attribution"]
-    assert "cofacts.tw" in loaded["attribution"]
+    assert loaded["license"] == "MIT"
+    assert loaded["attribution"] == "合成範例，MIT 授權。"
+    assert all("source_uri" not in sample for sample in loaded["samples"])
+
+
+def test_every_synthetic_sample_hits_using_rules_only() -> None:
+    registry = app.build_registry()
+    for sample in app.SAMPLES:
+        verdict = detect(Request(messages=[Message(text=sample.text)]), registry, app.TABLE)
+        assert any(result.hit for result in verdict.checks), sample.short_label
+        assert any(result.hit and result.hard for result in verdict.checks), sample.short_label
 
 
 def test_missing_samples_file_raises_with_filename(tmp_path) -> None:
@@ -360,7 +427,6 @@ def sample_entry(**overrides) -> dict:
         "label": "假中獎：以抽獎名義索取簡訊認證碼",
         "short_label": "假中獎",
         "text": "你中獎了",
-        "source_uri": "https://cofacts.tw/article/x",
     }
     entry.update(overrides)
     return entry
@@ -436,9 +502,7 @@ def assembled_copy() -> str:
         [
             app.HEADER,
             app.PRACTICE_NOTE,
-            app.privacy_note(None),
-            app.privacy_note(written.append),
-            app.samples_listing(),
+            app.SYNTHETIC_SAMPLE_NOTE,
             app.transcript_notice(written.append),
             demo_ui.POLISH_NOT_INJECTED,
             demo_ui.POLISH_STREAMING,
@@ -477,36 +541,22 @@ def test_no_advice_at_all_when_nothing_hits() -> None:
     assert demo_ui.ACTIONS_HEADING not in card
 
 
-def test_footer_keeps_the_licence_and_every_source_link() -> None:
-    listing = app.samples_listing()
-    assert "CC BY-SA 4.0" in listing
-    assert "Cofacts" in listing
-    for sample in app.SAMPLES:
-        assert sample.source_uri in listing
-        assert sample.label in listing
-
-
-def test_privacy_note_does_not_claim_zero_trace() -> None:
-    for claim in ("完全不留痕跡", "不被任何系統記錄", "完全不會被記錄"):
-        assert claim not in app.privacy_note(None)
-    assert "不在我們控制範圍內" in app.privacy_note(None)
-
-
-def test_privacy_note_follows_the_actual_logging_state() -> None:
-    """一個會說謊的隱私說明比沒有隱私說明更糟 —— 讀它的人正是因為在意才點開它。"""
-    written: list[RedactedText] = []
-    quiet = app.privacy_note(None)
-    loud = app.privacy_note(written.append)
-    assert quiet != loud
-    assert "不留任何記錄" in quiet
-    assert "不留任何記錄" not in loud
-    assert "會被寫進記錄" in loud
+def test_removed_copy_is_absent_and_synthetic_disclosure_remains() -> None:
+    page = (app.SAMPLES_PATH.parent / "docs" / "index.html").read_text(encoding="utf-8")
+    copy = assembled_copy() + page
+    assert "你的訊息會被怎麼處理" not in copy
+    assert "Cofacts，CC BY-SA" not in copy
+    assert "合成範例" in app.SYNTHETIC_SAMPLE_NOTE
+    assert "真實訊息" in app.SYNTHETIC_SAMPLE_NOTE
+    assert "評估報告" in app.SYNTHETIC_SAMPLE_NOTE
+    assert "模型由第三方 CDN 取得" in page
+    assert "你貼的訊息不離開這台電腦" in page
 
 
 def test_logging_notices_never_claim_the_projection_is_anonymised() -> None:
     """遮蔽只涵蓋四個辨識類型，姓名與地址原樣留著。"""
     written: list[RedactedText] = []
-    for copy in (app.privacy_note(written.append), app.transcript_notice(written.append)):
+    for copy in (app.transcript_notice(written.append),):
         for claim in ("去識別化", "匿名化", "不含個人資料", "不含個資"):
             assert claim not in copy
         assert "姓名" in copy
