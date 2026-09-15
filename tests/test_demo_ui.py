@@ -323,6 +323,16 @@ def test_persona_prompt_uses_the_user_selected_character_name() -> None:
     assert "不會提供任何個人資料、驗證碼、帳號或金錢" in prompt
 
 
+def test_persona_system_role_is_separate_from_detection_instructions() -> None:
+    verdict, _document = verdict_for(DECIDED_TEXT)
+    instructions = demo_ui.practice_instructions(verdict, TABLE)
+    assert "<detection>" in instructions
+    assert "善良市民" in demo_ui.PRACTICE_PERSONA
+    assert demo_ui.practice_prompt(verdict, TABLE) == (
+        f"{demo_ui.PRACTICE_PERSONA}\n\n{instructions}"
+    )
+
+
 def test_signals_panel_shows_probability_once_and_no_grade_labels() -> None:
     """新版分析面板顯示同一機率，刻度只以圖形呈現且不劃級距。"""
     verdict, document = verdict_for(SIGNALS_TEXT)
@@ -1281,24 +1291,24 @@ def test_layout_is_equal_columns_and_stacks_on_narrow_screens() -> None:
 
 
 def test_static_page_initializes_model_without_a_load_control() -> None:
-    page = (Path(__file__).resolve().parents[1] / "docs" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    page = (Path(__file__).resolve().parents[1] / "docs" / "index.html").read_text(encoding="utf-8")
     assert 'id="entry-progress"' in page
     assert 'id="model-load"' not in page
     assert "await initializeModel()" in page
+    assert "Promise.race([prepareModel(), timeout])" in page
+    assert "MODEL_INIT_TIMEOUT_MS" in page
     assert "const adapter = await navigator.gpu.requestAdapter()" in page
     assert "model.state = LOAD_FAILED" in page
     assert '$("main-app").hidden = false' in page
     assert 'entryProgress.dataset.state = "failed"' in page
     assert "通常只下載一次" in page
     assert "第三方 CDN" in page
+    assert "if (inquiryBusy)" in page
+    assert "setInquiryBusy(true)" in page
 
 
 def test_static_page_tabs_precede_both_shared_mode_layouts() -> None:
-    page = (Path(__file__).resolve().parents[1] / "docs" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    page = (Path(__file__).resolve().parents[1] / "docs" / "index.html").read_text(encoding="utf-8")
     assert page.index('id="modes"') < page.index('id="card"')
     for panel_id in ("panel-inquiry", "panel-practice"):
         panel = page.partition(f'id="{panel_id}"')[2].partition("</section>")[0]

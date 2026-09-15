@@ -192,7 +192,7 @@ def unregistered_checks(blocklist_reason: str) -> tuple[demo_ui.UnregisteredChec
 
 SENDER_LABEL = "你貼上的訊息"
 REPLY_LABEL = "對方"
-PRACTICE_SENDER_LABEL = "你（扮演詐騙方）"
+PRACTICE_SENDER_LABEL = "邪惡詐騙犯"
 PRACTICE_REPLY_LABEL = "善良市民"
 SCAMMER_AVATAR = "assets/2.png"
 PERSONA_AVATAR = "assets/3.png"

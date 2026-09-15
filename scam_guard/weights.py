@@ -357,13 +357,9 @@ def _parse_signal(raw: Mapping[str, object], path: Path) -> Signal:
         )
     strong = raw["strong"] if "strong" in raw else False
     if not isinstance(strong, bool):
-        raise ValueError(
-            f"{where} 的 strong 必須為布林值，實際為 {strong!r}（表：{path}）"
-        )
+        raise ValueError(f"{where} 的 strong 必須為布林值，實際為 {strong!r}（表：{path}）")
     if hard_capable and strong:
-        raise ValueError(
-            f"{where} 不得同時宣告 hard_capable=true 與 strong=true（表：{path}）"
-        )
+        raise ValueError(f"{where} 不得同時宣告 hard_capable=true 與 strong=true（表：{path}）")
     if "weight_soft" not in raw:
         raise ValueError(f"{where} 缺少 weight_soft 子表（表：{path}）")
     weight_soft = _parse_weight(raw["weight_soft"], f"{where} 的 weight_soft", path)

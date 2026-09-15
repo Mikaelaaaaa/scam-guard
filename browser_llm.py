@@ -408,7 +408,10 @@ class TwoPass:
     def _consume(self, token: str) -> Request:
         """取出並作廢一個 token。不認得的一律拋例外，**不回傳規則層的結果冒充成功**。"""
         if token not in self._pending:
-            reason = self._expired.get(token, "從未發出、已被重送取代，或失效原因已過期")
+            if token in self._expired:
+                reason = self._expired[token]
+            else:
+                reason = "從未發出，或失效原因已過期"
             raise ValueError(f"判讀識別字 {token!r} 已經失效：{reason}")
         request = self._pending.pop(token)
         self._remember_expired(token, "已被消費")
@@ -699,7 +702,10 @@ class PracticeMode:
             ),
             "ranking": demo_ui.render_ranking(result.verdict.checks, len(self._messages)),
             "conversation": self._conversation(result.document),
-            "polish_prompt": demo_ui.practice_prompt(result.verdict, self._presentation.table),
+            "polish_system": demo_ui.PRACTICE_PERSONA,
+            "polish_prompt": demo_ui.practice_instructions(
+                result.verdict, self._presentation.table
+            ),
             "status": second_pass_status(result) if state is LlmState.READY else "",
             "polish_status": (
                 demo_ui.POLISH_STREAMING if polished else demo_ui.POLISH_NOT_INJECTED

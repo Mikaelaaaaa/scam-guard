@@ -298,7 +298,7 @@ def build_inquiry_request(text: str) -> Request:
 # Event handlers —— 全部定義於模組層，狀態以顯式參數傳入與傳出
 # ---------------------------------------------------------------------------
 
-PRACTICE_SENDER = "你（扮演詐騙方）"
+PRACTICE_SENDER = "邪惡詐騙犯"
 PRACTICE_REPLY = "善良市民"
 INQUIRY_SENDER = "你貼上的訊息"
 
@@ -521,7 +521,7 @@ HEADER = """
 """
 
 PRACTICE_NOTE = (
-    '<div class="note">你扮演詐騙方打字，對方由系統扮演。'
+    '<div class="note">你扮演「邪惡詐騙犯」打字，「善良市民」由系統扮演。'
     "對方每一輪只會講一條新看到的訊號，<b>聊不起來是正常的</b>。</div>"
 )
 
@@ -599,7 +599,7 @@ def build_demo() -> gr.Blocks:
                     with gr.Column(elem_classes="input-column"):
                         practice_conversation = gr.HTML()
                         practice_input = gr.Textbox(
-                            label="你（扮演詐騙方）",
+                            label="邪惡詐騙犯（你）",
                             lines=2,
                             placeholder="打一句詐騙方會說的話",
                         )

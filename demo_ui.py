@@ -333,8 +333,13 @@ def detection_signal_title(evidence_line: str) -> str:
 
 def practice_prompt(verdict: Verdict, table: WeightTable) -> str:
     """組出善良市民的 system persona 與只含偵測結果的生成指引。"""
+    return f"{PRACTICE_PERSONA}\n\n{practice_instructions(verdict, table)}"
+
+
+def practice_instructions(verdict: Verdict, table: WeightTable) -> str:
+    """組出 persona 的 user 指引；瀏覽器側會另以 system role 傳入 persona。"""
     context = build_detection_context(verdict, table)
-    return f"{PRACTICE_PERSONA}\n\n{PRACTICE_INSTRUCTIONS.format(context=context)}"
+    return PRACTICE_INSTRUCTIONS.format(context=context)
 
 
 def verdict_segments(verdict: Verdict) -> tuple[str, ...]:
@@ -356,10 +361,8 @@ def _facts(verdict: Verdict, state: str, table: WeightTable) -> str:
 
     三個狀態各自帶不同的量，而這不是版面偷懶：
     「很可能是詐騙」帶機率、類型與信心等級 —— 系統做了判定，三者都是那個判定的一部分。
-    「有可疑訊號」只帶信心等級 —— 機率是一個計分層不認可的數字，印出來就是把
-    「未達門檻」包裝成「七成七像詐騙」；類型是一個關於「這是哪一種詐騙」的主張，
-    而此時系統連「是不是」都還沒下結論。信心等級答的是「有沒有足夠依據」，
-    那正是這張卡在講的事，所以留著。
+    「有可疑訊號」帶目前的機率、類型與信心等級，但標題仍由判定門檻決定；
+    刻度尺只把同一個機率圖形化，不另造級距。
     「無法判定」什麼都不帶。
     """
     band = confidence_band(verdict.confidence, table)
@@ -500,9 +503,9 @@ def render_detection_details(
     hit_markup = "".join(hit_rows) or '<p class="detail-empty">這次沒有檢查命中。</p>'
     return (
         '<section class="detection-detail">'
-        '<h3>命中的檢查</h3>'
+        "<h3>命中的檢查</h3>"
         f'<div class="hit-checks">{hit_markup}</div>'
-        '<h3>PII 標註</h3>'
+        "<h3>PII 標註</h3>"
         f"{render_pii_block(doc, recognizer)}"
         f"{render_why(verdict)}"
         f"{render_details(verdict, doc, unregistered)}"
@@ -611,10 +614,7 @@ def render_details(
         )
 
     summary = f"完整檢查（{total} 項）"
-    return (
-        f'<details class="details"><summary>{summary}</summary>'
-        f"{''.join(rows)}</details>"
-    )
+    return f'<details class="details"><summary>{summary}</summary>{"".join(rows)}</details>'
 
 
 # ---------------------------------------------------------------------------

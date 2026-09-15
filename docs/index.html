@@ -220,7 +220,7 @@
         <div class="input-column">
         <div id="practice-conversation"></div>
         <label for="practice-input">
-          你扮演詐騙方，一次打一句。對方（受害方）說的每一句都只會來自判定結果。
+          你扮演「邪惡詐騙犯」，一次打一句。「善良市民」說的每一句都只會來自判定結果。
         </label>
         <textarea id="practice-input" class="one-line" disabled
           placeholder="等待執行環境載入完成"></textarea>
@@ -291,6 +291,9 @@
       // 判讀輸出的上界。四個欄位加上 200 字元的 analysis_notes，512 綽綽有餘；
       // 它同時是「模型開始胡言亂語時要付多少成本」的上界。**沒有實測依據。**
       const MAX_NEW_TOKENS = 512;
+      const MODEL_INIT_TIMEOUT_MS = 300000;
+      // 模型只是加值段；即使 CDN 或瀏覽器的 WebGPU promise 卡住，五分鐘後也必須
+      // 放行規則層主畫面。底層下載可能仍在瀏覽器內收尾，但不再能改寫 UI 狀態。
 
       // 量測用的開關：?prefill=off 關掉助理回合預填，讓「有預填 / 無預填」兩組
       // STRUCTURE 失敗率可以在同一個站台上跑出來。沒有這兩組數字就無從判斷
@@ -491,9 +494,10 @@
       }
 
       const progress = new Map();
+      let modelInitializationActive = false;
 
       function reportProgress(event) {
-        if (event.status !== "progress" || !event.total) {
+        if (!modelInitializationActive || event.status !== "progress" || !event.total) {
           return;
         }
         progress.set(event.file, event);
@@ -511,45 +515,62 @@
       }
 
       async function loadModel(transformers) {
-        model.state = LOADING;
-        modelStateIs("正在建立模型");
         const options = {
           dtype: MODEL_DTYPE,
           device: MODEL_DEVICE,
           revision: MODEL_REVISION,
           progress_callback: reportProgress,
         };
-        model.tokenizer = await transformers.AutoTokenizer.from_pretrained(MODEL_REPO, {
+        const tokenizer = await transformers.AutoTokenizer.from_pretrained(MODEL_REPO, {
           revision: MODEL_REVISION,
           progress_callback: reportProgress,
         });
-        model.instance = await transformers.AutoModelForCausalLM.from_pretrained(
+        const instance = await transformers.AutoModelForCausalLM.from_pretrained(
           MODEL_REPO,
           options
         );
-        model.state = READY;
-        modelStateIs("語意判讀已開啟。下一次送出的判定會多一層語意判讀。");
+        return { tokenizer, instance };
+      }
+
+      async function prepareModel() {
+        // 先驗證硬體再下載 transformers.js 與模型；不支援的瀏覽器不發出多餘請求。
+        const adapter = await requireWebGpuAdapter();
+        requireShaderF16(adapter);
+        requireStorageBufferSize(adapter);
+        const transformers = await import(TRANSFORMERS);
+        const loaded = await loadModel(transformers);
+        return { transformers, ...loaded };
       }
 
       async function initializeModel() {
+        model.state = LOADING;
+        modelInitializationActive = true;
+        modelStateIs("正在建立模型");
+        let timeoutId;
+        const timeout = new Promise((resolve, reject) => {
+          timeoutId = setTimeout(
+            () => reject(new Error("語意模型初始化超過五分鐘，已停止等待")),
+            MODEL_INIT_TIMEOUT_MS
+          );
+        });
         try {
-          const transformers = await import(TRANSFORMERS);
-          transformersModule = transformers;
-          // 三項檢查全部在取得任何檔案之前完成。任一項失敗即不下載、
-          // 把原文寫在畫面上，**不改用 wasm 或 cpu**：那會讓使用者以為自己跑的是
-          // 我們量過的東西，而他跑的是一條我們沒有量過的路。
-          const adapter = await requireWebGpuAdapter();
-          requireShaderF16(adapter);
-          requireStorageBufferSize(adapter);
-
           modelStateIs(
             `正在載入 ${MODEL_BYTES} bytes（約 784 MB）的語意模型；通常只下載一次。`
           );
-          await loadModel(transformers);
+          const loaded = await Promise.race([prepareModel(), timeout]);
+          clearTimeout(timeoutId);
+          modelInitializationActive = false;
+          transformersModule = loaded.transformers;
+          model.tokenizer = loaded.tokenizer;
+          model.instance = loaded.instance;
+          model.state = READY;
+          modelStateIs("語意判讀已開啟。下一次送出的判定會多一層語意判讀。");
           entryProgress.value = 100;
           entryProgress.dataset.state = "ready";
           return true;
         } catch (reason) {
+          clearTimeout(timeoutId);
+          modelInitializationActive = false;
           // 失敗原文上畫面，MUST NOT 改寫成一句泛用的「模型載入失敗」——
           // 三個前提失敗的處置各不相同，而泛用訊息把那個差別擦掉了。
           model.state = LOAD_FAILED;
@@ -573,9 +594,9 @@
       // 而那份驗證在 scam_guard.llm.validate，一個字元都不在這裡。
       let constants = null;
 
-      async function generate(prompt, { prefill, streamer, criteria, maxNewTokens }) {
+      async function generate(messages, { prefill, streamer, criteria, maxNewTokens }) {
         const text =
-          model.tokenizer.apply_chat_template([{ role: "user", content: prompt }], {
+          model.tokenizer.apply_chat_template(messages, {
             add_generation_prompt: true,
             tokenize: false,
           }) + prefill;
@@ -602,7 +623,7 @@
         const timer = setTimeout(() => criteria.interrupt(), constants.deadline_s * 1000);
         try {
           const prefill = USE_PREFILL ? constants.prefill : "";
-          const generated = await generate(prompt, {
+          const generated = await generate([{ role: "user", content: prompt }], {
             prefill,
             criteria,
             maxNewTokens: MAX_NEW_TOKENS,
@@ -645,31 +666,52 @@
         $("inquiry-llm-status").textContent = first.status;
       }
 
+      let inquiryBusy = false;
+
+      function setInquiryBusy(busy) {
+        inquiryBusy = busy;
+        $("run").disabled = busy;
+        $("input").disabled = busy;
+        $("mode-inquiry").disabled = busy;
+        $("mode-practice").disabled = busy;
+        for (const button of $("samples").querySelectorAll("button")) {
+          button.disabled = busy;
+        }
+      }
+
       async function analyze(text) {
-        errorBox.hidden = true;
-        let first;
-        try {
-          first = JSON.parse(app.inquiry_first(text, model.state));
-        } catch (reason) {
-          // Python 的例外原文直接放上畫面：輸入為空、座標算錯、檢查回報了無法
-          // 分類的狀態，各自的訊息都已經指名了是哪一件事。
-          showError(reason);
+        if (inquiryBusy) {
           return;
         }
-        renderInquiryFirst(first);
-
-        // 判定卡已經在畫面上了。下面這一段可以慢，慢不影響上面那一張卡。
+        setInquiryBusy(true);
         try {
-          const second =
-            model.state === READY && first.prompt
-              ? JSON.parse(app.inquiry_second(first.token, await readingGeneration(first.prompt)))
-              : JSON.parse(app.inquiry_without_model(first.token, model.state));
-          renderResult(second.card, "card", "inquiry-details");
-          if (second.status) {
-            $("inquiry-llm-status").textContent = second.status;
+          errorBox.hidden = true;
+          let first;
+          try {
+            first = JSON.parse(app.inquiry_first(text, model.state));
+          } catch (reason) {
+            // Python 的例外原文直接放上畫面：輸入為空、座標算錯、檢查回報了無法
+            // 分類的狀態，各自的訊息都已經指名了是哪一件事。
+            showError(reason);
+            return;
           }
-        } catch (reason) {
-          showError(reason);
+          renderInquiryFirst(first);
+
+          // 判定卡已經在畫面上了。下面這一段可以慢，慢不影響上面那一張卡。
+          try {
+            const second =
+              model.state === READY && first.prompt
+                ? JSON.parse(app.inquiry_second(first.token, await readingGeneration(first.prompt)))
+                : JSON.parse(app.inquiry_without_model(first.token, model.state));
+            renderResult(second.card, "card", "inquiry-details");
+            if (second.status) {
+              $("inquiry-llm-status").textContent = second.status;
+            }
+          } catch (reason) {
+            showError(reason);
+          }
+        } finally {
+          setInquiryBusy(false);
         }
       }
 
@@ -705,7 +747,7 @@
         $("mode-practice").disabled = busy;
       }
 
-      async function polish(prompt) {
+      async function polish(systemPrompt, prompt) {
         const transformers = await transformersModule;
         const criteria = new transformers.InterruptableStoppingCriteria();
         let aborted = false;
@@ -728,7 +770,13 @@
         });
         // persona 回應是自由文字：不帶預填、不帶結構約束，並與判讀共用模型實例。
         try {
-          await generate(prompt, { prefill: "", streamer, criteria, maxNewTokens: 128 });
+          await generate(
+            [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: prompt },
+            ],
+            { prefill: "", streamer, criteria, maxNewTokens: 128 }
+          );
         } catch (reason) {
           if (!aborted) {
             renderPractice(JSON.parse(app.practice_polish_fail()));
@@ -768,7 +816,7 @@
 
             // 4. persona 生成。模型沒開時不發生，畫面保留確定性底稿。
             if (model.state === READY) {
-              await polish(second.polish_prompt);
+              await polish(second.polish_system, second.polish_prompt);
             }
           } catch (reason) {
             showError(reason);

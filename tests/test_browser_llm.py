@@ -525,7 +525,8 @@ def test_the_persona_prompt_carries_detection_xml_without_message_text() -> None
     first = practice.first(spoken, LlmState.READY)
     second = practice.second(first["token"], an_output([[0, 0]], category=None))
     assert spoken not in second["polish_prompt"]
-    assert "善良市民" in second["polish_prompt"]
+    assert second["polish_system"] == browser_llm.demo_ui.PRACTICE_PERSONA
+    assert "善良市民" in second["polish_system"]
     assert "<detection>" in second["polish_prompt"]
     assert "<signal>索取簡訊驗證碼</signal>" in second["polish_prompt"]
 
@@ -553,9 +554,7 @@ def test_persona_generation_failure_falls_back_to_the_baseline() -> None:
 
 
 def test_static_practice_serializes_rounds_until_generation_finishes() -> None:
-    page = (Path(__file__).resolve().parents[1] / "docs" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    page = (Path(__file__).resolve().parents[1] / "docs" / "index.html").read_text(encoding="utf-8")
     practice_round = page.partition("async function practiceRound(text)")[2].partition(
         "function switchMode"
     )[0]
