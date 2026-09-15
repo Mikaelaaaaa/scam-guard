@@ -12,6 +12,10 @@ from scam_guard.redact import RedactedText
 from scam_guard.scoring import _sigmoid, abstention_rate, compute_score, is_decision
 from scam_guard.types import CheckResult, ScamType, Verdict
 from scam_guard.weights import load_weights
+from tools.eval.dataset import MANIFEST_FILENAME, load_testset
+from tools.eval.run import build_registry, load_blocklist, load_psl, run_over
+from tools.eval.selectors import HAM_SUBSETS, HOLDOUT
+from tools.eval.stats import Rate
 
 EMPTY_REDACTED = RedactedText(sentences=[], coords=[], counts={})
 
@@ -350,16 +354,56 @@ def test_abstention_rate_of_an_empty_set_raises() -> None:
         abstention_rate([])
 
 
-@pytest.mark.skip(
+@pytest.mark.xfail(
+    strict=False,
     reason=(
-        "誤判率門檻（95% Wilson 上界 ≤ 2%）在 add-testset 之前無法驗證："
-        "需 149 則 hard negative；30 則零誤判的 95% Wilson 上界為 11.35%。"
-        "此測試刻意**存在**而非不存在 —— skipped 每次跑 pytest 都會被印出來，"
-        "而一個不存在的測試不會有任何地方提醒它不存在。"
-    )
+        "誤判率門檻（95% Wilson 上界 ≤ 2%）**實測未通過**："
+        "2026-09-14 的 holdout 上，cofacts_ham_ad 為 1/411（上界 1.37%，通過），"
+        "cofacts_ham_suspected 為 4/428（上界 2.38%，**未通過**），"
+        "頭條取最差者故為 2.38%。且 self_sms_ham 未蒐集 —— 真實銀行與物流通知"
+        "這一類誤判完全未被量測。此測試以 xfail 記錄事實而非以 skip 迴避："
+        "通過與否是資料的事實，不是實作的責任，但它 MUST 被看見。"
+        "順帶修正：既有 spec 寫的「需 149 則」是 rule of three，"
+        "Wilson 在 n=149 給 2.51%，要宣稱 ≤ 2% 需要 189 則。"
+    ),
 )
 def test_false_positive_rate_on_hard_negatives() -> None:
-    raise AssertionError("待 add-testset 提供 hard negative 集後實作")
+    """對 `add-testset` 的 holdout ham 子集實跑一次，逐子集檢查 Wilson 上界。
+
+    資料不進版控，缺檔時 skip 並附重建命令。
+    """
+    data_dir = REPO_ROOT / "data" / "testset"
+    psl_dir = REPO_ROOT / "data" / "psl"
+    blocklist_dir = REPO_ROOT / "data" / "blocklist"
+    if not (data_dir.is_dir() and psl_dir.is_dir() and blocklist_dir.is_dir()):
+        pytest.skip(
+            "需要 data/testset、data/psl 與 data/blocklist。重建方式："
+            "`python -m tools.eval.build_testset rebuild`、"
+            "`python -m tools.fetch_psl`、`python -m tools.fetch_blocklist`。"
+            "三者皆不進版控（真實民眾訊息與 CC BY-SA 4.0 / 政府開放資料），缺檔是正常的。"
+        )
+
+    testset = load_testset(data_dir, REPO_ROOT / "testset" / MANIFEST_FILENAME)
+    psl = load_psl(psl_dir)
+    registry = build_registry(psl, store=load_blocklist(blocklist_dir, psl))
+    measured: list[tuple[str, Rate]] = []
+    for name in HAM_SUBSETS:
+        if name in testset.missing:
+            continue
+        samples = [s for s in testset.samples(name) if s.split == HOLDOUT]
+        records = run_over(samples, registry, TABLE)
+        measured.append(
+            (
+                name,
+                Rate(
+                    numerator=sum(1 for record in records if record.decided),
+                    denominator=len(records),
+                ),
+            )
+        )
+    assert measured, "沒有任何 ham 子集可量測"
+    worst = max(rate.upper for _, rate in measured)
+    assert worst <= 0.02, "、".join(f"{name} {rate}" for name, rate in measured)
 
 
 # --- 界線 ---------------------------------------------------------------

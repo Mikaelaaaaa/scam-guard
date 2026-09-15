@@ -1,0 +1,125 @@
+{
+  "built_at": "2026-09-14T18:27:56Z",
+  "selectors": {
+    "cofacts_scam": {
+      "categoryIds": [
+        "nD2n7nEBrIRcahlYwQoW"
+      ],
+      "replyTypes": [
+        "RUMOR"
+      ],
+      "articleTypes": [
+        "TEXT"
+      ]
+    },
+    "cofacts_ham_ad": {
+      "categoryIds": [
+        "mj2n7nEBrIRcahlYdArf",
+        "nz2o7nEBrIRcahlYBgqQ"
+      ],
+      "replyTypes": [
+        "NOT_RUMOR",
+        "OPINIONATED"
+      ],
+      "articleTypes": [
+        "TEXT"
+      ]
+    },
+    "cofacts_ham_suspected": {
+      "categoryIds": [
+        "nD2n7nEBrIRcahlYwQoW"
+      ],
+      "replyTypes": [
+        "NOT_RUMOR",
+        "OPINIONATED"
+      ],
+      "articleTypes": [
+        "TEXT"
+      ]
+    }
+  },
+  "selection": {
+    "cofacts_scam": {
+      "pool_size": 7113,
+      "removed_dev_overlap": 600,
+      "selected": 1200,
+      "target": 1200,
+      "line_export_in_pool": 1
+    },
+    "cofacts_ham_ad": {
+      "pool_size": 3256,
+      "removed_dev_overlap": 600,
+      "selected": 800,
+      "target": 800,
+      "line_export_in_pool": 0
+    },
+    "cofacts_ham_suspected": {
+      "pool_size": 874,
+      "removed_dev_overlap": 11,
+      "selected": 863,
+      "target": null,
+      "line_export_in_pool": 0
+    }
+  },
+  "subsets": {
+    "cofacts_scam": {
+      "count": 1200,
+      "splits": {
+        "tune": 572,
+        "holdout": 628
+      }
+    },
+    "cofacts_ham_ad": {
+      "count": 800,
+      "splits": {
+        "tune": 389,
+        "holdout": 411
+      }
+    },
+    "cofacts_ham_suspected": {
+      "count": 863,
+      "splits": {
+        "tune": 435,
+        "holdout": 428
+      }
+    }
+  },
+  "self_built": {
+    "self_sms_ham": {
+      "collected": false,
+      "target": 189,
+      "note": "未蒐集。此子集不可重現（需要蒐集者本人的手機），缺席 MUST 於報告中明說。"
+    },
+    "self_sms_scam": {
+      "collected": false,
+      "target": 30,
+      "note": "未蒐集。此子集不可重現（需要蒐集者本人的手機），缺席 MUST 於報告中明說。"
+    }
+  },
+  "multi_message": {
+    "count": 0,
+    "sufficient": false,
+    "minimum": 10,
+    "line_export_in_full_pools": 1,
+    "note": "樣本數少於 minimum 時，多則情境的任何指標一律不報，只列逐則輸出。這條規則在看到數字之前就定好，定在之後就成了看著結果挑門檻。"
+  },
+  "dev_sample": {
+    "path": "data/dev_sample.jsonl",
+    "file_sha256": "1a1e21aa0adb49071a75e361536c41f504946bf0d47bae33e63f1286555fcee2",
+    "id_intersection": 0,
+    "note": "識別字交集為 0，但兩者來自同一組 selector 與相近的時間窗。holdout **未被逐則檢視**，卻**與調過門檻的樣本同分布** —— 規則層的詞表是看著開發樣本補充的。報告 MUST 同時列出 tune 與 holdout 上的每一個指標，兩者的差距就是過擬合的量。"
+  },
+  "excluded_pools": {
+    "policy_or_commercial_with_RUMOR": "分類為政策宣導或商業廣告、但查核為 RUMOR 的訊息（`add-cofacts-fetch` 實測為該池的 27%，2,506 則）。「長照 3.0 明年上路，住院看護政府出 50%」這種內容不實的政策謠言不是詐騙，但也不是正常訊息，拿它當 ham 會汙染負例。",
+    "no_normal_reply": "沒有任何 status 為 NORMAL 的查核回覆的訊息（`add-cofacts-fetch` 實測 1,937 則）。沒有標籤依據。"
+  },
+  "not_done": {
+    "synth_logistics": "不建立由 165 案件敘述合成的 `synth_logistics` 子集，三個理由：\n1. 授權未取得。`規劃.md` §五把「165 案件敘述授權」列為使用該資料前必須解決的事項，它還沒解決；一個未解決的前置條件不該用「先做再說」繞過。\n2. 來源本身已被 LLM 汙染。該資料約 85% 疑似經大型語言模型改寫，僅 9.5% 為原始警方筆錄；拿它合成訊息等於把模型的語言分布帶進測試集，而下一個 PR 就要接 LLM，那會是一個看起來很好的循環結果。\n3. 有限的蒐集工時應投入 ham 方向。誤判率是本專題的強制驗收指標，漏報不是。\n代價（不粉飾）：簡訊型詐騙短通知（假物流、假通行費、假監理）在測試集中缺席，該類的召回率完全未被量測，`parcel_notice` 這條規則的 FAKE_PARCEL 因此沒有任何正例支撐。此為必須揭露的限制的第九項。",
+    "type_stratification": "不依詐騙類型分層：Cofacts 的標籤不含 165 案類，沒有可供分層的欄位。`規劃.md` M8 的「依類型分層，覆蓋 L2 規則可判與 L3 需判讀兩組」因此**無法履行**，列為已知缺口。同理，測試集的任何檔案 MUST NOT 含類型欄位，也不得留一個恆為空的佔位欄位 —— 留了遲早有人拿 `.get()` 去讀它，然後得到一個看起來像答案的東西。",
+    "balanced_sampling": "不做平衡取樣：本系統的兩個主要指標是誤判率與召回率，兩者各自在 ham 與 scam 上計算，都不依賴類別比例，平衡取樣的唯一效果是丟掉樣本。`add-score-compute` 把先驗設為 0 也是同一個理由。"
+  },
+  "accepted_drift": [],
+  "rebuilt_at": "2026-09-14T18:33:06Z",
+  "drift_share": 0.0,
+  "drift_comparable": true
+}

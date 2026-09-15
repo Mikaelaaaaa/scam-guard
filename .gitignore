@@ -221,6 +221,11 @@ __marimo__/
 # 資料集：Cofacts 為 CC BY-SA 4.0，衍生資料需同授權並附來源 URI，不直接入庫
 data/
 *.jsonl
+# 例外：測試集的識別字清單。它只含公開 article id、子集名稱與內容的 sha256，
+# **沒有任何一個位元組是訊息文字** —— 上面那條 `*.jsonl` 擋的是內容，不是識別字。
+# 少了這一行，測試集就無法被第三人重建，而 `add-testset` 的整個重現機制就落空。
+# `data/` 那條仍然生效：`data/testset/*.jsonl`（含內文）照樣被忽略。
+!testset/*.jsonl
 
 # 模型權重（EmbeddingGemma ONNX 約 197MB）
 models/
