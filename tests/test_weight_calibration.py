@@ -43,8 +43,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 WEIGHTS_PY = REPO_ROOT / "scam_guard" / "weights.py"
 CALIBRATE_PY = REPO_ROOT / "tools" / "eval" / "calibrate.py"
 
-WEIGHTS_PY_SHA256 = "a81ed7ccdccdf309491e2125805cb3b775f62b5a3daa1a60f176faa323d6783a"
-"""`scam_guard/weights.py` 的雜湊。**本 change 承諾一行不改。**
+WEIGHTS_PY_SHA256 = "a60c7769484772c52b981b2a9e20529ac5f05f8abcf677910940682e3ec2dd09"
+"""`scam_guard/weights.py` 的雜湊；由 add-strong-signal-tier 合法更新。
 
 若日後有 change 合法修改 `weights.py`，那個 change MUST 明確更新這個常數 ——
 它擋的是本 change（以及未來聲稱不動驗證邏輯的 change）悄悄改到表的驗證規則。

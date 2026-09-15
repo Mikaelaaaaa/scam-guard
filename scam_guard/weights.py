@@ -93,7 +93,7 @@ class SignalWeight:
 
 @dataclass(frozen=True)
 class Signal:
-    """一個訊號的登錄：分群、是否可能是硬證據，以及一到兩個權重條目。
+    """一個訊號的登錄：分群、證據屬性，以及一到兩個權重條目。
 
     `hard_capable` 在資訊上是冗餘的（可由 `weight_hard` 在不在推出），保留它的
     理由與 `Document` 驗證 `truncated == (dropped_messages > 0)` 相同：它讓
@@ -106,6 +106,7 @@ class Signal:
     hard_capable: bool
     weight_soft: SignalWeight
     weight_hard: SignalWeight | None = None
+    strong: bool = False
 
 
 @dataclass(frozen=True)
@@ -181,6 +182,12 @@ class WeightTable:
         if name not in self.signals:
             raise KeyError(f"訊號未登錄於權重表：name={name!r}（表：{self.path}）")
         return self.signals[name].group
+
+    def is_strong(self, name: str) -> bool:
+        """訊號是否足以單獨支撐判定。未登錄的訊號拋 `KeyError`。"""
+        if name not in self.signals:
+            raise KeyError(f"訊號未登錄於權重表：name={name!r}（表：{self.path}）")
+        return self.signals[name].strong
 
     def threshold(self, key: str) -> float:
         """取得門檻值。未登錄的 key 拋 `KeyError`，不使用 `dict.get()` 的預設值。"""
@@ -348,6 +355,15 @@ def _parse_signal(raw: Mapping[str, object], path: Path) -> Signal:
         raise ValueError(
             f"{where} 的 hard_capable 必須為布林值，實際為 {hard_capable!r}（表：{path}）"
         )
+    strong = raw["strong"] if "strong" in raw else False
+    if not isinstance(strong, bool):
+        raise ValueError(
+            f"{where} 的 strong 必須為布林值，實際為 {strong!r}（表：{path}）"
+        )
+    if hard_capable and strong:
+        raise ValueError(
+            f"{where} 不得同時宣告 hard_capable=true 與 strong=true（表：{path}）"
+        )
     if "weight_soft" not in raw:
         raise ValueError(f"{where} 缺少 weight_soft 子表（表：{path}）")
     weight_soft = _parse_weight(raw["weight_soft"], f"{where} 的 weight_soft", path)
@@ -369,6 +385,7 @@ def _parse_signal(raw: Mapping[str, object], path: Path) -> Signal:
         hard_capable=hard_capable,
         weight_soft=weight_soft,
         weight_hard=weight_hard,
+        strong=strong,
     )
 
 

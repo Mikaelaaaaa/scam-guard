@@ -35,6 +35,7 @@ from scam_guard.pipeline import detect
 from scam_guard.rules.evasion import register_evasion_checks
 from scam_guard.rules.quotation import QuotationCheck
 from scam_guard.rules.speech_act import register_speech_act_rules
+from scam_guard.scoring import compute_score, is_decision
 from scam_guard.types import CheckResult, Message, Request, ScamType
 from scam_guard.weights import load_weights
 
@@ -323,21 +324,12 @@ def test_the_second_pass_signature_carries_no_message_text() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 掛上這一層之後，那則釣魚訊息**仍然**不會被判為詐騙
+# 掛上這一層之後，強訊號跨過信心閘門，但仍由分數決定是否判定
 # ---------------------------------------------------------------------------
 
 
-def test_the_model_layer_supplies_a_type_and_confidence_but_not_a_decision() -> None:
-    """這條測試存在的目的是釘住一件事：**掛上模型也不會讓那則訊息被判為詐騙**。
-
-    `weights.toml` 的 `base_single_group = 0.35` 低於 `confidence_floor = 0.40`，
-    單一群組命中依設計必定拒答。LLM 這一層在今天的權重表下補的是
-    **類型、依據與信心，不是判定**。要跨過門檻需要第二個群組命中，
-    或需要 `add-testset` / `add-metrics` 取代那張表裡的佔位值 ——
-    兩者都不在 `add-browser-llm` 的範圍內。
-
-    這條測試若有一天紅了，先確認是不是權重表改了，不要改這條斷言。
-    """
+def test_the_model_layer_opens_confidence_but_not_the_decision_gate() -> None:
+    """LLM 是 strong，所以單獨命中會給機率；0.6 的分數仍低於判定門檻。"""
     two_pass = a_two_pass()
     first = two_pass.first_pass(Request.from_text(PHISHING))
     assert first.verdict.scam_probability is None
@@ -346,8 +338,10 @@ def test_the_model_layer_supplies_a_type_and_confidence_but_not_a_decision() -> 
 
     second = two_pass.second_pass(first.token, an_output([[0, 0]]))
     assert second.outcome is LlmOutcome.OK
-    assert second.verdict.scam_probability is None
-    assert second.verdict.confidence == pytest.approx(0.35)
+    score = compute_score(second.verdict.checks, TABLE)
+    assert second.verdict.scam_probability == pytest.approx(0.6456563062257954)
+    assert second.verdict.confidence == pytest.approx(0.70)
+    assert is_decision(score, second.verdict, TABLE) is False
     assert second.verdict.scam_type is ScamType.FAKE_PARCEL
     assert [result.name for result in second.verdict.checks if result.hit] == [SCAM_SIGNAL]
 

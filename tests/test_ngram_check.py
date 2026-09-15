@@ -120,6 +120,9 @@ def test_phishing_case_records_the_unchanged_result() -> None:
     )
     verdict = detect(Request.from_text(fixture["text"]), app.build_registry(), app.TABLE)
     expected = fixture["after"]
+    measured_score = ngram.score(ngram.load_model(), fixture["text"])
+    assert measured_score.value == pytest.approx(expected["ngram_score"])
+    assert app.TABLE.threshold("ngram_threshold") == expected["ngram_threshold"]
     assert verdict.scam_probability is expected["scam_probability"]
     assert verdict.confidence == expected["confidence"]
     assert verdict.scam_type is expected["scam_type"]

@@ -45,20 +45,24 @@ def _hit_groups(results: Sequence[CheckResult], table: WeightTable) -> set[str]:
 
 
 def _base(results: Sequence[CheckResult], table: WeightTable) -> float:
-    """基準值：四級，**依序**判定，取第一個成立者。
+    """基準值：五級，**依序**判定，取第一個成立者。
 
     - **存在硬證據命中** —— `hard` 的定義是「存在一個可陳述的事實，使合法機構
       或正常使用者不可能送出這個言語行為」。有這種事實就有依據。
+    - **存在強訊號命中** —— 整段訊息判讀有量測支撐，足以單獨跨過信心門檻；
+      它仍是推論而非硬證據，所以低於硬證據級。
     - **涵蓋兩個以上群組** —— 兩個獨立群組指向同一個結論，比一個群組有依據。
     - **恰好涵蓋一個群組** —— 單一弱訊號不足以下判斷。這一級**刻意低於**門檻。
     - **完全無命中** —— `project.md`：「完全無訊號時可能性為 0.5 但信心接近 0」。
 
-    第三級低於門檻的後果是：只命中一條 Tier-B 的訊息一律拒答，棄權率因此提高。
+    第四級低於門檻的後果是：只命中一條 Tier-B 的訊息一律拒答，棄權率因此提高。
     選這個方向的理由是誤判率是強制驗收指標，而一條 Tier-B（「高薪日結免經驗」
     「保證獲利」）在合法的打工與理財廣告裡大量出現。
     """
     if any(result.hit and result.hard for result in results):
         return table.threshold("base_hard")
+    if any(result.hit and table.is_strong(result.name) for result in results):
+        return table.threshold("base_single_strong")
     groups = _hit_groups(results, table)
     if len(groups) > 1:
         return table.threshold("base_multi_group")

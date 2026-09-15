@@ -134,6 +134,12 @@ def test_every_signal_declares_a_group(table: WeightTable) -> None:
     assert sum(len(names) for names in table.groups.values()) == 36
 
 
+def test_only_whole_message_models_are_strong(table: WeightTable) -> None:
+    strong = {name for name, signal in table.signals.items() if signal.strong}
+
+    assert strong == {"ngram_classifier", "llm_scam", "llm_suspicious"}
+
+
 def test_non_unit_groups_have_a_rationale() -> None:
     """非單元群組 MUST 有 `group_rationale` —— 由載入驗證，此處確認它真的在表裡。"""
     document = tomllib.loads(DEFAULT_WEIGHTS_PATH.read_text(encoding="utf-8"))
@@ -223,6 +229,17 @@ def test_unknown_signal_raises_key_error(table: WeightTable) -> None:
 def test_group_of_unknown_signal_raises(table: WeightTable) -> None:
     with pytest.raises(KeyError, match="不存在的訊號"):
         table.group_of("不存在的訊號")
+
+
+def test_is_strong_defaults_to_false_when_omitted(tmp_path: Path) -> None:
+    loaded = load_weights(write_table(tmp_path, MINIMAL_SIGNALS))
+
+    assert loaded.is_strong("quotation") is False
+
+
+def test_is_strong_unknown_signal_raises(table: WeightTable) -> None:
+    with pytest.raises(KeyError, match="不存在的訊號"):
+        table.is_strong("不存在的訊號")
 
 
 def test_threshold_of_unknown_key_raises(table: WeightTable) -> None:
@@ -340,6 +357,26 @@ def test_missing_hard_capable(tmp_path: Path) -> None:
     broken = MINIMAL_SIGNALS.replace("hard_capable = false\n", "", 1)
 
     with pytest.raises(ValueError, match="缺少必要欄位 'hard_capable'"):
+        load_weights(write_table(tmp_path, broken))
+
+
+def test_non_boolean_strong_is_rejected_with_signal_name(tmp_path: Path) -> None:
+    broken = MINIMAL_SIGNALS.replace(
+        'name = "quotation"\ngroup = "quotation"\nhard_capable = false',
+        'name = "quotation"\ngroup = "quotation"\nhard_capable = false\nstrong = "yes"',
+    )
+
+    with pytest.raises(ValueError, match="quotation.*strong.*布林值"):
+        load_weights(write_table(tmp_path, broken))
+
+
+def test_hard_capable_and_strong_are_mutually_exclusive(tmp_path: Path) -> None:
+    broken = MINIMAL_SIGNALS.replace(
+        'name = "url_blocklist"\ngroup = "url_reputation"\nhard_capable = true',
+        'name = "url_blocklist"\ngroup = "url_reputation"\nhard_capable = true\nstrong = true',
+    )
+
+    with pytest.raises(ValueError, match="url_blocklist.*hard_capable=true.*strong=true"):
         load_weights(write_table(tmp_path, broken))
 
 
