@@ -1,0 +1,58 @@
+name: Pages
+
+# 部署 Gradio-Lite 的靜態 demo 到 GitHub Pages。
+#
+# **Pages 的來源必須設為 GitHub Actions，不是 "Deploy from a branch" 的 docs/。**
+# 站台不是 `docs/` 的原樣複製：wheel 與 PSL 快照都是建置產物，兩者都不進版控
+# （`build/` 與 `data/` 都在 `.gitignore` 裡）。分支來源會把一個少了偵測核心的
+# 頁面推上線。
+on:
+  push:
+    branches: [main]
+  # PSL 快照的新鮮度等於最後一次部署的新鮮度，而 `lite_entry.py` 的
+  # `PSL_MAX_AGE_DAYS` 是 90 天 —— 每週重新部署一次，讓快照永遠遠離那條線。
+  # ⚠️ GitHub 會在 repo 連續 60 天沒有活動後停用排程工作流程。那之後快照會
+  # 在第 90 天過期，頁面會停止運作並顯示過期訊息。手動重跑一次即可恢復。
+  schedule:
+    - cron: "0 2 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build backend
+        run: pip install build
+
+      # 建置步驟只有這一行：本機與 CI 跑的是同一個腳本。
+      - name: Build site
+        run: scripts/build_pages.sh
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/pages
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
