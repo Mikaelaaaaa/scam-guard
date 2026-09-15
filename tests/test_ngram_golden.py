@@ -3,10 +3,19 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from scam_guard.ngram import DEFAULT_MODEL_PATH, load_model, score
 from tools import train_ngram
 
+# `data/testset` 是 operator-local 且 gitignored（載有受控文件文字），CI 與新 clone
+# 上不存在。缺席時這條黃金測試沒有可比對的 tune 樣本，skip 而非 raise —— 與 repo
+# 其餘依賴該資料的測試一致（CLAUDE.md：缺資料集是正常的，測試 skip）。
+_TESTSET = Path("data/testset")
+_HAS_TESTSET = _TESTSET.is_dir() and any(_TESTSET.iterdir())
 
+
+@pytest.mark.skipif(not _HAS_TESTSET, reason="data/testset 未重建（operator-local，CI 上不存在）")
 def test_all_tune_scores_match_the_serialized_model() -> None:
     samples = train_ngram.tune_samples(Path("data/testset"), Path("testset/manifest.json"))
     assert len(samples) == 1396
