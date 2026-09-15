@@ -10,10 +10,12 @@ gradio 也不需要 PSL 快照。這裡只驗這一側獨有的東西：組裝�
 潤飾層的驗證，以及「兩個模式不共用狀態」。
 """
 
+import ast
 import json
 import re
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -25,8 +27,10 @@ import app  # noqa: E402
 import demo_ui  # noqa: E402
 from scam_guard.check import Check, CheckRegistry  # noqa: E402
 from scam_guard.normalize import DEFAULT_LIMITS, Limits, build_document  # noqa: E402
+from scam_guard.pii import find_pii  # noqa: E402
 from scam_guard.pipeline import detect  # noqa: E402
-from scam_guard.redact import RedactedText  # noqa: E402
+from scam_guard.redact import PLACEHOLDERS, RedactedText  # noqa: E402
+from scam_guard import pii  # noqa: E402
 from scam_guard.types import Message, Request, ScamType, Verdict  # noqa: E402
 
 EMPTY_REDACTED = RedactedText(sentences=[], coords=[], counts={})
@@ -497,13 +501,14 @@ FORBIDDEN_TERMS = (
 
 
 def assembled_copy() -> str:
-    """畫面上所有由本檔提供的固定文字。"""
-    written: list[list[str]] = []
+    """畫面上所有由本檔提供的固定文字，兩個記錄狀態各取一份。"""
+    written: list[RedactedText] = []
     return "".join(
         [
             app.HEADER,
             app.PRACTICE_NOTE,
-            app.PRIVACY_NOTE,
+            app.privacy_note(None),
+            app.privacy_note(written.append),
             app.samples_listing(),
             app.transcript_notice(written.append),
             app.POLISH_NOT_INJECTED,
@@ -554,32 +559,105 @@ def test_footer_keeps_the_licence_and_every_source_link() -> None:
 
 def test_privacy_note_does_not_claim_zero_trace() -> None:
     for claim in ("完全不留痕跡", "不被任何系統記錄", "完全不會被記錄"):
-        assert claim not in app.PRIVACY_NOTE
-    assert "不在我們控制範圍內" in app.PRIVACY_NOTE
+        assert claim not in app.privacy_note(None)
+    assert "不在我們控制範圍內" in app.privacy_note(None)
+
+
+def test_privacy_note_follows_the_actual_logging_state() -> None:
+    """一個會說謊的隱私說明比沒有隱私說明更糟 —— 讀它的人正是因為在意才點開它。"""
+    written: list[RedactedText] = []
+    quiet = app.privacy_note(None)
+    loud = app.privacy_note(written.append)
+    assert quiet != loud
+    assert "不留任何記錄" in quiet
+    assert "不留任何記錄" not in loud
+    assert "會被寫進記錄" in loud
+
+
+def test_logging_notices_never_claim_the_projection_is_anonymised() -> None:
+    """遮蔽只涵蓋四個辨識類型，姓名與地址原樣留著。"""
+    written: list[RedactedText] = []
+    for copy in (app.privacy_note(written.append), app.transcript_notice(written.append)):
+        for claim in ("去識別化", "匿名化", "不含個人資料", "不含個資"):
+            assert claim not in copy
+        assert "姓名" in copy
+        assert "地址" in copy
 
 
 def test_transcript_notice_only_when_logger_injected() -> None:
     assert app.transcript_notice(None) == ""
-    written: list[list[str]] = []
+    written: list[RedactedText] = []
     assert "本模式的輸入會被記錄" in app.transcript_notice(written.append)
 
 
-def test_transcript_logger_receives_explicit_message_text(
+def test_transcript_logger_receives_only_the_redactable_projection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    written: list[list[str]] = []
+    """簽章就是許可：`RedactedText` 是唯一可以寫進 log 的型別，
+    換了簽章之後「寫原文」在型別上不可表達。"""
+    written: list[RedactedText] = []
     monkeypatch.setattr(app, "TRANSCRIPT_LOGGER", written.append)
     monkeypatch.setattr(app, "POLISHER", None)
-    list(app.practice_submit("第一則", [], [], []))
-    assert written == [["第一則"]]
-    assert "len=" not in written[0][0]
+    text = "我的身分證是 A123456789，請確認。"
+    list(app.practice_submit(text, [], [], []))
+    app.inquiry_submit(text)
+
+    assert len(written) == 2, "兩個模式各記錄一次，走的是同一個記錄點"
+    for projection in written:
+        assert isinstance(projection, RedactedText)
+        joined = "".join(projection.sentences)
+        assert "A123456789" not in joined
+        assert PLACEHOLDERS[pii.TW_ID] in joined
+        assert projection.coords
+        assert set(projection.counts) == set(pii.ENTITY_TYPES)
+        assert projection.counts[pii.TW_ID] == 1
+
+
+def test_dropped_messages_never_reach_the_logger(monkeypatch: pytest.MonkeyPatch) -> None:
+    """記錄點在 `detect()` 之後，所以被 `Limits` 丟棄的最舊訊息不進 log ——
+    沒有遮蔽投影的文字沒有合法的記錄形式。"""
+    written: list[RedactedText] = []
+    monkeypatch.setattr(app, "TRANSCRIPT_LOGGER", written.append)
+    monkeypatch.setattr(app, "LIMITS", Limits(max_messages=2, max_chars=1_000))
+    app.inquiry_submit("最舊的一則。\n\n中間的一則。\n\n最新的一則。")
+    joined = "".join(written[0].sentences)
+    assert "最舊" not in joined
+    assert "最新" in joined
+
+
+def test_the_logger_is_called_with_nothing_but_the_projection() -> None:
+    """掃語法樹：記錄器的全部呼叫點只有一個，而且傳的是 `verdict.redacted`。"""
+    tree = ast.parse(Path(app.__file__).read_text(encoding="utf-8"))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "TRANSCRIPT_LOGGER"
+    ]
+    assert len(calls) == 1
+    [argument] = calls[0].args
+    assert isinstance(argument, ast.Attribute)
+    assert argument.attr == "redacted"
+    assert ast.unparse(argument) == "verdict.redacted"
 
 
 def test_no_logging_without_injection(monkeypatch: pytest.MonkeyPatch) -> None:
+    written: list[RedactedText] = []
     monkeypatch.setattr(app, "TRANSCRIPT_LOGGER", None)
     monkeypatch.setattr(app, "POLISHER", None)
     outputs = list(app.practice_submit("第一則", [], [], []))
     assert outputs
+    app.inquiry_submit("第二則")
+    assert written == []
+    assert app.transcript_notice(None) == ""
+
+
+def test_logging_is_not_a_boolean_switch() -> None:
+    """一個預設為 False 的布林是一個可以被貼進設定檔、看起來像有人想過的值。"""
+    source = Path(app.__file__).read_text(encoding="utf-8")
+    for flag in ("LOG_TRANSCRIPT =", "ENABLE_LOGGING", "LOGGING_ENABLED", "SHOULD_LOG"):
+        assert flag not in source
 
 
 # ---------------------------------------------------------------------------
@@ -612,9 +690,56 @@ def test_domain_age_is_not_injected() -> None:
 
 
 def test_optional_dependencies_default_to_not_injected() -> None:
-    assert app.PII_RECOGNIZER is None
+    """個資辨識器**不在此列**：四條辨識器是純標準庫、就在同一個 wheel 裡，
+    沒有任何部署條件擋著它。潤飾層要模型檔，記錄器要一個記錄目的地。"""
     assert app.POLISHER is None
     assert app.TRANSCRIPT_LOGGER is None
+
+
+def test_the_recognizer_is_mounted_on_this_side_too() -> None:
+    """兩份介面層對同一份能力不該給出兩種答案 ——
+    `docs/pages_app.py` 早就掛著同一個 `find_pii`。"""
+    assert app.PII_RECOGNIZER is not None
+    assert app.PII_RECOGNIZER is app.recognize_pii
+
+
+def recognize_pii_body(path: Path) -> str:
+    """兩份介面層的轉接函式最後那一行。"""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "recognize_pii":
+            return ast.unparse(node.body[-1])
+    raise AssertionError(f"{path} 裡沒有 recognize_pii")
+
+
+def test_both_interface_layers_convert_the_spans_the_same_way() -> None:
+    """不 import `docs/pages_app.py`：那一側在 import 階段就要 PSL 快照，
+    而一個因環境缺件被跳過的測試等於沒有測試。比對的是原始碼。"""
+    root = Path(app.__file__).resolve().parent
+    assert recognize_pii_body(root / "app.py") == recognize_pii_body(root / "docs" / "pages_app.py")
+
+    sentence = "身分證 A123456789 手機 0912345678。"
+    expected = [(span.start, span.end, span.entity_type) for span in find_pii(sentence)]
+    assert app.recognize_pii(sentence) == expected
+    assert len(expected) == 2
+
+
+def test_the_recognizer_is_a_module_level_named_function() -> None:
+    """以 lambda 或巢狀 `def` 捕獲外層變數是本專案明文禁止的寫法 ——
+    同一條規則在八顆範例按鈕上已經吃過一次虧。"""
+    assert app.PII_RECOGNIZER.__name__ == "recognize_pii"
+    tree = ast.parse(Path(app.__file__).read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            assert not any(isinstance(child, ast.FunctionDef) for child in node.body)
+    assignments = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.AnnAssign | ast.Assign) and "PII_RECOGNIZER" in ast.unparse(node)
+    ]
+    assert assignments
+    for node in assignments:
+        assert not isinstance(node.value, ast.Lambda)
 
 
 def test_demo_builds_as_blocks_without_flagging() -> None:
