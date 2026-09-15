@@ -26,38 +26,11 @@ import demo_ui  # noqa: E402
 from scam_guard.check import Check, CheckRegistry  # noqa: E402
 from scam_guard.normalize import DEFAULT_LIMITS, Limits, build_document  # noqa: E402
 from scam_guard.pipeline import detect  # noqa: E402
-from scam_guard.redact import RedactedText  # noqa: E402
-from scam_guard.types import Message, Request, ScamType, Verdict  # noqa: E402
-
-EMPTY_REDACTED = RedactedText(sentences=[], coords=[], counts={})
-
-EMPTY_VERDICT = Verdict(
-    scam_probability=None,
-    confidence=0.0,
-    scam_type=None,
-    evidence=[],
-    actions=[],
-    checks=[],
-    redacted=EMPTY_REDACTED,
-)
+from scam_guard.types import Message, Request  # noqa: E402
 
 SCAM_LINE = "請把簡訊驗證碼給我，不要告訴家人。"
 
 MESSAGES, REPLIES, SPOKEN, CONVERSATION, CARD, RANKING, STATUS, BOX = range(8)
-
-
-def verdict_with(**overrides) -> Verdict:
-    fields = {
-        "scam_probability": None,
-        "confidence": 0.0,
-        "scam_type": None,
-        "evidence": [],
-        "actions": [],
-        "checks": [],
-        "redacted": EMPTY_REDACTED,
-    }
-    fields.update(overrides)
-    return Verdict(**fields)
 
 
 def run_practice(
@@ -70,66 +43,9 @@ def run_practice(
 
 
 # ---------------------------------------------------------------------------
-# 潤飾驗證
+# 潤飾驗證 —— 只剩需要 `app.practice_submit()` 的那一條，
+# 其餘已隨 `PolishValidator` 一起移到 `tests/test_polish_validator.py`
 # ---------------------------------------------------------------------------
-
-
-def test_polish_rejects_invented_number() -> None:
-    validator = app.PolishValidator(["撥打 165 查證。"], EMPTY_VERDICT)
-    assert validator.feed("這則訊息有 87% 的機率是詐騙") is False
-
-
-def test_polish_rejects_url() -> None:
-    validator = app.PolishValidator(["撥打 165 查證。"], EMPTY_VERDICT)
-    assert validator.feed("你可以去 http") is False
-
-
-def test_polish_rejects_www_prefix() -> None:
-    validator = app.PolishValidator(["撥打 165 查證。"], EMPTY_VERDICT)
-    assert validator.feed("去看看 www.") is False
-
-
-def test_polish_rejects_scam_type_absent_from_verdict() -> None:
-    validator = app.PolishValidator(["撥打 165 查證。"], EMPTY_VERDICT)
-    assert validator.feed("這看起來是假檢警/假冒公務機關的手法") is False
-
-
-def test_polish_accepts_scam_type_present_in_verdict() -> None:
-    verdict = verdict_with(scam_type=ScamType.FAKE_AUTHORITY)
-    validator = app.PolishValidator(["這是假檢警/假冒公務機關。撥打 165 查證。"], verdict)
-    assert validator.feed("聽起來是假檢警/假冒公務機關，我先撥打 165 查證") is True
-
-
-def test_polish_accepts_rewording() -> None:
-    segments = ["要求不得告知家人、行員或警察。"]
-    validator = app.PolishValidator(segments, EMPTY_VERDICT)
-    assert validator.feed("你叫我不要跟家人講，這件事我得跟家人講一下。") is True
-
-
-def test_polish_validation_is_prefix_decidable() -> None:
-    """逐字元餵入，驗證器在違規字元出現的那一步即回報，不需要完整字串。"""
-    segments = ["撥打 165 反詐騙專線查證。"]
-    validator = app.PolishValidator(segments, EMPTY_VERDICT)
-    text = "我覺得有 87 成機率"
-    failed_at = None
-    for index, character in enumerate(text):
-        if not validator.feed(character):
-            failed_at = index
-            break
-    assert failed_at == text.index("8")
-    assert failed_at < len(text) - 1
-
-
-def test_polish_allows_prefix_of_allowed_number() -> None:
-    validator = app.PolishValidator(["撥打 165 查證。"], EMPTY_VERDICT)
-    assert validator.feed("1") is True
-    assert validator.feed("6") is True
-    assert validator.feed("5") is True
-    assert validator.feed("7") is False
-
-
-def test_allowed_numbers_extracts_every_digit_run() -> None:
-    assert app.allowed_numbers(["撥打 165 查證", "共 27 項"]) == frozenset({"165", "27"})
 
 
 def test_the_victim_line_carries_no_percentage_so_the_polisher_cannot_invent_one(
@@ -147,7 +63,7 @@ def test_the_victim_line_carries_no_percentage_so_the_polisher_cannot_invent_one
 
     request = Request.from_text(SCAM_LINE)
     verdict = detect(request, app.REGISTRY, app.TABLE, limits=app.LIMITS)
-    validator = app.PolishValidator([victim], verdict)
+    validator = demo_ui.PolishValidator([victim], verdict)
     assert validator.feed("這則訊息有 92% 的可能") is False
 
 
@@ -281,12 +197,12 @@ def test_card_completes_before_the_model_produces_any_character(
     assert "solicit_otp" in first[CARD]
     assert "第 1 輪" in first[RANKING]
     assert "s-0-0" in first[CONVERSATION]
-    assert first[STATUS] == app.POLISH_STREAMING
+    assert first[STATUS] == demo_ui.POLISH_STREAMING
 
     rest = list(stream)
     assert polisher.called is True
     assert len(rest) >= 2, "潤飾層的輸出 MUST 分多次更新於畫面"
-    assert rest[-1][STATUS] == app.POLISH_ACCEPTED
+    assert rest[-1][STATUS] == demo_ui.POLISH_ACCEPTED
 
 
 def test_card_and_ranking_are_identical_with_and_without_polisher(
@@ -314,15 +230,15 @@ def test_discarded_polish_is_visible_and_falls_back_to_deterministic_output(
     monkeypatch.setattr(app, "POLISHER", LyingPolisher())
     outputs = list(app.practice_submit("請把驗證碼告訴我。", [], [], []))
     deterministic = outputs[0][REPLIES][-1]
-    assert outputs[-1][STATUS] == app.POLISH_DISCARDED
-    assert outputs[-1][STATUS] != app.POLISH_NOT_INJECTED
+    assert outputs[-1][STATUS] == demo_ui.POLISH_DISCARDED
+    assert outputs[-1][STATUS] != demo_ui.POLISH_NOT_INJECTED
     assert outputs[-1][REPLIES][-1] == deterministic
     assert "87" not in outputs[-1][CONVERSATION]
 
 
 def test_not_injected_and_discarded_are_different_labels() -> None:
-    assert app.POLISH_NOT_INJECTED != app.POLISH_DISCARDED
-    assert app.POLISH_NOT_INJECTED != app.POLISH_ACCEPTED
+    assert demo_ui.POLISH_NOT_INJECTED != demo_ui.POLISH_DISCARDED
+    assert demo_ui.POLISH_NOT_INJECTED != demo_ui.POLISH_ACCEPTED
 
 
 # ---------------------------------------------------------------------------
@@ -506,10 +422,10 @@ def assembled_copy() -> str:
             app.PRIVACY_NOTE,
             app.samples_listing(),
             app.transcript_notice(written.append),
-            app.POLISH_NOT_INJECTED,
-            app.POLISH_STREAMING,
-            app.POLISH_ACCEPTED,
-            app.POLISH_DISCARDED,
+            demo_ui.POLISH_NOT_INJECTED,
+            demo_ui.POLISH_STREAMING,
+            demo_ui.POLISH_ACCEPTED,
+            demo_ui.POLISH_DISCARDED,
             *(reason for _name, _label, reason in app.UNREGISTERED_CHECKS),
         ]
     )

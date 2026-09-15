@@ -44,7 +44,8 @@
         max-width: 48rem;
         margin: 0 auto;
       }
-      .boot {
+      .boot,
+      .model {
         border: 1px solid var(--border-color-primary);
         border-left: 4px solid var(--color-accent);
         border-radius: 6px;
@@ -55,10 +56,17 @@
       .boot-head {
         font-weight: 700;
       }
-      .boot-detail {
+      .boot-detail,
+      .model-detail {
         font-size: 0.82rem;
         color: var(--body-text-color-subdued);
         white-space: pre-wrap;
+      }
+      .model-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.6rem;
+        align-items: center;
       }
       label {
         font-size: 0.85rem;
@@ -76,6 +84,9 @@
         background: var(--block-background-fill);
         border: 1px solid var(--border-color-primary);
         border-radius: 6px;
+      }
+      textarea.one-line {
+        min-height: 3.5rem;
       }
       button {
         font: inherit;
@@ -99,7 +110,13 @@
         opacity: 0.5;
         cursor: not-allowed;
       }
-      .chips {
+      button[aria-pressed="true"] {
+        border-color: var(--color-accent);
+        background: var(--color-accent-soft);
+        font-weight: 700;
+      }
+      .chips,
+      .modes {
         margin: 0.5rem 0;
       }
       .send-row {
@@ -120,8 +137,16 @@
         white-space: pre-wrap;
         overflow-x: auto;
       }
-      #echo {
+      #echo,
+      #practice-conversation {
         margin-top: 1rem;
+      }
+      .llm-status,
+      .polish-status {
+        font-size: 0.82rem;
+        color: var(--body-text-color-subdued);
+        margin: 0.4rem 0;
+        min-height: 1.4rem;
       }
     </style>
     <style id="shared-style"></style>
@@ -144,19 +169,56 @@
         </div>
       </div>
 
-      <label for="input">
-        一則就直接貼上；一段轉傳的多則對話請以<b>空行</b>分隔。
-      </label>
-      <textarea id="input" disabled placeholder="等待執行環境載入完成"></textarea>
-      <div class="chips" id="samples"></div>
-      <div class="send-row">
-        <button id="run" class="primary" disabled>看看這是不是詐騙</button>
-        <span class="note" id="registered-note"></span>
+      <div class="model" id="model">
+        <div class="model-row">
+          <button id="model-load" disabled>等待執行環境載入完成</button>
+          <span class="model-detail" id="model-state"></span>
+        </div>
+        <div class="model-detail" id="model-detail">
+          規則層不需要模型，現在就可以用。語意判讀是<b>另外一層</b>：
+          它補的是規則層結構上看不到的東西（跨句的言語行為），
+          代價是要先從 huggingface.co 取得 783,858,998 bytes（約 784 MB）的模型檔，
+          而且需要一張支援 WebGPU 與 shader-f16 的顯示卡。
+        </div>
       </div>
 
+      <div class="modes" id="modes">
+        <button id="mode-inquiry" type="button" aria-pressed="true">這是詐騙嗎</button>
+        <button id="mode-practice" type="button" aria-pressed="false">詐騙對練</button>
+      </div>
+
+      <section id="panel-inquiry">
+        <label for="input">
+          一則就直接貼上；一段轉傳的多則對話請以<b>空行</b>分隔。
+        </label>
+        <textarea id="input" disabled placeholder="等待執行環境載入完成"></textarea>
+        <div class="chips" id="samples"></div>
+        <div class="send-row">
+          <button id="run" class="primary" disabled>看看這是不是詐騙</button>
+          <span class="note" id="registered-note"></span>
+        </div>
+        <div class="llm-status" id="inquiry-llm-status"></div>
+        <div id="card"></div>
+        <div id="echo"></div>
+      </section>
+
+      <section id="panel-practice" hidden>
+        <label for="practice-input">
+          你扮演詐騙方，一次打一句。對方（受害方）說的每一句都只會來自判定結果。
+        </label>
+        <textarea id="practice-input" class="one-line" disabled
+          placeholder="等待執行環境載入完成"></textarea>
+        <div class="send-row">
+          <button id="practice-run" class="primary" disabled>送出這一輪</button>
+        </div>
+        <div class="llm-status" id="practice-llm-status"></div>
+        <div class="polish-status" id="practice-polish-status"></div>
+        <div id="practice-card"></div>
+        <div id="practice-ranking"></div>
+        <div id="practice-conversation"></div>
+      </section>
+
       <div id="error" class="error" hidden></div>
-      <div id="card"></div>
-      <div id="echo"></div>
 
       <div class="sg-foot">
         <details>
@@ -169,6 +231,14 @@
             <p>
               取得這個頁面本身（HTML、執行環境與名單）會像開啟任何網頁一樣留下一次連線記錄，
               那筆記錄裡沒有你打的字。
+            </p>
+            <p>
+              <b>語意判讀那一層多一個對象。</b>你按下「開啟語意判讀」之後，
+              你的瀏覽器會向 <code>huggingface.co</code> 取得約 784 MB 的模型檔 ——
+              這是這個專案第一次讓你的瀏覽器對第三方發出請求。
+              那幾次連線送出的是模型檔的請求，<b>裡面沒有你打的字</b>：
+              訊息只在你的瀏覽器裡跟模型說話，模型也在你的瀏覽器裡。
+              不想發出那些請求就不要按那顆按鈕，規則層完全不受影響。
             </p>
           </div>
         </details>
@@ -196,14 +266,54 @@
       const PYODIDE = "https://cdn.jsdelivr.net/pyodide/v0.29.4/full/pyodide.mjs";
       const WHEEL = "scam_guard-0.1.0-py3-none-any.whl";
       const SAMPLES = "demo_samples.json";
-      // demo_ui.py 與 pages_app.py 都不在 wheel 裡（pyproject 的 packages.find 只
-      // 收 scam_guard*），兩者由 scripts/build_pages.sh 複製到部署目錄，
-      // 再由這裡寫進 Pyodide 的檔案系統。少一個檔案會在 pyimport 當場炸，
+      // demo_ui.py、browser_llm.py 與 pages_app.py 都不在 wheel 裡（pyproject 的
+      // packages.find 只收 scam_guard*），三者由 scripts/build_pages.sh 複製到部署
+      // 目錄，再由這裡寫進 Pyodide 的檔案系統。少一個檔案會在 pyimport 當場炸，
       // 而建置腳本有一條檢查把它擋在部署之前。
-      const MODULES = ["demo_ui.py", "pages_app.py"];
+      const MODULES = ["demo_ui.py", "browser_llm.py", "pages_app.py"];
+
+      // ---------------------------------------------------------------------
+      // 模型這一層的常數。三者各附取得日期與實際位元組數。
+      // ---------------------------------------------------------------------
+
+      // npm 實測：4.2.0 發佈於 2026-04-22，dist-tags.latest。
+      // 釘死版本號，MUST NOT 用 @latest —— 理由與釘住模型 sha 相同：
+      // 外部資產的版本必須是我們記下來的，不是對方當下給的。
+      const TRANSFORMERS = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0";
+      // HF API 實測（2026-09-15）：gated: false、下載數 1,646、上次更新 2026-03-13。
+      const MODEL_REPO = "onnx-community/gemma-3-1b-it-ONNX";
+      // revision 是一個 commit sha，不是 "main"：釘住之後 transformers.js 的快取鍵
+      // 變成 pathJoin(repo_id, revision, filename)，上游重新上傳不會與本機的舊檔
+      // 混在同一個鍵下（src/utils/hub.js 在 revision === 'main' 時才以 URL 當鍵）。
+      const MODEL_REVISION = "a58439f40017d3b99c7d378ff525e54e0ba08ebf";
+      // 該 revision 下的實際位元組數（HF API ?blobs=true 實測，2026-09-15）：
+      //   onnx/model_q4f16.onnx            461,341
+      //   onnx/model_q4f16.onnx_data   763,067,904   ← 728.1 MiB，全部 dtype 裡最小
+      //   tokenizer.json                20,323,013   ← vocab_size 262,144，不是打錯字
+      //   tokenizer_config.json / config.json / generation_config.json /
+      //   special_tokens_map.json / chat_template.jinja 合計 6,740
+      const MODEL_BYTES = 783858998;
+      // dtype 與 device 兩者 MUST 顯式指定。瀏覽器的預設是 device=wasm、dtype=q8，
+      // 那條路會下載 1.42 GiB 並在 CPU 上跑 —— 比我們選的路多 762 MB。
+      const MODEL_DTYPE = "q4f16";
+      const MODEL_DEVICE = "webgpu";
+      // embedding 張量在 4-bit 下的大小：262,144 × 1,152 × 0.5 = 150,994,944 bytes。
+      // **這是由 config.json 的 vocab_size 與 hidden_size 推算的，不是實測。**
+      // Dawn 的 maxStorageBufferBindingSize 階梯最低一階是 134,217,728（128 MiB），
+      // 低於這個張量 —— 只有 tier0 的裝置會失敗。
+      const MIN_STORAGE_BUFFER = 150994944;
+      // 判讀輸出的上界。四個欄位加上 200 字元的 analysis_notes，512 綽綽有餘；
+      // 它同時是「模型開始胡言亂語時要付多少成本」的上界。**沒有實測依據。**
+      const MAX_NEW_TOKENS = 512;
+
+      // 量測用的開關：?prefill=off 關掉助理回合預填，讓「有預填 / 無預填」兩組
+      // STRUCTURE 失敗率可以在同一個站台上跑出來。沒有這兩組數字就無從判斷
+      // 預填值不值得保留（見 openspec/changes/add-browser-llm/design.md）。
+      const USE_PREFILL = new URLSearchParams(location.search).get("prefill") !== "off";
 
       const at = (path) => new URL(path, new URL(".", location.href)).href;
       const $ = (id) => document.getElementById(id);
+      const mib = (bytes) => `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 
       const boot = $("boot");
       const bootHead = $("boot-head");
@@ -226,6 +336,11 @@
         clearInterval(ticker);
         bootHead.textContent = "執行環境載入失敗";
         bootDetail.textContent = String(reason);
+      }
+
+      function showError(reason) {
+        errorBox.textContent = String(reason?.message ?? reason);
+        errorBox.hidden = false;
       }
 
       // 缺檔或欄位不全就 throw 並指名檔名與該筆內容 —— 這些檔案都進版控或由建置
@@ -305,38 +420,408 @@
         return py.pyimport("pages_app");
       }
 
-      function analyze(app, input) {
-        errorBox.hidden = true;
-        let result;
+      // ---------------------------------------------------------------------
+      // 模型層。**頁面載入時什麼都不做** —— 一個檔案都不取，連 config.json 都不取。
+      // ---------------------------------------------------------------------
+
+      // 四個狀態就是 browser_llm.LlmState 的四個值。它們過界到 Python，
+      // 由那一側決定畫面上要顯示哪一段文字（那是 Python 那一側的知識，不是這裡的）。
+      const NOT_LOADED = "not_loaded";
+      const LOADING = "loading";
+      const LOAD_FAILED = "load_failed";
+      const READY = "ready";
+
+      const model = {
+        state: NOT_LOADED,
+        tokenizer: null,
+        instance: null,
+        // 判讀與潤飾**共用同一個實例**：兩份權重在瀏覽器裡是一點五 GB 的圖形記憶體，
+        // 而兩者是序列呼叫的。
+        confirmed: false,
+      };
+
+      function modelStateIs(text) {
+        $("model-state").textContent = text;
+      }
+
+      // 三個前提各自檢查、各自回報，而且**在取得任何檔案之前**。
+      // MUST NOT 併成一句「你的瀏覽器不支援」：三者指向三種不同的處置。
+      async function requireWebGpuAdapter() {
+        if (!navigator.gpu) {
+          throw new Error(
+            "這個瀏覽器沒有 WebGPU（navigator.gpu 不存在），語意判讀這一層跑不起來。" +
+              "規則層不受影響。Chrome 113 起支援，Linux 桌機要到 Chrome 144，" +
+              "Firefox 與 Safari 的支援時間更晚。"
+          );
+        }
+        const adapter = await navigator.gpu.requestAdapter();
+        if (!adapter) {
+          throw new Error(
+            "這個瀏覽器有 WebGPU，但 requestAdapter() 沒有取得任何顯示卡。" +
+              "通常是顯示卡被列在瀏覽器的封鎖清單裡，或是遠端桌面／虛擬機環境。"
+          );
+        }
+        return adapter;
+      }
+
+      function requireShaderF16(adapter) {
+        if (!adapter.features.has("shader-f16")) {
+          throw new Error(
+            "這張顯示卡的 WebGPU 沒有 shader-f16 這項擴充，跑不了 q4f16 這個量化版本。" +
+              "這與「沒有 WebGPU」是兩件不同的事：Chrome 的 WebGPU 實作在 Vulkan " +
+              "後端的全部 NVIDIA 顯示卡上關閉了這項擴充（Linux / Android），" +
+              "所以這台機器有 WebGPU 但這一層仍然用不了。" +
+              "這一層因此不載入，也不改用別的後端。"
+          );
+        }
+      }
+
+      function requireStorageBufferSize(adapter) {
+        const reported = adapter.limits.maxStorageBufferBindingSize;
+        if (reported < MIN_STORAGE_BUFFER) {
+          throw new Error(
+            `這張顯示卡回報的 maxStorageBufferBindingSize 是 ${reported} bytes` +
+              `（${mib(reported)}），小於這個模型最大的那個權重張量所需的 ` +
+              `${MIN_STORAGE_BUFFER} bytes（${mib(MIN_STORAGE_BUFFER)}）。` +
+              "那是 embedding 張量：262,144 × 1,152 × 0.5，由 config.json 推算。" +
+              "瀏覽器為了防指紋會回報分級而非實際的限制值，所以這個數字是階梯上的一階。"
+          );
+        }
+      }
+
+      // 快取狀態由函式庫自己的 ModelRegistry 回答，我們不寫第二套 ——
+      // 程式碼裡因此沒有 caches.open、沒有 indexedDB，env.useBrowserCache 的預設
+      // （瀏覽器有 Cache API 就開啟）就是全部的快取機制。
+      //
+      // ⚠️ 這個查詢**要讀 config.json 才知道有哪些檔案**。快取是熱的時候它一次網路
+      // 請求都不發；快取是冷的時候它會取一次約 2 KB 的 config.json。
+      // 所以它不能在頁面載入時跑（那會讓「開啟頁面不對 huggingface.co 發出請求」
+      // 這句話變成假的），只能在使用者按下按鈕之後、開始下載權重之前跑。
+      // design 假設這個查詢是免費的，實際上不是；差別記在這裡。
+      async function cacheStatus(transformers) {
+        const status = await transformers.ModelRegistry.is_cached_files(MODEL_REPO, {
+          revision: MODEL_REVISION,
+          dtype: MODEL_DTYPE,
+          device: MODEL_DEVICE,
+        });
+        return status;
+      }
+
+      const progress = new Map();
+
+      function reportProgress(event) {
+        if (event.status !== "progress" || !event.total) {
+          return;
+        }
+        progress.set(event.file, event);
+        let loaded = 0;
+        let total = 0;
+        for (const item of progress.values()) {
+          loaded += item.loaded;
+          total += item.total;
+        }
+        // 分母是實際的 content-length，不是一個估計的百分比，也不是一個沒有終點的
+        // 轉圈動畫 —— 使用者要知道的是「還要多久」，而那需要一個分母。
+        modelStateIs(`下載中：${loaded} / ${total} bytes（${mib(loaded)} / ${mib(total)}）`);
+      }
+
+      async function loadModel(transformers) {
+        model.state = LOADING;
+        $("model-load").disabled = true;
+        modelStateIs("正在建立模型");
+        const options = {
+          dtype: MODEL_DTYPE,
+          device: MODEL_DEVICE,
+          revision: MODEL_REVISION,
+          progress_callback: reportProgress,
+        };
+        model.tokenizer = await transformers.AutoTokenizer.from_pretrained(MODEL_REPO, {
+          revision: MODEL_REVISION,
+          progress_callback: reportProgress,
+        });
+        model.instance = await transformers.AutoModelForCausalLM.from_pretrained(
+          MODEL_REPO,
+          options
+        );
+        model.state = READY;
+        modelStateIs("語意判讀已開啟。下一次送出的判定會多一層語意判讀。");
+        $("model-load").textContent = "語意判讀已開啟";
+        $("model-load").disabled = true;
+      }
+
+      async function onModelButton(transformers) {
         try {
-          result = JSON.parse(app.analyze(input.value));
+          // 三項檢查全部在取得任何檔案之前完成。任一項失敗即不下載、
+          // 把原文寫在畫面上，**不改用 wasm 或 cpu**：那會讓使用者以為自己跑的是
+          // 我們量過的東西，而他跑的是一條我們沒有量過的路。
+          const adapter = await requireWebGpuAdapter();
+          requireShaderF16(adapter);
+          requireStorageBufferSize(adapter);
+
+          if (!model.confirmed) {
+            modelStateIs("正在查詢瀏覽器快取裡有沒有這些檔案");
+            const status = await cacheStatus(transformers);
+            model.confirmed = true;
+            if (!status.allCached) {
+              const missing = status.files.filter((item) => !item.cached).length;
+              $("model-load").textContent = "確定，開始下載";
+              // 不說「只會下載一次」：Cache API 的儲存是可以被瀏覽器回收的，
+              // 無痕視窗、儲存空間吃緊、手動清除都會讓下一次重新下載。
+              modelStateIs(
+                `這台機器跑得動。${status.files.length} 個檔案裡有 ${missing} 個不在快取中，` +
+                  `需要從 huggingface.co 下載 ${MODEL_BYTES} bytes（約 784 MB）。` +
+                  "已經下載過的話就不用再下載。"
+              );
+              return;
+            }
+            modelStateIs("模型檔已在快取中，不需要重新下載，只要載入。");
+          }
+          await loadModel(transformers);
+        } catch (reason) {
+          // 失敗原文上畫面，MUST NOT 改寫成一句泛用的「模型載入失敗」——
+          // 三個前提失敗的處置各不相同，而泛用訊息把那個差別擦掉了。
+          model.state = LOAD_FAILED;
+          $("model-load").disabled = true;
+          $("model-load").textContent = "語意判讀無法開啟";
+          modelStateIs(String(reason?.message ?? reason));
+        }
+      }
+
+      // ---------------------------------------------------------------------
+      // 生成。一次判讀一次生成，**驗證失敗不重試**。
+      // ---------------------------------------------------------------------
+
+      // 預填前綴由 Python 側依 scam_guard.llm.schema.FIELD_NAMES 產生後過界 ——
+      // 這裡不手寫任何欄位名，也不寫任何 ScamType 或 label 的值。
+      // 這一側沒有文法約束解碼（transformers.js 的 14 個 logits processor 沒有一個
+      // 是文法或 JSON schema 約束），所以結構保證退回「產生後驗證」，
+      // 而那份驗證在 scam_guard.llm.validate，一個字元都不在這裡。
+      let constants = null;
+
+      async function generate(prompt, { prefill, streamer, criteria, maxNewTokens }) {
+        const text =
+          model.tokenizer.apply_chat_template([{ role: "user", content: prompt }], {
+            add_generation_prompt: true,
+            tokenize: false,
+          }) + prefill;
+        const inputs = model.tokenizer(text, { add_special_tokens: false });
+        const output = await model.instance.generate({
+          ...inputs,
+          // 決定性設定，且沒有任何依驗證結果調整它的路徑：提高溫度以增加通過驗證的
+          // 機會等於為了讓輸出通過檢查而讓判定更隨機。
+          do_sample: false,
+          max_new_tokens: maxNewTokens,
+          streamer,
+          stopping_criteria: criteria,
+        });
+        const generated = model.tokenizer.batch_decode(
+          output.slice(null, [inputs.input_ids.dims.at(-1), null]),
+          { skip_special_tokens: true }
+        )[0];
+        return generated;
+      }
+
+      async function readingGeneration(prompt) {
+        const transformers = await transformersModule;
+        const criteria = new transformers.InterruptableStoppingCriteria();
+        const timer = setTimeout(() => criteria.interrupt(), constants.deadline_s * 1000);
+        try {
+          const prefill = USE_PREFILL ? constants.prefill : "";
+          const generated = await generate(prompt, {
+            prefill,
+            criteria,
+            maxNewTokens: MAX_NEW_TOKENS,
+          });
+          if (criteria.interrupted) {
+            // 逾時以既有的哨符表達，讓 LlmOutcomeCounter 記到 TIMEOUT。
+            // MUST NOT 以一段截斷的輸出代替 —— 那會被記成 STRUCTURE，
+            // 而那是另一件事的名字。
+            return constants.timeout_sentinel;
+          }
+          // 「預填前綴 + 生成內容」逐字元串接，不 strip、不補括號、不做任何修補。
+          return prefill + generated;
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+
+      // ---------------------------------------------------------------------
+      // 一次判讀 = 兩趟同步的 Python 呼叫，中間夾一段非同步生成
+      // ---------------------------------------------------------------------
+
+      let app = null;
+      let transformersModule = null;
+
+      function renderInquiryFirst(first) {
+        $("card").innerHTML = first.card;
+        $("echo").innerHTML = first.echo;
+        $("inquiry-llm-status").textContent = first.status;
+      }
+
+      async function analyze(text) {
+        errorBox.hidden = true;
+        let first;
+        try {
+          first = JSON.parse(app.inquiry_first(text, model.state));
         } catch (reason) {
           // Python 的例外原文直接放上畫面：輸入為空、座標算錯、檢查回報了無法
           // 分類的狀態，各自的訊息都已經指名了是哪一件事。
-          errorBox.textContent = String(reason.message ?? reason);
-          errorBox.hidden = false;
+          showError(reason);
           return;
         }
-        $("card").innerHTML = result.card;
-        $("echo").innerHTML = result.echo;
+        renderInquiryFirst(first);
+
+        // 判定卡已經在畫面上了。下面這一段可以慢，慢不影響上面那一張卡。
+        try {
+          const second =
+            model.state === READY && first.prompt
+              ? JSON.parse(app.inquiry_second(first.token, await readingGeneration(first.prompt)))
+              : JSON.parse(app.inquiry_without_model(first.token, model.state));
+          $("card").innerHTML = second.card;
+          if (second.status) {
+            $("inquiry-llm-status").textContent = second.status;
+          }
+        } catch (reason) {
+          showError(reason);
+        }
+      }
+
+      // ---------------------------------------------------------------------
+      // 對練模式。一輪的順序就是這個函式的順序，而順序是 requirement。
+      // ---------------------------------------------------------------------
+
+      function renderPractice(payload) {
+        if ("card" in payload) {
+          $("practice-card").innerHTML = payload.card;
+        }
+        if ("ranking" in payload) {
+          $("practice-ranking").innerHTML = payload.ranking;
+        }
+        if ("conversation" in payload) {
+          $("practice-conversation").innerHTML = payload.conversation;
+        }
+        if (payload.status) {
+          $("practice-llm-status").textContent = payload.status;
+        }
+        if ("polish_status" in payload) {
+          $("practice-polish-status").textContent = payload.polish_status;
+        }
+      }
+
+      async function polish(prompt) {
+        const transformers = await transformersModule;
+        const criteria = new transformers.InterruptableStoppingCriteria();
+        let aborted = false;
+        const streamer = new transformers.TextStreamer(model.tokenizer, {
+          skip_prompt: true,
+          skip_special_tokens: true,
+          callback_function: (chunk) => {
+            if (aborted || !chunk) {
+              return;
+            }
+            // 每收到一塊就同步呼叫 Python 的驗證器。回 false 就立刻中止生成 ——
+            // 三條條件都是前綴可判定的，等全文產生完才驗證代表使用者已經看過了。
+            const step = JSON.parse(app.practice_polish_feed(chunk));
+            renderPractice(step);
+            if (!step.ok) {
+              aborted = true;
+              criteria.interrupt();
+            }
+          },
+        });
+        // 潤飾是自由文字：不帶預填、不帶任何結構約束，而且與判讀共用同一個模型實例。
+        await generate(prompt, { prefill: "", streamer, criteria, maxNewTokens: 128 });
+        if (!aborted) {
+          renderPractice(JSON.parse(app.practice_polish_end()));
+        }
+      }
+
+      async function practiceRound(text) {
+        errorBox.hidden = true;
+        let first;
+        try {
+          first = JSON.parse(app.practice_first(text, model.state));
+        } catch (reason) {
+          showError(reason);
+          return;
+        }
+        // 1. 規則層那一趟：判定卡與排行立刻上畫面，**還沒有受害方台詞**。
+        renderPractice(first);
+
+        try {
+          // 2 與 3. 判讀生成，然後含 LlmCheck 的那一趟 —— 卡片與排行再更新一次，
+          //    而受害方台詞取自**這一趟**的 Verdict。
+          const second =
+            model.state === READY && first.prompt
+              ? JSON.parse(app.practice_second(first.token, await readingGeneration(first.prompt)))
+              : JSON.parse(app.practice_without_model(first.token, model.state));
+          renderPractice(second);
+
+          // 4. 措辭潤飾。模型沒開的時候這一段整段不發生，狀態文字說的就是那件事。
+          if (model.state === READY) {
+            await polish(second.polish_prompt);
+          }
+        } catch (reason) {
+          showError(reason);
+        }
+      }
+
+      // ---------------------------------------------------------------------
+      // 版面
+      // ---------------------------------------------------------------------
+
+      function switchMode(mode) {
+        const inquiry = mode === "inquiry";
+        $("panel-inquiry").hidden = !inquiry;
+        $("panel-practice").hidden = inquiry;
+        $("mode-inquiry").setAttribute("aria-pressed", String(inquiry));
+        $("mode-practice").setAttribute("aria-pressed", String(!inquiry));
       }
 
       try {
         await loadSamples();
-        const app = await boot_python();
+        app = await boot_python();
         clearInterval(ticker);
         // 樣式表與標記同源：這個頁面只提供調色盤，class 的規則一份都不自己寫。
         $("shared-style").textContent = app.styles();
+        constants = JSON.parse(app.constants());
         boot.hidden = true;
         $("registered-note").textContent = `已檢查 ${app.check_count()} 個訊號`;
 
         const input = $("input");
         const run = $("run");
+        const practiceInput = $("practice-input");
+        const practiceRun = $("practice-run");
         input.disabled = false;
         input.placeholder = "把你收到的訊息貼在這裡";
+        practiceInput.disabled = false;
+        practiceInput.placeholder = "打一句詐騙方會說的話";
         run.disabled = false;
+        practiceRun.disabled = false;
 
-        run.addEventListener("click", () => analyze(app, input));
+        // 模型的載入完全由這顆按鈕觸發。在它被按下之前，頁面沒有對
+        // huggingface.co 發出任何請求 —— transformers.js 這個模組本身也是。
+        const modelButton = $("model-load");
+        modelButton.disabled = false;
+        modelButton.textContent =
+          "開啟語意判讀（需要 WebGPU；未快取時要從 huggingface.co 下載約 784 MB）";
+        modelButton.addEventListener("click", async () => {
+          if (transformersModule === null) {
+            // 這一行取的是 jsDelivr 上的 JavaScript，不是 huggingface.co 上的模型檔。
+            transformersModule = import(TRANSFORMERS);
+          }
+          await onModelButton(await transformersModule);
+        });
+
+        run.addEventListener("click", () => analyze(input.value));
+        practiceRun.addEventListener("click", () => {
+          const text = practiceInput.value;
+          practiceInput.value = "";
+          practiceRound(text);
+        });
+        $("mode-inquiry").addEventListener("click", () => switchMode("inquiry"));
+        $("mode-practice").addEventListener("click", () => switchMode("practice"));
+
         // 一個委派的 handler 讀 dataset，不為每顆按鈕各捕獲一份索引。
         $("samples").addEventListener("click", (event) => {
           const chip = event.target.closest("button[data-sample-index]");
@@ -348,7 +833,7 @@
             throw new Error(`範例庫中沒有這個索引：${chip.dataset.sampleIndex}`);
           }
           input.value = text;
-          analyze(app, input);
+          analyze(text);
         });
         for (const chip of $("samples").querySelectorAll("button")) {
           chip.disabled = false;
