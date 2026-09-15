@@ -42,7 +42,7 @@ from scam_guard.redact import RedactedText
 from scam_guard.rules.evasion import register_evasion_checks
 from scam_guard.rules.quotation import QuotationCheck
 from scam_guard.rules.speech_act import register_speech_act_rules
-from scam_guard.types import Message, Request
+from scam_guard.types import Message, Request, Verdict
 from scam_guard.weights import load_weights
 
 # ---------------------------------------------------------------------------
