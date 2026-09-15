@@ -173,12 +173,26 @@ def test_160055_is_retired_by_default(tmp_path: Path) -> None:
 
 
 def test_manifest_records_license_and_urls(tmp_path: Path) -> None:
+    """授權逐 source 記錄，不是全域一個欄位 —— 多來源之後全域欄位是一句假話。"""
     manifest = write_snapshot(
         tmp_path, collect(DictLoader(TEXTS)), DEFAULT_RETIRED, allow_shrink=False
     )
-    assert manifest["license"] == "政府資料開放授權條款-第 1 版"
+    assert "license" not in manifest
     for meta in manifest["sources"].values():
+        assert meta["license"] == "政府資料開放授權條款-第 1 版"
+        assert meta["license_verified_on"] == "2026-09-14"
         assert meta["source_url"].startswith("https://")
+
+
+def test_government_sources_are_displayable_and_match_at_domain_level(tmp_path: Path) -> None:
+    """政府資料可對第三方顯示，且參與可註冊網域層比對。"""
+    manifest = write_snapshot(
+        tmp_path, collect(DictLoader(TEXTS)), DEFAULT_RETIRED, allow_shrink=False
+    )
+    for meta in manifest["sources"].values():
+        assert meta["redistributable"] is True
+        assert meta["domain_level_matching"] is True
+        assert meta["data_through_source"] == "parsed_from_content"
 
 
 def test_shrink_is_refused_without_the_flag(tmp_path: Path) -> None:

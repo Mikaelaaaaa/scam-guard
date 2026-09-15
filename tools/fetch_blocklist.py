@@ -50,6 +50,9 @@ from scam_guard.url import normalize_host
 DEFAULT_OUT = Path("data/blocklist")
 TIMEOUT_SECONDS = 180.0
 LICENSE = "政府資料開放授權條款-第 1 版"
+# 授權逐 source 記錄而非全域一個欄位：加入國際 feed 之後每個來源的條款不同，
+# 一個全域欄位會變成一句假話。
+LICENSE_VERIFIED_ON = "2026-09-14"
 
 # 筆數低於既有快照一半時拒絕覆寫。
 # ⚠️ 「一半」沒有依據，但它的錯誤成本很低 —— 判錯只是多打一個旗標。
@@ -417,7 +420,6 @@ def write_snapshot(
         "entries_file": ENTRIES_FILENAME,
         "entries_sha256": sha256(payload).hexdigest(),
         "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "license": LICENSE,
         "sources": {
             dataset_id: {
                 "title": DATASETS[dataset_id].title,
@@ -428,8 +430,19 @@ def write_snapshot(
                 "unique_host_count": len(entries_by_source[dataset_id]),
                 "data_through": parsed.data_through,
                 "data_through_granularity": parsed.granularity,
+                # 日期由**檔案內容**掃出（民國年月、統計結束日期、接獲通報日期），
+                # 不是 HTTP 標頭。這比取 `Last-Modified` 強，兩者不可混為一談。
+                "data_through_source": "parsed_from_content",
                 "retired": dataset_id in retired,
                 "retired_reason": retired.get(dataset_id, ""),
+                # 三份皆為政府資料開放授權條款，可對第三方顯示、且參與可註冊
+                # 網域層比對（165 的資料形態是一個詐騙者窮舉自己網域下的子網域，
+                # 實測 `word1018.shop` 有 3,006 個被通報的子網域）。
+                "redistributable": True,
+                "domain_level_matching": True,
+                "license": LICENSE,
+                "license_verified_on": LICENSE_VERIFIED_ON,
+                "license_note": "",
             }
             for dataset_id, parsed in parsed_by_id.items()
         },
