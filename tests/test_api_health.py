@@ -93,10 +93,18 @@ def test_health_reports_the_weight_table(client: TestClient) -> None:
 
 def test_health_has_no_model_loaded_field(client: TestClient) -> None:
     """`detect-api` 不依賴 `llm-layer`，registry 裡沒有任何 LLM 檢查可以回報
-    載入了沒有 —— 現在寫這一項是在為一個不存在的東西寫健康檢查。"""
-    text = client.get("/health").text
-    for forbidden in ("model", "llm", "gemma", "loaded_model"):
-        assert forbidden not in text.lower()
+    載入了沒有 —— 現在寫這一項是在為一個不存在的東西寫健康檢查。
+
+    比對的是**欄位名稱**而非回應字串的子字串：`weights.path` 是伺服器上的
+    絕對路徑，任何含有 `llm`／`model` 的目錄名（開發時的 worktree 就是一例）
+    都會讓子字串比對誤判，而那與「有沒有回報模型狀態」完全無關。
+    """
+    payload = client.get("/health").json()
+    forbidden = {"model", "llm", "gemma", "loaded_model", "model_loaded"}
+    assert forbidden.isdisjoint(payload)
+    for value in payload.values():
+        if isinstance(value, dict):
+            assert forbidden.isdisjoint(value)
 
 
 def test_health_does_not_touch_the_network_or_run_detection(
