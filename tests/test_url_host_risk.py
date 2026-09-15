@@ -219,5 +219,5 @@ def test_tables_are_not_under_an_ignored_directory() -> None:
 
     root = resources.files("scam_guard.tables")
     names = sorted(entry.name for entry in root.iterdir() if entry.name.endswith(".json"))
-    assert names == ["brands.json", "shorteners.json", "tld_risk.json"]
+    assert names == ["brands.json", "ngram_model.json", "shorteners.json", "tld_risk.json"]
     assert "data" not in str(root).split("/")[-1]

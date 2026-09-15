@@ -36,7 +36,7 @@ from scam_guard.weights import WeightTable
 from tools.eval.dataset import Sample, file_sha256
 from tools.eval.selectors import LABEL_SCAM
 
-SNAPSHOT_MAX_AGE_DAYS = 400
+SNAPSHOT_MAX_AGE_DAYS = {"176455": 400, "165027": 400}
 """本機快照的最大年齡。見 `tools/eval/promo_scan.py` 的同名常數。
 
 評估用的是**當下手上這一份**快照，它有多舊是一個要被 `run_id` 記錄的事實，
@@ -136,7 +136,7 @@ def build_registry(
 
 
 def load_psl(psl_dir: Path) -> PublicSuffixList:
-    return PublicSuffixList.load(psl_dir, max_age_days=SNAPSHOT_MAX_AGE_DAYS)
+    return PublicSuffixList.load(psl_dir, max_age_days=max(SNAPSHOT_MAX_AGE_DAYS.values()))
 
 
 def load_blocklist(blocklist_dir: Path, psl: PublicSuffixList) -> BlocklistStore:

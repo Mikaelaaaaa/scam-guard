@@ -340,10 +340,11 @@ name = "quotation"
 group = "quotation"
 hard_capable = false
 [signal.weight_soft]
-value = -1.5
-basis = "placeholder"
-inherited_from = "add-quotation-check 的引述負權重"
-blocked_on = "add-testset"
+value = -1.569821
+basis = "measured"
+p_hit_given_scam = 0.045455
+p_hit_given_ham = 0.218447
+measured_on = "testset/manifest.json 的 tune 切分（572 則 scam、824 則 ham）"
 
 # ══ 規避（5 條）════════════════════════════════════════════════════════
 
@@ -425,10 +426,11 @@ name = "url_shortener"
 group = "url_shortener"
 hard_capable = false
 [signal.weight_soft]
-value = 0.0
-basis = "placeholder"
-inherited_from = "add-url-check：短網址宣告的是目的地未知，不是連結不可信；0.0 表示不增減證據"
-blocked_on = "add-testset"
+value = -2.143387
+basis = "measured"
+p_hit_given_scam = 0.012238
+p_hit_given_ham = 0.104369
+measured_on = "testset/manifest.json 的 tune 切分（572 則 scam、824 則 ham）"
 
 [[signal]]
 name = "url_tld_risk"
@@ -505,6 +507,19 @@ basis = "placeholder"
 inherited_from = "add-speech-act-rules 的 Tier-B 佔位值；由 add-llm-validate 登錄"
 blocked_on = "add-testset"
 
+# ══ 字元 n-gram 分類器（1 條）════════════════════════════════════════
+
+[[signal]]
+name = "ngram_classifier"
+group = "ngram_classifier"
+hard_capable = false
+[signal.weight_soft]
+value = 4.467675
+basis = "measured"
+p_hit_given_scam = 0.846154
+p_hit_given_ham = 0.009709
+measured_on = "testset/manifest.json 的 tune 切分（572 則 scam、824 則 ham；門檻亦在同一切分選定）"
+
 # ══ 門檻 ══════════════════════════════════════════════════════════════
 #
 # scoring 相關的全部常數集中於此，MUST NOT 於程式碼中出現任何未登錄的判定門檻。
@@ -517,6 +532,13 @@ blocked_on = "add-testset"
 [thresholds]
 # 此區段的骨架由 add-weight-table 建立，條目由
 # add-score-compute、add-confidence、add-verdict-render 各自填入。
+
+[thresholds.ngram_threshold]
+value = 0.376648
+basis = "measured"
+p_hit_given_scam = 0.846154
+p_hit_given_ham = 0.009709
+measured_on = "testset/manifest.json 的 tune 切分（572 則 scam、824 則 ham；門檻亦在同一切分選定）"
 
 # ── add-score-compute ──
 [thresholds.prior_log_odds]
@@ -540,7 +562,7 @@ blocked_on = "add-metrics"
 [thresholds.decision_score]
 value = 1.5
 basis = "placeholder"
-rationale = "約束為「單一 Tier-A 命中（2.5）跨過門檻、單一 Tier-B 命中（0.6）不跨過」，故取值區間為 (0.6, 2.5]。1.5 在該區間內沒有任何特別之處，它不是調過的"
+rationale = "約束為「單一 measured 弱訊號不跨過門檻、單一 measured 硬證據跨過門檻」。measured 弱訊號權重的下界為 ngram_classifier 的 4.467675，沒有任何 weight_hard 條目量得出 measured（全部 hard_capable 訊號在 tune 上的硬命中數為 0），區間不可滿足，故 decision_score 維持 1.5、不挑一個數字。這代表在此語料上規則層幾乎不產生硬證據，門檻無法由量測重新錨定"
 blocked_on = "add-metrics"
 
 # ── add-confidence ──

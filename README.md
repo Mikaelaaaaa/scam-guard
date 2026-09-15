@@ -31,7 +31,7 @@ pinned: false
 
 | 問題 | 做法 |
 |------|------|
-| 判斷要可稽核 | 33 個規則檢查，每次命中產生一筆帶原文座標的 `detail`。呈現層只能組裝這些 `detail`，結構上寫不出自己的句子 |
+| 判斷要可稽核 | 規則檢查與字元 n-gram 分類器都走同一個 `CheckResult`；每次命中產生帶原文座標的 `detail`，呈現層只能組裝這些內容 |
 | 不知道時要說不知道 | 詐騙可能性與信心值分開。信心不足時可能性回 `None`，不回一個數字 |
 | 訊息不該外流 | 偵測核心不做 I/O，由 ruff 強制。公開 demo 用 Pyodide 跑在瀏覽器裡，訊息不離開你的裝置 |
 
@@ -52,10 +52,11 @@ scam_guard/          偵測核心。純函式，不做 I/O
   redact.py          redact_document() 產出可記錄投影
   scoring.py         加權求和、同群組取 max、引述兩段式處置
   confidence.py      min(base, *caps)，拒答地板 0.40
+  ngram.py           零第三方依賴的 char_wb TF-IDF + LR 推論端
   type_resolve.py    類型判定，ROMANCE_INVESTMENT 合成
   render.py          依據與建議
   weights.py         weights.toml 載入與驗證
-  tables/            weights.toml 與三張對照表
+  tables/            weights.toml、ngram_model.json 與三張對照表
 
 net/                 請求路徑上的對外查詢（rdap.py、rdap_cache.py）
 tools/               部署前由人執行的取得程式（fetch_psl、fetch_blocklist…）
@@ -82,7 +83,8 @@ Spaces 固定執行 repo 根目錄的 `app.py`。
 執行形態有兩種，程式碼同一份。上面的指令在本機跑，Python 在你的機器上；公開
 demo 則以 Gradio-Lite 由 Pyodide 在**瀏覽器內**執行，靜態檔案託管於 GitHub
 Pages，沒有伺服器端的 Python。`scam_guard` 進得了瀏覽器，是因為它零第三方依賴、
-不碰 `sqlite3` / `socket` / `urllib`，打包成 wheel 只有 145 KB。
+不碰 `sqlite3` / `socket` / `urllib`。加入 10,000 維 n-gram 表後，2026-09-15
+實測 wheel 為 309,932 B；模型表 gzip 為 110,195 B。
 
 ## 系統架構
 
@@ -101,11 +103,13 @@ flowchart TD
     NORM --> L2["quotation<br/>1 個引述偵測"]
     NORM --> L3["evasion<br/>5 個規避訊號"]
     NORM --> L4["url_check<br/>5 個 URL 檢查<br/>全部查本機快照"]
+    NORM --> L5["ngram_classifier<br/>char_wb TF-IDF + LR<br/>模型隨 wheel 出貨，零執行期依賴"]
 
     L1 --> SC{"有硬證據命中<br/>且 quotation 未命中？"}
     L2 --> SC
     L3 --> SC
     L4 --> SC
+    L5 --> SC
 
     SC -->|"是"| SKIP["短路<br/>domain_age 記為「因短路未執行」"]
     SC -->|"否"| DA["domain_age<br/>網域註冊日期未滿 30 天<br/>唯一會對外連線的檢查，預設不註冊"]
@@ -120,11 +124,12 @@ flowchart TD
     REND --> RED["redact.redact_document()<br/>可記錄投影，全部檢查之後才產出"]
     RED --> V["Verdict<br/>可能性 / 信心 / 類型 / 依據 / 建議 / checks"]
 
-    subgraph LOCAL["Stage.LOCAL — 32 個檢查，毫秒級，零對外連線"]
+    subgraph LOCAL["Stage.LOCAL — 33 個檢查，毫秒級，零對外連線"]
         L1
         L2
         L3
         L4
+        L5
     end
 ```
 
@@ -180,6 +185,7 @@ flowchart TB
 | `url_blocklist` | `data/blocklist/`，107,499 筆 | 無 |
 | `url_shortener` / `url_tld_risk` / `url_brand` | `scam_guard/tables/*.json` | 無 |
 | `url_host_shape` | `data/psl/` Public Suffix List | 無 |
+| `ngram_classifier` | `scam_guard/tables/ngram_model.json`；Cofacts tune 訓練 | 無 |
 | `domain_age` | 各網域註冊局的 RDAP | **有，且預設不註冊** |
 
 黑名單快照由三個 data.gov.tw 資料集合併，原始共 130,193 筆，以「每個來源的每個
@@ -197,6 +203,14 @@ flowchart TB
 更新過，但檔案內最新一筆停在 2025-12-31。
 
 ## 設計原則
+
+### 字元 n-gram 分類器
+
+分類器不是平行子系統：它以 `ngram_classifier` 註冊進同一個 registry，與規則共用
+計分、信心、類型與呈現層。訓練只使用 `tune` 的 1,396 則 Cofacts 樣本；25 格
+交叉驗證選出 `char_wb` 1–2 gram、10,000 維。操作點在 scam 命中 484/572、
+ham 命中 8/824，對數似然比權重為 4.467675。分類器永遠不是硬證據、也不自行
+指定詐騙類型；單獨命中仍受既有信心地板約束而拒答。
 
 ### 能用規則判的不叫 LLM
 

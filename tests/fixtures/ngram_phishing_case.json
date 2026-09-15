@@ -1,0 +1,21 @@
+{
+  "text": "Chunghwa Post：包裹因關稅未繳而暫扣。請支付 159.71 元，付款請於此 ： https://e.vg/post-gov",
+  "before": {
+    "scam_probability": null,
+    "confidence": 0.05,
+    "scam_type": null,
+    "evidence_lines": 0,
+    "checks": 27,
+    "hits": 0
+  },
+  "after": {
+    "ngram_score": 0.15123145252814274,
+    "ngram_threshold": 0.376648,
+    "scam_probability": null,
+    "confidence": 0.05,
+    "scam_type": null,
+    "evidence_lines": 0,
+    "checks": 28,
+    "hits": 0
+  }
+}
