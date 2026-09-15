@@ -36,7 +36,9 @@ import gradio as gr
 import demo_ui
 from scam_guard.check import CheckRegistry
 from scam_guard.normalize import DEFAULT_LIMITS, Limits, build_document
+from scam_guard.pii import find_pii
 from scam_guard.pipeline import detect
+from scam_guard.redact import RedactedText
 from scam_guard.rules.evasion import register_evasion_checks
 from scam_guard.rules.quotation import QuotationCheck
 from scam_guard.rules.speech_act import register_speech_act_rules
@@ -80,18 +82,57 @@ UNREGISTERED_CHECKS: tuple[demo_ui.UnregisteredCheck, ...] = (
 PiiRecognizer = demo_ui.PiiRecognizer
 PiiSpan = demo_ui.PiiSpan
 Polisher = Callable[[Sequence[str]], Iterator[str]]
-TranscriptLogger = Callable[[list[str]], None]
+TranscriptLogger = Callable[[RedactedText], None]
+"""記錄器的簽章。**參數型別就是許可** —— `RedactedText` 是系統裡唯一可以寫進
+log 的東西（`scam_guard/redact.py`：「外層拿得到這個型別的實例，就等於拿到許可」），
+於是「把原文寫進 log」在型別上不可表達，不必靠一句叮嚀。"""
 
-PII_RECOGNIZER: PiiRecognizer | None = None
-"""個資辨識器。未掛載時畫面顯示「沒有開啟」，MUST NOT 顯示「沒有找到」。"""
+
+def recognize_pii(sentence: str) -> list[demo_ui.PiiSpan]:
+    """把 `scam_guard.pii` 的輸出轉成標記層要的 `(start, end, type)`。
+
+    標記層只認 tuple，不認 `scam_guard.pii.PiiSpan` —— 它同樣接受
+    `docs/pages_app.py` 那側掛上的辨識器，而那個注入點的契約
+    （`add-pii-recognizers`）本來就是三元組。
+
+    **與 `docs/pages_app.py` 的同名函式逐字相同，而且刻意不搬進 `demo_ui`。**
+    搬進去會讓標記層直接相依 `scam_guard.pii`，於是「有沒有開啟個資標註」
+    從**部署的選擇**變成**標記層的預設值**，而下面那個 `None` 的狀態就再也
+    表達不出來了。兩行重複換的是一個不可能被誤設成「總是開啟」的結構。
+    """
+    return [(span.start, span.end, span.entity_type) for span in find_pii(sentence)]
+
+
+PII_RECOGNIZER: PiiRecognizer | None = recognize_pii
+"""個資辨識器。四條辨識器是純標準庫、就在同一個 wheel 裡，所以這一側掛得上 ——
+`docs/pages_app.py` 早就掛著同一個 `find_pii`，兩份介面層對同一份能力
+不該給出兩種答案。
+
+未掛載（`None`）時畫面顯示「沒有開啟」，MUST NOT 顯示「沒有找到」：
+前者是沒有人在看，後者是看過了沒有。"""
 
 POLISHER: Polisher | None = None
 """模式一的措辭潤飾層。輸入只有受害方那一句，**簽章中沒有訊息原文**。"""
 
 TRANSCRIPT_LOGGER: TranscriptLogger | None = None
-"""模式一的原文記錄器。以注入表達而非布林開關 —— 一個預設為 False 的布林是一個
-可以被貼進設定檔、看起來像是有人想過的值；而「沒有注入」是不可能被誤解的狀態。
-**公開部署預設不注入。** 注入時 UI 才顯示「本模式的輸入會被記錄」。"""
+"""**兩個模式共用**的記錄器。以掛載與否表達而非布林開關 —— 一個預設為 False
+的布林是一個可以被貼進設定檔、看起來像是有人想過的值；而「沒有掛上」是不可能
+被誤解的狀態。**公開部署預設不掛。** 掛上時 UI 才顯示「本模式的輸入會被記錄」，
+且隱私說明跟著改口（見 `privacy_note()`）。"""
+
+
+def log_transcript(verdict: Verdict) -> None:
+    """兩個模式的**唯一**記錄點。未掛記錄器時什麼都不做。
+
+    寫進去的是 `Verdict.redacted`，而且只有它。記錄發生在 `detect()` **之後**，
+    副作用是被 `Limits` 丟棄的最舊訊息不進 log —— 那是正確的：
+    沒有遮蔽投影的文字沒有合法的記錄形式。
+
+    ⚠️ 遮蔽的保證範圍是四個辨識類型，**不等於「不含個資」**：姓名、地址、
+    銀行帳號、護照號碼仍然原樣留在裡面。文案 MUST NOT 把它說成已去識別化。
+    """
+    if TRANSCRIPT_LOGGER is not None:
+        TRANSCRIPT_LOGGER(verdict.redacted)
 
 
 def build_registry() -> CheckRegistry:
@@ -361,16 +402,10 @@ def practice_submit(
         raise gr.Error("輸入為空：請輸入一則詐騙方會說的話")
 
     updated = practice_messages(messages, text)
-    if TRANSCRIPT_LOGGER is not None:
-        # 顯式取 `message.text`：`add-redact-apply` 落地後 `Message.__repr__`
-        # 不再印文字，靠 f-string 寫出來的會是 `len=83`。這不是繞過那條規則，
-        # 是承認它 —— repr 的封鎖防的是意外洩漏，而這是一個刻意的、
-        # 有注入前提的記錄。
-        TRANSCRIPT_LOGGER([message.text for message in updated])
-
     request = Request(messages=updated)
     verdict = detect(request, REGISTRY, TABLE, limits=LIMITS)
     document = build_document(request.messages, LIMITS)
+    log_transcript(verdict)
 
     baseline, updated_spoken = demo_ui.victim_reply(verdict, spoken)
     updated_replies = [*replies, baseline]
@@ -458,19 +493,17 @@ def inquiry_submit(text: str) -> tuple[str, str]:
     問題，模型在這條路徑上連措辭都不經手 —— 這是「LLM 不能有最終話語權」最直接
     的實作。而且模式二未來要給 LINE 用，那裡沒有串流可以展示速度差。
 
-    **本模式不寫任何記錄。** 合法來源只有 `Verdict.redacted`（`add-redact-apply`
-    的 `RedactedText`），而今天那個欄位沒有消費者 —— 沒有合法來源就不寫，
-    不找替代品。交棒事項：`add-redact-apply` 落地後，此處 MUST 改為只寫
-    `Verdict.redacted` 的 `sentences` / `coords` / `counts`，MUST NOT 寫入
-    `Request`、`Message.text` 或 `Verdict.evidence`。
+    **記錄與模式一走同一個點**（`log_transcript()`），寫入的只有
+    `Verdict.redacted` 的 `sentences` / `coords` / `counts`，
+    MUST NOT 寫入 `Request`、`Message.text` 或 `Verdict.evidence`。
+    公開部署沒有掛記錄器，那時這一行什麼都不做。
     """
     request = build_inquiry_request(text)
     verdict = detect(request, REGISTRY, TABLE, limits=LIMITS)
     document = build_document(request.messages, LIMITS)
+    log_transcript(verdict)
     return (
-        demo_ui.render_verdict_card(
-            verdict, document, TABLE, UNREGISTERED_CHECKS, PII_RECOGNIZER
-        ),
+        demo_ui.render_verdict_card(verdict, document, TABLE, UNREGISTERED_CHECKS, PII_RECOGNIZER),
         demo_ui.render_conversation(
             request.messages, (), document, INQUIRY_SENDER, PRACTICE_REPLY, PII_RECOGNIZER
         ),
@@ -500,16 +533,39 @@ PRACTICE_NOTE = (
     "對方每一輪只會講一條新看到的訊號，<b>聊不起來是正常的</b>。</div>"
 )
 
-PRIVACY_NOTE = """
-<details><summary>你的訊息會被怎麼處理</summary>
-<div class="note">
-<p><b>不會被儲存。</b>「這是詐騙嗎」模式不留任何記錄；對話內容只存在於這個瀏覽器分頁，
-關掉或重新整理就消失。</p>
+PRIVACY_NOT_LOGGED = (
+    "<p><b>不會被儲存。</b>這個版本兩個模式都不留任何記錄；對話內容只存在於這個"
+    "瀏覽器分頁，關掉或重新整理就消失。</p>"
+)
+
+PRIVACY_LOGGED = (
+    "<p><b>你貼上的內容會被寫進記錄，兩個模式都一樣。</b>寫進去之前會先蓋掉"
+    "身分證字號、手機號碼、市話與信用卡號四種。<b>姓名、地址與銀行帳號不在這四種"
+    "裡面</b>，會原樣留在記錄裡。不要在這裡貼上你不想被留下來的東西。</p>"
+)
+
+PRIVACY_REST = """
 <p><b>不會送到外部服務。</b>比對用的名單與規則都在本機，判斷過程不對外連線。</p>
 <p>伺服器的連線記錄只有網址與狀態碼，不含你打的字。若這個服務是跑在別人的雲端平台上，
 該平台自己的系統記錄不在我們控制範圍內 —— 未被接住的錯誤訊息可能落在那裡。</p>
-</div></details>
 """
+
+
+def privacy_note(logger: TranscriptLogger | None) -> str:
+    """隱私說明。**依記錄器掛了沒有產生，不是一段無條件的固定文字。**
+
+    原本那段常數無條件宣告「『這是詐騙嗎』模式不留任何記錄」。兩個模式共用記錄點
+    之後，那句話在有掛記錄器的部署上是假的，而一個會說謊的隱私說明比沒有隱私說明
+    更糟 —— 讀它的人正是因為在意才點開它。
+
+    掛上時的文字明講會被寫進記錄，並指出遮蔽只涵蓋四個類型；
+    MUST NOT 說成「已去識別化」。
+    """
+    first = PRIVACY_NOT_LOGGED if logger is None else PRIVACY_LOGGED
+    return (
+        "<details><summary>你的訊息會被怎麼處理</summary>"
+        f'<div class="note">{first}{PRIVACY_REST}</div></details>'
+    )
 
 
 def samples_listing() -> str:
@@ -534,12 +590,21 @@ def samples_listing() -> str:
 
 
 def transcript_notice(logger: TranscriptLogger | None) -> str:
-    """原文記錄器已掛上時的顯著標示。沒掛時不顯示 —— 那是兩個不同的狀態。"""
+    """記錄器已掛上時的顯著標示，**兩個模式都掛**。沒掛時不顯示。
+
+    沒掛時回空字串而不是一句「本模式不會記錄」：那兩個狀態的差別要在畫面上
+    看得見，而「什麼都沒說」與「說了會記錄」已經是兩個不同的畫面。
+
+    ⚠️ 文案 MUST NOT 說成「已去識別化」：寫進記錄之前只蓋掉四個辨識類型，
+    姓名與地址原樣留著。
+    """
     if logger is None:
         return ""
     return (
         '<div class="notice">本模式的輸入會被記錄：'
-        "你在這裡打的每一則訊息都會被原樣寫進伺服器的記錄檔。"
+        "你在這裡打的每一則訊息都會被寫進伺服器的記錄檔，寫進去之前會先蓋掉"
+        "身分證字號、手機號碼、市話與信用卡號四種。"
+        "<b>姓名、地址與銀行帳號不在這四種裡面</b>，會原樣留在記錄裡。"
         "不要在這裡貼上真實的個人資料。</div>"
     )
 
@@ -564,6 +629,7 @@ def build_demo() -> gr.Blocks:
 
         with gr.Tabs():
             with gr.Tab("這是詐騙嗎"):
+                gr.HTML(transcript_notice(TRANSCRIPT_LOGGER))
                 inquiry_input = gr.Textbox(
                     label="貼上你收到的訊息",
                     lines=5,
@@ -598,7 +664,7 @@ def build_demo() -> gr.Blocks:
                 practice_replies_state = gr.State([])
                 practice_spoken_state = gr.State([])
 
-        gr.HTML(f'<div class="sg-foot">{PRIVACY_NOTE}{samples_listing()}</div>')
+        gr.HTML(f'<div class="sg-foot">{privacy_note(TRANSCRIPT_LOGGER)}{samples_listing()}</div>')
 
         practice_inputs = [practice_messages_state, practice_replies_state, practice_spoken_state]
         practice_outputs = [
