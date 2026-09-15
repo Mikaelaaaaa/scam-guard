@@ -403,7 +403,7 @@ def test_a_failed_reading_stays_on_the_unregistered_list_with_its_own_reason() -
 def test_the_inquiry_card_is_complete_before_any_generation() -> None:
     mode = InquiryMode(a_two_pass(), PRESENTATION)
     first = mode.first(Request.from_text(PHISHING), LlmState.READY)
-    assert '<div class="card">' in first["card"]
+    assert '<section class="analysis-panel card">' in first["card"]
     assert first["prompt"]
     assert first["status"] == browser_llm.STATUS_RUNNING
 

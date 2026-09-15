@@ -436,6 +436,42 @@ def inquiry_from_sample(short_label: str) -> tuple[str, str, str]:
     return text, card, echo
 
 
+def inquiry_layout_submit(text: str) -> tuple[str, str, str]:
+    """Gradio 版面用輸出：同一份共用標記分別投影到分析與細節欄。"""
+    card, echo = inquiry_submit(text)
+    panel, details = demo_ui.split_result(card)
+    return panel, details, echo
+
+
+def inquiry_layout_from_sample(short_label: str) -> tuple[str, str, str, str]:
+    """範例標籤的一步操作，另帶右欄所需的同源標記。"""
+    text, card, echo = inquiry_from_sample(short_label)
+    panel, details = demo_ui.split_result(card)
+    return text, panel, details, echo
+
+
+def practice_layout_submit(
+    text: str,
+    messages: list[Message],
+    replies: list[str],
+    spoken: list[str],
+) -> Iterator[tuple[list[Message], list[str], list[str], str, str, str, str, str, str]]:
+    """對練版面用串流：保留既有輸出順序，末端加上同源的右欄標記。"""
+    for output in practice_submit(text, messages, replies, spoken):
+        panel, details = demo_ui.split_result(output[4])
+        yield (*output[:4], panel, *output[5:], details)
+
+
+def practice_layout_from_sample(
+    short_label: str,
+    messages: list[Message],
+    replies: list[str],
+    spoken: list[str],
+) -> Iterator[tuple[list[Message], list[str], list[str], str, str, str, str, str, str]]:
+    """對練範例的版面投影。"""
+    yield from practice_layout_submit(sample_text(short_label), messages, replies, spoken)
+
+
 # ---------------------------------------------------------------------------
 # 介面組裝
 # ---------------------------------------------------------------------------
@@ -546,39 +582,51 @@ def build_demo() -> gr.Blocks:
     with gr.Blocks(title="這是詐騙嗎 · scam-guard", analytics_enabled=False) as demo:
         gr.HTML(HEADER)
 
-        with gr.Tabs():
+        with gr.Tabs(elem_classes="demo-tabs"):
             with gr.Tab("這是詐騙嗎"):
                 gr.HTML(transcript_notice(TRANSCRIPT_LOGGER))
-                inquiry_input = gr.Textbox(
-                    label="貼上你收到的訊息",
-                    lines=5,
-                    placeholder="把整則訊息貼進來。若是一段轉傳的對話，請在每則之間空一行。",
-                )
-                with gr.Row(elem_classes="chips"):
-                    inquiry_chips = [
-                        gr.Button(sample.short_label, size="sm", scale=0) for sample in SAMPLES
-                    ]
-                inquiry_send = gr.Button("看看這是不是詐騙", variant="primary")
-                inquiry_card = gr.HTML()
-                inquiry_echo = gr.HTML()
+                inquiry_card = gr.HTML(elem_classes="analysis-slot")
+                with gr.Row(elem_classes="demo-columns"):
+                    with gr.Column(elem_classes="input-column"):
+                        inquiry_input = gr.Textbox(
+                            label="貼上你收到的訊息",
+                            lines=5,
+                            placeholder="把整則訊息貼進來。若是一段轉傳的對話，請在每則之間空一行。",
+                        )
+                        with gr.Row(elem_classes="chips"):
+                            inquiry_chips = [
+                                gr.Button(sample.short_label, size="sm", scale=0)
+                                for sample in SAMPLES
+                            ]
+                        inquiry_send = gr.Button("看看這是不是詐騙", variant="primary")
+                        inquiry_echo = gr.HTML()
+                    with gr.Column(elem_classes="detail-column"):
+                        inquiry_details = gr.HTML()
 
             with gr.Tab("詐騙對練"):
                 gr.HTML(PRACTICE_NOTE)
                 gr.HTML(transcript_notice(TRANSCRIPT_LOGGER))
-                practice_card = gr.HTML()
-                practice_ranking = gr.HTML()
-                practice_conversation = gr.HTML()
-                practice_input = gr.Textbox(
-                    label="你（扮演詐騙方）",
-                    lines=2,
-                    placeholder="打一句詐騙方會說的話",
-                )
-                with gr.Row(elem_classes="chips"):
-                    practice_chips = [
-                        gr.Button(sample.short_label, size="sm", scale=0) for sample in SAMPLES
-                    ]
-                practice_send = gr.Button("送出", variant="primary")
-                practice_status = gr.HTML(f'<div class="note">{demo_ui.POLISH_NOT_INJECTED}</div>')
+                practice_card = gr.HTML(elem_classes="analysis-slot")
+                with gr.Row(elem_classes="demo-columns"):
+                    with gr.Column(elem_classes="input-column"):
+                        practice_conversation = gr.HTML()
+                        practice_input = gr.Textbox(
+                            label="你（扮演詐騙方）",
+                            lines=2,
+                            placeholder="打一句詐騙方會說的話",
+                        )
+                        with gr.Row(elem_classes="chips"):
+                            practice_chips = [
+                                gr.Button(sample.short_label, size="sm", scale=0)
+                                for sample in SAMPLES
+                            ]
+                        practice_send = gr.Button("送出", variant="primary")
+                        practice_status = gr.HTML(
+                            f'<div class="note">{demo_ui.POLISH_NOT_INJECTED}</div>'
+                        )
+                    with gr.Column(elem_classes="detail-column"):
+                        practice_details = gr.HTML()
+                        practice_ranking = gr.HTML()
                 practice_messages_state = gr.State([])
                 practice_replies_state = gr.State([])
                 practice_spoken_state = gr.State([])
@@ -595,24 +643,27 @@ def build_demo() -> gr.Blocks:
             practice_ranking,
             practice_status,
             practice_input,
+            practice_details,
         ]
-        inquiry_outputs = [inquiry_card, inquiry_echo]
+        inquiry_outputs = [inquiry_card, inquiry_details, inquiry_echo]
 
-        inquiry_send.click(inquiry_submit, inputs=[inquiry_input], outputs=inquiry_outputs)
+        inquiry_send.click(inquiry_layout_submit, inputs=[inquiry_input], outputs=inquiry_outputs)
         practice_send.click(
-            practice_submit, inputs=[practice_input, *practice_inputs], outputs=practice_outputs
+            practice_layout_submit,
+            inputs=[practice_input, *practice_inputs],
+            outputs=practice_outputs,
         )
         # 標籤的身分以一個常數 `gr.State` 進 handler。迴圈裡不定義任何函式 ——
         # 捕獲迴圈變數的寫法會讓八顆按鈕全部送出最後一筆。
         for sample, chip in zip(SAMPLES, inquiry_chips):
             chip.click(
-                inquiry_from_sample,
+                inquiry_layout_from_sample,
                 inputs=[gr.State(sample.short_label)],
                 outputs=[inquiry_input, *inquiry_outputs],
             )
         for sample, chip in zip(SAMPLES, practice_chips):
             chip.click(
-                practice_from_sample,
+                practice_layout_from_sample,
                 inputs=[gr.State(sample.short_label), *practice_inputs],
                 outputs=practice_outputs,
             )

@@ -162,7 +162,7 @@ class LlmState(Enum):
     READY = "ready"
 
 
-STATUS_NOT_LOADED = "語意判讀沒有開啟：這次的判定只有規則層。要開啟請按上方的載入按鈕。"
+STATUS_NOT_LOADED = "語意判讀尚未完成初始化：這次的判定只有規則層。"
 STATUS_LOADING = "模型還在下載，這次的判定只有規則層。下載完成後再送出一次就會多一層語意判讀。"
 STATUS_LOAD_FAILED = "模型載入失敗，這次的判定只有規則層。失敗的原文寫在上方的模型那一列。"
 STATUS_RUNNING = "規則層已經判完（下方就是結果），語意判讀還在跑，跑完會再更新一次。"

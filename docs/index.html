@@ -56,6 +56,13 @@
       .boot-head {
         font-weight: 700;
       }
+      progress {
+        display: block;
+        width: 100%;
+        height: 0.8rem;
+        margin: 0.65rem 0;
+        accent-color: var(--color-accent);
+      }
       .boot-detail,
       .model-detail {
         font-size: 0.82rem;
@@ -162,32 +169,34 @@
       </div>
 
       <div class="boot" id="boot">
-        <div class="boot-head" id="boot-head">正在載入執行環境</div>
+        <div class="boot-head" id="boot-head">正在初始化</div>
+        <progress id="entry-progress" value="0" max="100"></progress>
         <div class="boot-detail" id="boot-detail">
-          第一次開啟需要下載執行環境（約 12 MB），視網路狀況約需數秒到十幾秒；
-          之後由瀏覽器快取，再開約一秒內完成。這段期間下方的輸入框是停用的，不是壞了。
+          先載入規則層（約 12–14 MB），接著載入語意模型（約 784 MB）。
+          模型通常只下載一次，但瀏覽器可能清除快取。
         </div>
       </div>
 
-      <div class="model" id="model">
-        <div class="model-row">
-          <button id="model-load" disabled>等待執行環境載入完成</button>
-          <span class="model-detail" id="model-state"></span>
-        </div>
-        <div class="model-detail" id="model-detail">
-          規則層不需要模型，現在就可以用。語意判讀是<b>另外一層</b>：
-          它補的是規則層結構上看不到的東西（跨句的言語行為），
-          代價是要先從 huggingface.co 取得 783,858,998 bytes（約 784 MB）的模型檔，
-          而且需要一張支援 WebGPU 與 shader-f16 的顯示卡。
-        </div>
-      </div>
-
+      <div id="main-app" hidden>
       <div class="modes" id="modes">
-        <button id="mode-inquiry" type="button" aria-pressed="true">這是詐騙嗎</button>
+        <button id="mode-inquiry" type="button" aria-pressed="true">查詢模式</button>
         <button id="mode-practice" type="button" aria-pressed="false">詐騙對練</button>
       </div>
 
+      <div class="model" id="model" role="status">
+        <div class="model-row">
+          <b>語意判讀</b>
+          <span class="model-detail" id="model-state"></span>
+        </div>
+        <div class="model-detail" id="model-detail">
+          模型由第三方 CDN（huggingface.co）送達；訊息仍只在你的瀏覽器裡處理。
+        </div>
+      </div>
+
       <section id="panel-inquiry">
+        <div class="analysis-slot" id="card"></div>
+        <div class="demo-columns">
+        <div class="input-column">
         <label for="input">
           一則就直接貼上；一段轉傳的多則對話請以<b>空行</b>分隔。
         </label>
@@ -198,11 +207,17 @@
           <span class="note" id="registered-note"></span>
         </div>
         <div class="llm-status" id="inquiry-llm-status"></div>
-        <div id="card"></div>
         <div id="echo"></div>
+        </div>
+        <div class="detail-column" id="inquiry-details"></div>
+        </div>
       </section>
 
       <section id="panel-practice" hidden>
+        <div class="analysis-slot" id="practice-card"></div>
+        <div class="demo-columns">
+        <div class="input-column">
+        <div id="practice-conversation"></div>
         <label for="practice-input">
           你扮演詐騙方，一次打一句。對方（受害方）說的每一句都只會來自判定結果。
         </label>
@@ -213,9 +228,12 @@
         </div>
         <div class="llm-status" id="practice-llm-status"></div>
         <div class="polish-status" id="practice-polish-status"></div>
-        <div id="practice-card"></div>
+        </div>
+        <div class="detail-column">
+        <div id="practice-details"></div>
         <div id="practice-ranking"></div>
-        <div id="practice-conversation"></div>
+        </div>
+        </div>
       </section>
 
       <div id="error" class="error" hidden></div>
@@ -233,12 +251,12 @@
               那筆記錄裡沒有你打的字。
             </p>
             <p>
-              <b>語意判讀那一層多一個對象。</b>你按下「開啟語意判讀」之後，
-              你的瀏覽器會向 <code>huggingface.co</code> 取得約 784 MB 的模型檔 ——
+              <b>語意判讀那一層多一個對象。</b>進場初始化時，
+              你的瀏覽器會由第三方 CDN <code>huggingface.co</code> 取得約 784 MB 的模型檔 ——
               這是這個專案第一次讓你的瀏覽器對第三方發出請求。
               那幾次連線送出的是模型檔的請求，<b>裡面沒有你打的字</b>：
               訊息只在你的瀏覽器裡跟模型說話，模型也在你的瀏覽器裡。
-              不想發出那些請求就不要按那顆按鈕，規則層完全不受影響。
+              瀏覽器不支援或下載失敗時，規則層仍可完整使用。
             </p>
           </div>
         </details>
@@ -254,6 +272,7 @@
             <ul id="attribution"></ul>
           </div>
         </details>
+      </div>
       </div>
     </main>
 
@@ -318,6 +337,7 @@
       const boot = $("boot");
       const bootHead = $("boot-head");
       const bootDetail = $("boot-detail");
+      const entryProgress = $("entry-progress");
       const errorBox = $("error");
 
       const started = performance.now();
@@ -330,6 +350,11 @@
       function stageIs(text) {
         stage = text;
         bootHead.textContent = `正在載入執行環境：${stage}（已等待 ${elapsed()} 秒）`;
+      }
+
+      function entryProgressIs(value, text) {
+        entryProgress.value = value;
+        stageIs(text);
       }
 
       function bootFailed(reason) {
@@ -392,11 +417,11 @@
       }
 
       async function boot_python() {
-        stageIs("下載執行環境");
+        entryProgressIs(2, "強制段：下載執行環境");
         const { loadPyodide } = await import(PYODIDE);
         const py = await loadPyodide();
 
-        stageIs("安裝 scam_guard");
+        entryProgressIs(5, "強制段：安裝 scam_guard");
         await py.loadPackage("micropip");
         py.globals.set("WHEEL_URL", at(WHEEL));
         // deps=False 是事實不是最佳化：scam_guard 的 dependencies 是 []，
@@ -405,7 +430,7 @@
           "import micropip\nawait micropip.install(WHEEL_URL, deps=False)\n"
         );
 
-        stageIs("載入網域名單快照");
+        entryProgressIs(7, "強制段：載入網域名單快照");
         py.FS.mkdir("/psl");
         for (const name of ["public_suffix_list.dat", "manifest.json"]) {
           const response = await fetchOrThrow(`psl/${name}`);
@@ -417,7 +442,7 @@
         // pages_app 的 import 合計約多花 1.6 秒（其中 1.32 秒在
         // BlocklistStore.__init__ 逐筆算可註冊網域，任何打包格式都要付）——
         // 所以它自己有一個階段名稱：一個沒有標籤的一秒半看起來像當掉。
-        stageIs("載入涉詐網址名單");
+        entryProgressIs(9, "強制段：載入涉詐網址名單");
         for (const directory of ["blocklist", "allowlist"]) {
           py.FS.mkdir(`/${directory}`);
           for (const name of ["entries.jsonl", "manifest.json"]) {
@@ -431,7 +456,7 @@
 
         // pyimport 是 BlocklistStore.__init__ 真正發生的地方，所以這一段仍然是
         // 最後一個階段 —— 標籤要蓋住最慢的那一步，不是最慢的那一步的前一步。
-        stageIs("建立檢查註冊表");
+        entryProgressIs(12, "強制段：建立檢查註冊表");
         for (const name of MODULES) {
           const source = await (await fetchOrThrow(name)).text();
           py.FS.writeFile(`/home/pyodide/${name}`, source);
@@ -440,7 +465,7 @@
       }
 
       // ---------------------------------------------------------------------
-      // 模型層。**頁面載入時什麼都不做** —— 一個檔案都不取，連 config.json 都不取。
+      // 模型層。強制段完成後立即嘗試，不提供按鈕或選項。
       // ---------------------------------------------------------------------
 
       // 四個狀態就是 browser_llm.LlmState 的四個值。它們過界到 Python，
@@ -456,7 +481,6 @@
         instance: null,
         // 判讀與潤飾**共用同一個實例**：兩份權重在瀏覽器裡是一點五 GB 的圖形記憶體，
         // 而兩者是序列呼叫的。
-        confirmed: false,
       };
 
       function modelStateIs(text) {
@@ -508,24 +532,6 @@
         }
       }
 
-      // 快取狀態由函式庫自己的 ModelRegistry 回答，我們不寫第二套 ——
-      // 程式碼裡因此沒有 caches.open、沒有 indexedDB，env.useBrowserCache 的預設
-      // （瀏覽器有 Cache API 就開啟）就是全部的快取機制。
-      //
-      // ⚠️ 這個查詢**要讀 config.json 才知道有哪些檔案**。快取是熱的時候它一次網路
-      // 請求都不發；快取是冷的時候它會取一次約 2 KB 的 config.json。
-      // 所以它不能在頁面載入時跑（那會讓「開啟頁面不對 huggingface.co 發出請求」
-      // 這句話變成假的），只能在使用者按下按鈕之後、開始下載權重之前跑。
-      // design 假設這個查詢是免費的，實際上不是；差別記在這裡。
-      async function cacheStatus(transformers) {
-        const status = await transformers.ModelRegistry.is_cached_files(MODEL_REPO, {
-          revision: MODEL_REVISION,
-          dtype: MODEL_DTYPE,
-          device: MODEL_DEVICE,
-        });
-        return status;
-      }
-
       const progress = new Map();
 
       function reportProgress(event) {
@@ -539,6 +545,8 @@
           loaded += item.loaded;
           total += item.total;
         }
+        const fraction = Math.min(1, loaded / total);
+        entryProgress.value = 12 + fraction * 88;
         // 分母是實際的 content-length，不是一個估計的百分比，也不是一個沒有終點的
         // 轉圈動畫 —— 使用者要知道的是「還要多久」，而那需要一個分母。
         modelStateIs(`下載中：${loaded} / ${total} bytes（${mib(loaded)} / ${mib(total)}）`);
@@ -546,7 +554,6 @@
 
       async function loadModel(transformers) {
         model.state = LOADING;
-        $("model-load").disabled = true;
         modelStateIs("正在建立模型");
         const options = {
           dtype: MODEL_DTYPE,
@@ -564,12 +571,12 @@
         );
         model.state = READY;
         modelStateIs("語意判讀已開啟。下一次送出的判定會多一層語意判讀。");
-        $("model-load").textContent = "語意判讀已開啟";
-        $("model-load").disabled = true;
       }
 
-      async function onModelButton(transformers) {
+      async function initializeModel() {
         try {
+          const transformers = await import(TRANSFORMERS);
+          transformersModule = transformers;
           // 三項檢查全部在取得任何檔案之前完成。任一項失敗即不下載、
           // 把原文寫在畫面上，**不改用 wasm 或 cpu**：那會讓使用者以為自己跑的是
           // 我們量過的東西，而他跑的是一條我們沒有量過的路。
@@ -577,32 +584,23 @@
           requireShaderF16(adapter);
           requireStorageBufferSize(adapter);
 
-          if (!model.confirmed) {
-            modelStateIs("正在查詢瀏覽器快取裡有沒有這些檔案");
-            const status = await cacheStatus(transformers);
-            model.confirmed = true;
-            if (!status.allCached) {
-              const missing = status.files.filter((item) => !item.cached).length;
-              $("model-load").textContent = "確定，開始下載";
-              // 不說「只會下載一次」：Cache API 的儲存是可以被瀏覽器回收的，
-              // 無痕視窗、儲存空間吃緊、手動清除都會讓下一次重新下載。
-              modelStateIs(
-                `這台機器跑得動。${status.files.length} 個檔案裡有 ${missing} 個不在快取中，` +
-                  `需要從 huggingface.co 下載 ${MODEL_BYTES} bytes（約 784 MB）。` +
-                  "已經下載過的話就不用再下載。"
-              );
-              return;
-            }
-            modelStateIs("模型檔已在快取中，不需要重新下載，只要載入。");
-          }
+          modelStateIs(
+            `正在載入 ${MODEL_BYTES} bytes（約 784 MB）的語意模型；通常只下載一次。`
+          );
           await loadModel(transformers);
+          entryProgress.value = 100;
+          entryProgress.dataset.state = "ready";
+          return true;
         } catch (reason) {
           // 失敗原文上畫面，MUST NOT 改寫成一句泛用的「模型載入失敗」——
           // 三個前提失敗的處置各不相同，而泛用訊息把那個差別擦掉了。
           model.state = LOAD_FAILED;
-          $("model-load").disabled = true;
-          $("model-load").textContent = "語意判讀無法開啟";
-          modelStateIs(String(reason?.message ?? reason));
+          const message = String(reason?.message ?? reason);
+          modelStateIs(`這個瀏覽器不支援語意判讀或模型載入失敗：${message}`);
+          entryProgress.dataset.state = "failed";
+          bootHead.textContent = "語意判讀無法初始化，已直接使用規則層";
+          bootDetail.textContent = message;
+          return false;
         }
       }
 
@@ -671,8 +669,20 @@
       let app = null;
       let transformersModule = null;
 
+      function renderResult(rendered, panelId, detailsId) {
+        const template = document.createElement("template");
+        template.innerHTML = rendered;
+        const panel = template.content.querySelector(".analysis-panel");
+        const details = template.content.querySelector(".detection-detail");
+        if (!panel || !details) {
+          throw new Error("判定結果缺少分析面板或偵測細節");
+        }
+        $(panelId).replaceChildren(panel);
+        $(detailsId).replaceChildren(details);
+      }
+
       function renderInquiryFirst(first) {
-        $("card").innerHTML = first.card;
+        renderResult(first.card, "card", "inquiry-details");
         $("echo").innerHTML = first.echo;
         $("inquiry-llm-status").textContent = first.status;
       }
@@ -696,7 +706,7 @@
             model.state === READY && first.prompt
               ? JSON.parse(app.inquiry_second(first.token, await readingGeneration(first.prompt)))
               : JSON.parse(app.inquiry_without_model(first.token, model.state));
-          $("card").innerHTML = second.card;
+          renderResult(second.card, "card", "inquiry-details");
           if (second.status) {
             $("inquiry-llm-status").textContent = second.status;
           }
@@ -711,7 +721,7 @@
 
       function renderPractice(payload) {
         if ("card" in payload) {
-          $("practice-card").innerHTML = payload.card;
+          renderResult(payload.card, "practice-card", "practice-details");
         }
         if ("ranking" in payload) {
           $("practice-ranking").innerHTML = payload.ranking;
@@ -800,11 +810,9 @@
       try {
         await loadSamples();
         app = await boot_python();
-        clearInterval(ticker);
         // 樣式表與標記同源：這個頁面只提供調色盤，class 的規則一份都不自己寫。
         $("shared-style").textContent = app.styles();
         constants = JSON.parse(app.constants());
-        boot.hidden = true;
         $("registered-note").textContent = `已檢查 ${app.check_count()} 個訊號`;
 
         const input = $("input");
@@ -818,19 +826,13 @@
         run.disabled = false;
         practiceRun.disabled = false;
 
-        // 模型的載入完全由這顆按鈕觸發。在它被按下之前，頁面沒有對
-        // huggingface.co 發出任何請求 —— transformers.js 這個模組本身也是。
-        const modelButton = $("model-load");
-        modelButton.disabled = false;
-        modelButton.textContent =
-          "開啟語意判讀（需要 WebGPU；未快取時要從 huggingface.co 下載約 784 MB）";
-        modelButton.addEventListener("click", async () => {
-          if (transformersModule === null) {
-            // 這一行取的是 jsDelivr 上的 JavaScript，不是 huggingface.co 上的模型檔。
-            transformersModule = import(TRANSFORMERS);
-          }
-          await onModelButton(await transformersModule);
-        });
+        entryProgressIs(13, "加值段：載入語意判讀元件");
+        const modelReady = await initializeModel();
+        clearInterval(ticker);
+        $("main-app").hidden = false;
+        if (modelReady) {
+          boot.hidden = true;
+        }
 
         run.addEventListener("click", () => analyze(input.value));
         practiceRun.addEventListener("click", () => {

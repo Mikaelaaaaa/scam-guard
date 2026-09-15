@@ -223,6 +223,11 @@ def test_confidence_band_moves_with_the_weight_table() -> None:
     assert demo_ui.confidence_band(confidence, raised) == demo_ui.BAND_MEDIUM
 
 
+def test_single_strong_confidence_is_the_medium_band() -> None:
+    """單一強訊號的 0.70 由表上的既有切點自然落在「中」，不另寫特例。"""
+    assert demo_ui.confidence_band(0.70, TABLE) == demo_ui.BAND_MEDIUM
+
+
 def test_hard_evidence_hit_is_a_scam_decision() -> None:
     verdict, _document = verdict_for(DECIDED_TEXT)
     assert demo_ui.verdict_state(verdict, TABLE) == demo_ui.TITLE_SCAM
@@ -247,29 +252,18 @@ def test_two_weak_signals_below_the_gate_are_not_a_scam_decision() -> None:
     assert demo_ui.TITLE_SCAM not in card
 
 
-def test_signals_card_shows_the_gate_instead_of_the_probability() -> None:
-    """第三態的卡上是「分數與門檻的距離」，不是一個未達門檻的百分比。
-
-    `77%` 與判定成立時的 `92%` 長得一模一樣，使用者分不出哪一個是系統認可的
-    判定。百分比移進偵測細節，在那裡它旁邊就是分數、門檻與逐項訊號。
-    """
+def test_signals_panel_shows_probability_once_and_no_grade_labels() -> None:
+    """新版分析面板顯示同一機率，刻度只以圖形呈現且不劃級距。"""
     verdict, document = verdict_for(SIGNALS_TEXT)
     card = demo_ui.render_verdict_card(verdict, document, TABLE, UNREGISTERED)
-    head, _, details = card.partition('<details class="details">')
+    panel, _, details = card.partition('<section class="detection-detail">')
     probability = f"{verdict.scam_probability:.0%}"
 
-    assert probability not in head
-    assert not re.search(r"\d+%", re.sub(r'style="width:[^"]*"|style="left:[^"]*"', "", head))
-    assert f"{TABLE.threshold('decision_score'):.2f}" in head
-    assert probability in details
-    assert "/ 1.50" not in card
-
-
-def test_score_scale_keeps_the_gate_away_from_the_right_edge() -> None:
-    """刻度尺的右界超過門檻 —— 它讀起來不能像「進度條快滿了」。"""
-    gate = TABLE.threshold("decision_score")
-    assert demo_ui.scale_bound(1.2, gate) > gate
-    assert demo_ui.scale_bound(5.0, gate) > 5.0
+    assert panel.count(probability) == 1
+    assert probability not in details
+    assert 'role="img" aria-label="機率刻度尺"' in panel
+    for grade in ("很可能區", "可能區", "不太可能區"):
+        assert grade not in panel
 
 
 def test_undecided_card_says_it_is_not_a_clean_bill() -> None:
@@ -374,6 +368,45 @@ def test_raw_quotes_do_not_appear_in_the_why_block() -> None:
             assert document.raw_at(coord) not in why
 
 
+def test_analysis_panel_and_detail_column_do_not_repeat_verdict_facts() -> None:
+    verdict, document = verdict_for(DECIDED_TEXT)
+    panel = demo_ui.render_analysis_panel(verdict, TABLE)
+    details = demo_ui.render_detection_details(verdict, document, UNREGISTERED)
+    probability = f"{verdict.scam_probability:.0%}"
+    band = demo_ui.confidence_band(verdict.confidence, TABLE)
+
+    assert panel.count(probability) == 1
+    assert panel.count(f"{demo_ui.CONFIDENCE_PREFIX} {band}") == 1
+    assert verdict.scam_type is not None
+    assert panel.count(verdict.scam_type.value) == 1
+    assert demo_ui.WHY_HEADING not in panel
+    assert probability not in details
+    assert f"{demo_ui.CONFIDENCE_PREFIX} {band}" not in details
+    assert verdict.scam_type.value not in details
+
+
+def test_complete_result_splits_into_one_panel_and_one_detail_column() -> None:
+    rendered = card_for(DECIDED_TEXT)
+    panel, details = demo_ui.split_result(rendered)
+    assert panel.count('class="analysis-panel card"') == 1
+    assert "detection-detail" not in panel
+    assert details.count('class="detection-detail"') == 1
+    assert "analysis-panel" not in details
+
+
+def test_detail_column_uses_the_required_product_order() -> None:
+    verdict, document = verdict_for(DECIDED_TEXT)
+    details = demo_ui.render_detection_details(verdict, document, UNREGISTERED)
+    positions = [
+        details.index("命中的檢查"),
+        details.index("PII 標註"),
+        details.index(demo_ui.WHY_HEADING),
+        details.index("完整檢查（"),
+    ]
+    assert positions == sorted(positions)
+    assert '<details class="details">' in details
+
+
 # ---------------------------------------------------------------------------
 # 5. 偵測細節
 # ---------------------------------------------------------------------------
@@ -470,12 +503,11 @@ def test_details_summary_counts_items_and_hits() -> None:
     verdict, document = verdict_for(DECIDED_TEXT)
     details = demo_ui.render_details(verdict, document, UNREGISTERED)
     total = len(verdict.checks) + len(UNREGISTERED)
-    hits = sum(1 for result in verdict.checks if result.hit)
-    assert f"共 {total} 項，{hits} 項命中" in details
+    assert f"完整檢查（{total} 項）" in details
 
     quiet, quiet_document = verdict_for(QUIET_TEXT)
     quiet_details = demo_ui.render_details(quiet, quiet_document, UNREGISTERED)
-    assert f"共 {len(quiet.checks) + len(UNREGISTERED)} 項" in quiet_details
+    assert f"完整檢查（{len(quiet.checks) + len(UNREGISTERED)} 項）" in quiet_details
     assert "項命中" not in quiet_details
 
 
@@ -1146,6 +1178,39 @@ def test_css_only_references_the_declared_theme_variables() -> None:
     used = set(re.findall(r"var\((--[a-z-]+)\)", demo_ui.CSS))
     assert used
     assert used <= set(demo_ui.THEME_VARIABLES)
+
+
+def test_layout_is_equal_columns_and_stacks_on_narrow_screens() -> None:
+    assert "grid-template-columns: minmax(0, 1fr) minmax(0, 1fr)" in demo_ui.CSS
+    assert "@media (max-width: 48rem)" in demo_ui.CSS
+    assert "grid-template-columns: minmax(0, 1fr);" in demo_ui.CSS
+    assert "overflow-x: clip" in demo_ui.CSS
+
+
+def test_static_page_initializes_model_without_a_load_control() -> None:
+    page = (Path(__file__).resolve().parents[1] / "docs" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert 'id="entry-progress"' in page
+    assert 'id="model-load"' not in page
+    assert "await initializeModel()" in page
+    assert "const adapter = await navigator.gpu.requestAdapter()" in page
+    assert "model.state = LOAD_FAILED" in page
+    assert '$("main-app").hidden = false' in page
+    assert 'entryProgress.dataset.state = "failed"' in page
+    assert "通常只下載一次" in page
+    assert "第三方 CDN" in page
+
+
+def test_static_page_tabs_precede_both_shared_mode_layouts() -> None:
+    page = (Path(__file__).resolve().parents[1] / "docs" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert page.index('id="modes"') < page.index('id="card"')
+    for panel_id in ("panel-inquiry", "panel-practice"):
+        panel = page.partition(f'id="{panel_id}"')[2].partition("</section>")[0]
+        assert panel.index("analysis-slot") < panel.index("demo-columns")
+        assert panel.index("input-column") < panel.index("detail-column")
 
 
 def test_the_static_page_defines_every_theme_variable_in_both_schemes() -> None:

@@ -87,12 +87,6 @@ TITLE_SIGNALS = "有可疑訊號，但不足以判定"
 TITLE_UNDECIDED = "無法判定"
 
 LEAD_SIGNALS = "找到 {count} 項訊號，但它們加起來還不夠下結論"
-SCORE_LABEL = "詐騙分數 {value:.2f}"
-GATE_LABEL = "判定門檻 {gate:.2f}"
-SCORING_SCORE = "分數 {value:.2f}"
-SCORING_GATE = "門檻 {gate:.2f}"
-SCORING_PROBABILITY = "機率 {probability:.0%}"
-SCORING_CONFIDENCE = "信心 {confidence:.2f}"
 LEAD_UNDECIDED = "系統沒有找到足夠的依據。這不代表它安全，只代表系統沒有看出訊號。"
 VERIFY_LINE = "不確定的時候，撥打 165 反詐騙專線查證。"
 """無法判定卡上的固定內容。
@@ -116,8 +110,6 @@ RANKING_HEADING = "累積命中的訊號（第 {turns} 輪）"
 RANKING_EMPTY = "這 {turns} 輪裡沒有任何訊號命中。"
 RANKING_NO_COORD = "—"
 
-DETAILS_SUMMARY = "偵測細節（共 {total} 項）"
-DETAILS_SUMMARY_WITH_HITS = "偵測細節（共 {total} 項，{hits} 項命中）"
 QUIET_SUMMARY = "其餘 {count} 項沒有命中（{breakdown}）"
 TRUNCATION_LINE = "訊息太長，最舊的 {dropped} 則沒有納入這次判定。"
 DROPPED_LABEL = "未納入本次判定"
@@ -155,20 +147,6 @@ PII_LABELS: Mapping[str, str] = MappingProxyType(
 `TW_ID` 的顯示名刻意**不排他**。駕照號與軍人補給證號與國民身分證共用
 `[A-Z][12]\\d{8}` 的形狀並通過**同一個** checksum，在字元層不可區分 ——
 標到它們標到的確實是個資，只是不必然是國民身分證。
-"""
-
-GATE_HEADROOM = 1.5
-SCORE_HEADROOM = 1.2
-"""刻度尺右界的兩個係數：右界 = `max(門檻 × 1.5, 分數 × 1.2)`。
-
-**分數沒有上限**（一條 Tier-A 就 2.5，多條可以到 5 以上），所以刻度尺不能把
-判定門檻畫成右端點 —— 那會讀成「滿分是 1.50，而 1.20 快滿了」，
-而實際意義完全相反：1.20 是**還沒到門檻**。門檻因此必須落在軸的中間某處，
-分數在它左邊或右邊都畫得下。
-
-兩個係數是編出來的，記在這裡：1.5 讓門檻落在軸長的三分之二處（分數為 0 時
-軸仍有意義），1.2 讓超過門檻的分數右邊仍留一段空白，不會頂到邊。
-它們不影響任何 requirement，改動只改變留白多寡。
 """
 
 MIN_BAR_WIDTH = 12.0
@@ -326,7 +304,7 @@ def _facts(verdict: Verdict, state: str, table: WeightTable) -> str:
     """
     band = confidence_band(verdict.confidence, table)
     cells: list[str] = []
-    if state == TITLE_SCAM:
+    if state != TITLE_UNDECIDED and verdict.scam_probability is not None:
         cells.append(f'<span class="fact-main">{verdict.scam_probability:.0%}</span>')
         if verdict.scam_type is not None:
             cells.append(f'<span class="fact">{escaped(verdict.scam_type.value)}</span>')
@@ -347,57 +325,19 @@ def _lead(verdict: Verdict, state: str) -> str:
     return ""
 
 
-def scale_bound(value: float, gate: float) -> float:
-    """刻度尺的右界。門檻**永遠不在最右端**，分數超過門檻時也畫得下。"""
-    return max(gate * GATE_HEADROOM, value * SCORE_HEADROOM)
+def render_score_scale(score: Score) -> str:
+    """把同一個機率畫成刻度尺，不另外印第二份百分比。
 
-
-def render_score_scale(score: Score, table: WeightTable) -> str:
-    """「還差多遠」的刻度尺 —— 只出現在「有可疑訊號，但不足以判定」這一態。
-
-    這一態的畫面上不放機率百分比：`77%` 與判定成立時的 `92%` 長得一模一樣，
-    使用者分不出哪一個是系統認可的判定、哪一個是未達門檻的中間值。
-    分數與門檻的相對位置自己說明了為什麼不判定，不需要再寫一句解釋。
-
-    **不寫成「1.20 / 1.50」。** 那個斜線的意思是「滿分 1.50」，而 1.50 是**門檻**
-    不是滿分 —— 分數沒有上限。門檻值向 `WeightTable` 取，不寫死。
+    `width` 是同一個機率的圖形屬性，不是文字節點；尺上不寫數字、不劃級距，
+    避免把未校準的機率包裝成另一套風險分類。
     """
-    gate = table.threshold("decision_score")
-    bound = scale_bound(score.value, gate)
+    probability = min(max(score.probability, 0.0), 1.0)
     return (
-        '<div class="scale">'
-        f'<div class="scale-labels"><span class="scale-score">'
-        f"{SCORE_LABEL.format(value=score.value)}</span>"
-        f'<span class="scale-gate">{GATE_LABEL.format(gate=gate)}</span></div>'
+        '<div class="scale" role="img" aria-label="機率刻度尺">'
         '<div class="scale-axis">'
-        f'<i class="scale-fill" style="width:{100.0 * score.value / bound:.1f}%"></i>'
-        f'<i class="scale-mark" style="left:{100.0 * gate / bound:.1f}%"></i></div>'
-        f'<div class="scale-ticks"><span>0</span>'
-        f'<span class="scale-tick-gate" style="left:{100.0 * gate / bound:.1f}%">'
-        f"{gate:.2f}</span></div>"
+        f'<i class="scale-fill" style="width:{100.0 * probability:.1f}%"></i></div>'
         "</div>"
     )
-
-
-def scoring_line(
-    verdict: Verdict, score: Score | None, table: WeightTable, show_probability: bool
-) -> str:
-    """偵測細節最上面的計分摘要。
-
-    機率只在**卡上沒有印它**的時候出現在這裡：一個未達判定門檻的百分比放在
-    卡片第一層會被讀成判定，放在這裡則有脈絡 —— 旁邊就是分數、門檻與逐項訊號。
-    卡上已經印了機率時再印一次，就是這個 change 要消掉的那種重複。
-    """
-    if score is None:
-        return ""
-    parts = [
-        SCORING_SCORE.format(value=score.value),
-        SCORING_GATE.format(gate=table.threshold("decision_score")),
-    ]
-    if show_probability:
-        parts.append(SCORING_PROBABILITY.format(probability=score.probability))
-    parts.append(SCORING_CONFIDENCE.format(confidence=verdict.confidence))
-    return f'<div class="scoring">{" · ".join(parts)}</div>'
 
 
 def render_why(verdict: Verdict) -> str:
@@ -445,22 +385,69 @@ def render_verdict_card(
     取代了原本的「判定列 + 判定結果散文段 + 右欄面板」三個區塊：同一則假檢警
     訊息原本會在三個地方各講一次機率、信心與類型。
     """
+    return (
+        '<div class="demo-result">'
+        f"{render_analysis_panel(verdict, table)}"
+        f"{render_detection_details(verdict, doc, unregistered, recognizer)}"
+        "</div>"
+    )
+
+
+def split_result(rendered: str) -> tuple[str, str]:
+    """把共用完整輸出投影到載體的全寬面板與右欄，不複製畫面上的事實。"""
+    prefix = '<div class="demo-result">'
+    divider = '</section><section class="detection-detail">'
+    suffix = "</section></div>"
+    if not rendered.startswith(prefix) or not rendered.endswith(suffix):
+        raise ValueError("共用判定標記缺少 demo-result 外框")
+    body = rendered.removeprefix(prefix).removesuffix(suffix)
+    panel, separator, details = body.partition(divider)
+    if not separator:
+        raise ValueError("共用判定標記缺少分析面板或偵測細節")
+    return f"{panel}</section>", f'<section class="detection-detail">{details}</section>'
+
+
+def render_analysis_panel(verdict: Verdict, table: WeightTable) -> str:
+    """全寬判定摘要：三態、唯一一份機率、信心、類型與圖形刻度。"""
     state = verdict_state(verdict, table)
     score = None if verdict.scam_probability is None else compute_score(verdict.checks, table)
-    scale = ""
-    if state == TITLE_SIGNALS and score is not None:
-        scale = render_score_scale(score, table)
-    scoring = scoring_line(verdict, score, table, show_probability=state != TITLE_SCAM)
+    scale = "" if score is None else render_score_scale(score)
     return (
-        '<div class="card">'
+        '<section class="analysis-panel card">'
         f'<div class="card-head"><div class="card-title">{escaped(state)}</div>'
         f"{_facts(verdict, state, table)}</div>"
         f"{scale}"
         f"{_lead(verdict, state)}"
+        "</section>"
+    )
+
+
+def render_detection_details(
+    verdict: Verdict,
+    doc: Document,
+    unregistered: Sequence[UnregisteredCheck],
+    recognizer: PiiRecognizer | None = None,
+) -> str:
+    """右欄內容；判定摘要的機率、信心與類型不在這裡重複。"""
+    hits = [result for result in verdict.checks if result.hit]
+    hit_rows = []
+    for result in hits:
+        title, notes = split_detail(result.detail)
+        body = "".join(f'<div class="item-note">{escaped(note)}</div>' for note in notes)
+        hit_rows.append(
+            _item(title, result.name, check_state(result), body + render_quote(result, doc))
+        )
+    hit_markup = "".join(hit_rows) or '<p class="detail-empty">這次沒有檢查命中。</p>'
+    return (
+        '<section class="detection-detail">'
+        '<h3>命中的檢查</h3>'
+        f'<div class="hit-checks">{hit_markup}</div>'
+        '<h3>PII 標註</h3>'
+        f"{render_pii_block(doc, recognizer)}"
         f"{render_why(verdict)}"
+        f"{render_details(verdict, doc, unregistered)}"
         f"{render_actions(verdict)}"
-        f"{render_details(verdict, doc, unregistered, recognizer, scoring)}"
-        "</div>"
+        "</section>"
     )
 
 
@@ -527,8 +514,6 @@ def render_details(
     verdict: Verdict,
     doc: Document,
     unregistered: Sequence[UnregisteredCheck],
-    recognizer: PiiRecognizer | None = None,
-    scoring: str = "",
 ) -> str:
     """偵測細節：預設收合，命中與未開啟的項目在第一層，未命中的再收一層。
 
@@ -537,14 +522,13 @@ def render_details(
     會讓使用者先讀完一整排看不懂的東西才找得到那一行。
 
     本區塊不重述判定：沒有信心等級的標籤、沒有詐騙類型，只有中文名、識別字、
-    狀態、原文引用與計分的數值。`scoring` 那一行是**數值**不是判定 ——
-    它與逐項訊號放在一起才有脈絡，而卡片第一層已經印過的東西不會再印一次。
+    狀態與原文引用。判定摘要的機率、信心分級與類型不在這裡重複。
     """
     hits = [result for result in verdict.checks if result.hit]
     quiet = [result for result in verdict.checks if not result.hit]
     total = len(verdict.checks) + len(unregistered)
 
-    rows: list[str] = [scoring]
+    rows: list[str] = []
     if doc.truncated:
         rows.append(
             f'<div class="truncation">{TRUNCATION_LINE.format(dropped=doc.dropped_messages)}</div>'
@@ -566,14 +550,10 @@ def render_details(
             f'<details class="quiet"><summary>{_quiet_summary(terms)}</summary>{inner}</details>'
         )
 
-    summary = (
-        DETAILS_SUMMARY_WITH_HITS.format(total=total, hits=len(hits))
-        if hits
-        else DETAILS_SUMMARY.format(total=total)
-    )
+    summary = f"完整檢查（{total} 項）"
     return (
         f'<details class="details"><summary>{summary}</summary>'
-        f"{''.join(rows)}{render_pii_block(doc, recognizer)}</details>"
+        f"{''.join(rows)}</details>"
     )
 
 
@@ -1063,6 +1043,24 @@ CSS = """
 .sg-head p { margin: .2rem 0; font-size: .92rem; line-height: 1.7;
   color: var(--body-text-color); }
 
+/* 共用產品版面：tab 由載體放在最上，分析面板全寬，下面兩欄等寬。 */
+.demo-main { width: 100%; max-width: 72rem; margin: 0 auto; overflow-x: clip; }
+.analysis-slot { width: 100%; margin: .8rem 0 1rem; }
+.analysis-slot .detection-detail { display: none; }
+.demo-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1rem; align-items: start; }
+.input-column, .detail-column { min-width: 0; }
+.detail-column .analysis-panel { display: none; }
+.detection-detail { border: 1px solid var(--border-color-primary); border-radius: 14px;
+  padding: 1rem; background: var(--block-background-fill); color: var(--body-text-color); }
+.detection-detail h3 { margin: 0 0 .55rem; font-size: .9rem;
+  color: var(--body-text-color); }
+.detection-detail h3:not(:first-child) { margin-top: 1rem; }
+.detail-empty { margin: 0; font-size: .85rem; color: var(--body-text-color-subdued); }
+@media (max-width: 48rem) {
+  .demo-columns { grid-template-columns: minmax(0, 1fr); }
+}
+
 /* 判定卡 */
 .card { border: 1px solid var(--border-color-primary); border-radius: 14px;
   padding: 1rem 1.2rem; background: var(--background-fill-secondary);
@@ -1105,9 +1103,6 @@ CSS = """
   color: var(--body-text-color-subdued); }
 .scale-ticks span { position: absolute; left: 0; transform: translateX(-50%); }
 .scale-ticks span:first-child { transform: none; }
-.scoring { font-family: ui-monospace, monospace; font-size: .76rem; margin-bottom: .5rem;
-  color: var(--body-text-color-subdued); }
-
 /* 偵測細節 */
 .details { margin-top: 1.1rem; padding-top: .7rem;
   border-top: 1px solid var(--border-color-primary); }
