@@ -26,13 +26,13 @@
 """
 
 import html
-import operator
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TypeAlias
 
+from scam_guard import pii
 from scam_guard.normalize import Document
 from scam_guard.pipeline import NOT_HIT, SKIPPED
 from scam_guard.render import QUOTE_SEPARATOR
@@ -134,6 +134,28 @@ PII_NORMALIZED_NOTE = (
     "上面顯示的是系統整理過的句子（統一全形半形、去掉隱藏字元），不是原文。"
     "標示只指出位置與類型，不改寫任何文字。"
 )
+
+PII_LABELS: Mapping[str, str] = MappingProxyType(
+    {
+        pii.TW_ID: "身分證字號",
+        pii.TW_MOBILE: "手機號碼",
+        pii.TW_LANDLINE: "市話",
+        pii.CREDIT_CARD: "信用卡號",
+    }
+)
+"""四個類型在畫面上的中文顯示名。**鍵取自 `scam_guard.pii` 的常數，不寫字面值** ——
+常數改名時這裡是 import 失敗，不是畫面上多一個標不出名字的東西。
+`tests/test_demo_ui.py` 斷言鍵集合等於 `pii.ENTITY_TYPES`，封閉集合日後加第五類時
+那條測試會紅，而不是介面安靜地掉回英文識別字。
+
+⚠️ 這是本模組**唯一**用到 `scam_guard.pii` 的地方，而且只取字串常數，
+不呼叫 `find_pii()`。標記層拿到的是**詞彙**不是**辨識器**：
+`recognizer is None` 仍然是唯一決定「有沒有掛載」的東西，那個決定留在各自的介面層。
+
+`TW_ID` 的顯示名刻意**不排他**。駕照號與軍人補給證號與國民身分證共用
+`[A-Z][12]\\d{8}` 的形狀並通過**同一個** checksum，在字元層不可區分 ——
+標到它們標到的確實是個資，只是不必然是國民身分證。
+"""
 
 GATE_HEADROOM = 1.5
 SCORE_HEADROOM = 1.2
@@ -783,55 +805,128 @@ class PolishValidator:
 # ---------------------------------------------------------------------------
 
 
-def pii_counts(sentence: str, recognizer: PiiRecognizer) -> list[tuple[str, int]]:
-    """某個正規化句子命中的個資類型與筆數，依類型名稱排序。"""
-    counts: dict[str, int] = {}
-    for _start, _end, pii_type in recognizer(sentence):
-        counts[pii_type] = counts.get(pii_type, 0) + 1
-    return sorted(counts.items(), key=operator.itemgetter(0))
+def pii_label(entity_type: str) -> str:
+    """類型識別字對應的中文顯示名。**不存在時拋 `KeyError`，不回退。**
 
-
-def render_pii_tags(sentence: str, recognizer: PiiRecognizer | None) -> str:
-    """句子層級的個資標籤，掛在氣泡中該句之後。**不改寫文字。**
-
-    粒度只到句子是資料結構上的限制：辨識器的輸入是**正規化後**的句子，回報的
-    區間在正規化座標系裡，而氣泡顯示的是 `raw_at()` 的原文片段；要把區間映到
-    原文需要句內的字元對映，而今天的 `Document` 沒有保留它。
-
-    絕不以在原文中搜尋 PII 片段來補救：NFKC 有一對多與多對一，全形數字或零寬
-    字元時必然搜不到，於是規避手法會同時關掉個資標示 —— 一個可被利用的沉默。
+    `PII_LABELS.get(entity_type, entity_type)` 會把「掛上了一個不合契約的辨識器」
+    變成「畫面上偶爾出現一個英文字串」，而後者沒有人會回報。
+    例外訊息帶上那個值，讓它自己說出是誰不合契約。
     """
-    if recognizer is None:
-        return ""
-    return "".join(
-        f'<span class="pii-tag">{escaped(pii_type)} ×{count}</span>'
-        for pii_type, count in pii_counts(sentence, recognizer)
-    )
+    if entity_type not in PII_LABELS:
+        raise KeyError(f"未知的個資類型，沒有顯示名可用：entity_type={entity_type}")
+    return PII_LABELS[entity_type]
 
 
-def render_pii_highlight(sentence: str, spans: Sequence[PiiSpan]) -> str:
-    """在**正規化句子**上做字元層級標示。
+def check_pii_spans(text: str, spans: Sequence[PiiSpan]) -> None:
+    """驗證區間落在 `text` 內、互不重疊且依序遞增。違反時拋 `ValueError`。
+
+    **不排序後硬吃、不略過、不截斷。** 三者都會把「產生區間的元件算錯了」
+    變成「標註偶爾標到隔壁幾個字」，而後者不拋例外、畫面上看起來只是標得怪，
+    在一個 recall 本來就低的功能上沒有人看得出來。
+
+    這裡的區間**已經解析到 `text` 的座標系上** —— 正規化句子上的區間直接來自
+    辨識器，原文片段上的區間來自 `Document.raw_bounds_at()`。
+    """
+    previous: PiiSpan | None = None
+    for span in spans:
+        start, end, _entity_type = span
+        if start < 0:
+            raise ValueError(f"標註起點不可為負：start={start}")
+        if start >= end:
+            raise ValueError(f"標註區間必須非空：start={start}、end={end}")
+        if end > len(text):
+            raise ValueError(f"標註終點不可超過文字長度：end={end}、長度={len(text)}")
+        if previous is not None and start < previous[1]:
+            raise ValueError(
+                f"標註區間不可重疊：前一段 start={previous[0]}、end={previous[1]}，"
+                f"這一段 start={start}、end={end}"
+            )
+        previous = span
+
+
+def render_pii_highlight(text: str, spans: Sequence[PiiSpan]) -> str:
+    """在 `text` 上做字元層級標註。`spans` 的座標**必須已經解析到 `text` 上**。
+
+    正規化句子與原文片段共用這一份實作 —— 兩者的差別只在區間怎麼算出來，
+    標記怎麼組是同一件事。
 
     ⚠️ **先用原始索引切片，再對每一段各自逸出。** `html.escape()` 是一對多的
     （`&` → `&amp;` 是 1→5），先逸出整句再用區間切片，從第一個 `&` 之後的所有
-    索引全部位移，標示框會標到錯的字 —— 而 `&` 在釣魚連結的 query string 裡
-    幾乎必然出現。這個錯不會拋例外，畫面上只是標到隔壁幾個字。
+    索引全部位移，標註會標到隔壁幾個字 —— 而 `&` 在帶追蹤參數的釣魚連結裡
+    幾乎必然出現。這個錯不會拋例外，畫面上只是標到錯的字。
+
+    **類型是一個文字節點，不是 `title` 也不是 `aria-label`。** 觸控裝置上
+    `:hover` 由瀏覽器自行決定行為、`title` 完全不顯示，而手機是這個服務的主要
+    載體；`aria-label` 掛在 `<mark>` 上會**取代**內部文字，報讀器會唸出
+    「身分證字號」而不唸出號碼本身。`title` 保留，但只是指標裝置上的冗餘。
+
+    **串接點不引入任何原文沒有的字元。** `.lines` 是 `white-space: pre-wrap`，
+    在那個容器裡 HTML 原始碼的換行與縮排會被渲染成空白。
     """
+    check_pii_spans(text, spans)
     pieces: list[str] = []
     cursor = 0
-    for start, end, pii_type in sorted(spans, key=operator.itemgetter(0)):
-        pieces.append(escaped(sentence[cursor:start]))
+    for start, end, entity_type in spans:
+        label = escaped(pii_label(entity_type))
+        pieces.append(escaped(text[cursor:start]))
         pieces.append(
-            f'<mark class="pii-mark" title="{escaped(pii_type)}">'
-            f"{escaped(sentence[start:end])}</mark>"
+            f'<mark class="pii-mark" title="{label}">{escaped(text[start:end])}'
+            f'<span class="pii-kind">{label}</span></mark>'
         )
         cursor = end
-    pieces.append(escaped(sentence[cursor:]))
+    pieces.append(escaped(text[cursor:]))
     return "".join(pieces)
 
 
+def render_raw_sentence(doc: Document, coord: Coord, recognizer: PiiRecognizer | None) -> str:
+    """一句**原文片段**，個資的位置與類型標在上面。未掛載辨識器時只做逸出。
+
+    座標換算走 `Document.raw_bounds_at()`，**絕不以 `find()` 回頭搜尋原文**：
+    辨識器看到的是正規化句子，氣泡顯示的是原文，兩者的索引不同。NFKC 有一對多
+    （`㈱` → `(株)`）也有多對一（`\\r\\n` → `\\n`），全形數字或零寬字元時
+    `raw.find()` 必然搜不到 —— 實測全形身分證的正規化區間是 `(37, 47)` 而
+    `find()` 回 `-1`。那條路的後果不是例外，是標註在被規避手法改寫過的訊息上
+    安靜消失，而那正是 `add-evasion-check` 在偵測的那些訊息。
+
+    **不 catch `raw_bounds_at()` 的 `KeyError` 與 `ValueError`。** 能觸發它們的
+    只有兩件事：掛上了不合契約的辨識器，或 `Document` 的偏移表算錯 ——
+    兩者都是程式錯誤，與 `render_quote()` 對無效座標的處置一致。
+    """
+    raw = doc.raw_at(coord)
+    if recognizer is None:
+        return escaped(raw)
+    spans = [
+        (*doc.raw_bounds_at(coord, start, end), entity_type)
+        for start, end, entity_type in recognizer(doc.text_at(coord))
+    ]
+    return render_pii_highlight(raw, spans)
+
+
+def pii_conversation_note(doc: Document, recognizer: PiiRecognizer | None) -> str:
+    """對話區塊末尾的個資說明。**與標註同層，不收合。**
+
+    標註一旦出現在氣泡上，使用者的推論路徑會是「系統會標個資 → 它沒標 →
+    這則沒個資」，而那個推論是錯的：姓名、地址、銀行帳號、護照號碼全部不在四條
+    樣式裡。揭露因此必須看得見，不能留在 `render_pii_block()` 那個預設收合的
+    `<details>` 裡。
+
+    「沒有開啟」與「沒有找到」是兩個狀態，兩段文字不同且不同時出現：前者是
+    「沒有人在看」，後者是「看過了，沒有」。
+    """
+    if recognizer is None:
+        return f'<div class="note">{PII_NOT_MOUNTED}</div>'
+    found = any(recognizer(sentence) for sentence in doc.sentences)
+    no_hit = "" if found else PII_NO_HIT
+    return f'<div class="note">{no_hit}{PII_SCOPE_NOTE}</div>'
+
+
 def render_pii_block(doc: Document, recognizer: PiiRecognizer | None) -> str:
-    """偵測細節裡的個資區塊。字元層級的標示只出現在這裡，且標在正規化句子上。
+    """偵測細節裡的個資區塊。這裡的標示標在**正規化句子**上。
+
+    **與氣泡上的標註不重複，兩者標的是不同的東西**：氣泡標原文（使用者寫的
+    那個樣子），這裡標正規化後的句子（系統實際拿去比對的那個樣子），
+    `PII_NORMALIZED_NOTE` 講的就是這個差別。一則以全形數字書寫的身分證，
+    氣泡上標的是全形、這裡標的是半形。
 
     「沒有開啟」與「沒有找到」是兩個狀態，文字必須不同：前者是「沒有人在看」，
     後者是「看過了，沒有」。在一個以展示偵測能力為目的的畫面上混淆這兩者，
@@ -882,6 +977,9 @@ def render_message(
 
     座標不存在於 `Document` 的訊息標示為「未納入本次判定」—— 它還在畫面上，
     但系統其實沒讀到它。不顯示的話，使用者會以為系統看過全部。
+
+    個資標在**字元上**，不在句尾掛類型計數標籤：字元層級的標註落地之後，
+    句尾再掛一個「身分證字號 ×1」就是同一行裡把同一件事講兩次。
     """
     positions = doc.message_range(message_index)
     if not positions:
@@ -893,8 +991,7 @@ def render_message(
         )
     parts = [
         f'<span class="sentence" id="{anchor_id(doc.coords[position])}">'
-        f"{escaped(doc.raw_sentences[position])}</span>"
-        f"{render_pii_tags(doc.sentences[position], recognizer)}"
+        f"{render_raw_sentence(doc, doc.coords[position], recognizer)}</span>"
         for position in positions
     ]
     return (
@@ -915,7 +1012,9 @@ def render_conversation(
     """對話（對練模式）或輸入回顯（「這是詐騙嗎」模式）。
 
     用自繪的 HTML 而非 `gr.Chatbot`：後者的單位是一則訊息，而這裡需要的最小
-    單位是**句子**（證據座標的粒度就是句子），還要在句子之後掛個資標籤。
+    單位是**句子**（證據座標的粒度就是句子），還要在句子裡標出個資的位置。
+
+    末尾的那一行是辨識範圍的揭露，**不收合** —— 見 `pii_conversation_note()`。
     """
     blocks: list[str] = []
     for message_index, message in enumerate(messages):
@@ -925,7 +1024,9 @@ def render_conversation(
                 f'<div class="bubble me"><div class="who">{escaped(reply_label)}</div>'
                 f'<div class="lines">{escaped(replies[message_index])}</div></div>'
             )
-    return f'<div class="conversation">{"".join(blocks)}</div>'
+    return (
+        f'<div class="conversation">{"".join(blocks)}{pii_conversation_note(doc, recognizer)}</div>'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1073,11 +1174,19 @@ a.quote { font-size: .8rem; line-height: 1.6; color: var(--color-accent);
 .pii { margin-top: .7rem; padding-top: .6rem;
   border-top: 1px solid var(--border-color-primary); }
 .pii h4 { font-size: .8rem; }
-.pii-tag { font-size: .7rem; border: 1px solid var(--border-color-primary);
-  border-radius: 4px; padding: 0 .3rem; margin: 0 .2rem;
-  color: var(--body-text-color-subdued); }
 .pii-mark { background: var(--color-accent-soft); color: var(--body-text-color);
-  border-bottom: 2px solid var(--color-accent); }
+  border-bottom: 2px solid var(--color-accent); border-radius: 3px;
+  padding: 0 2px; }
+/* 類型標籤**永遠可見**。縮小、弱化，但始終在文件流裡 ——
+   觸控裝置上 `:hover` 要先點一下且會吃掉該次點擊，`title` 完全不顯示，
+   而手機是這個服務的主要載體。把類型藏在 hover 後面等於在主要載體上刪掉它。 */
+.pii-kind { font-size: .7rem; margin-left: .2rem;
+  color: var(--body-text-color-subdued); }
+/* hover 只做強調：改顏色與底線粗細。
+   MUST NOT 改 display / visibility / opacity —— 那會讓標籤變成 hover 限定，
+   正是上面那條規則反對的事。 */
+.pii-mark:hover { border-bottom-width: 3px; }
+.pii-mark:hover .pii-kind { color: var(--body-text-color); }
 .pii-row { font-family: ui-monospace, monospace; font-size: .8rem; margin: .25rem 0;
   color: var(--body-text-color); word-break: break-all; }
 .coord { color: var(--body-text-color-subdued); margin-right: .4rem; }

@@ -6,6 +6,8 @@
 共用模組沒有這個問題，所以它的性質在這裡被無條件驗證。
 """
 
+import ast
+import html
 import re
 import subprocess
 import sys
@@ -14,6 +16,7 @@ from pathlib import Path
 import pytest
 
 import demo_ui
+from scam_guard import pii
 from scam_guard.check import CheckRegistry, Stage
 from scam_guard.normalize import DEFAULT_LIMITS, Document, Limits, build_document
 from scam_guard.pipeline import NOT_HIT, SKIPPED, detect
@@ -797,9 +800,40 @@ def recognizer_none(sentence: str) -> list[demo_ui.PiiSpan]:
 
 
 def recognizer_tw_id(sentence: str) -> list[demo_ui.PiiSpan]:
+    """假辨識器。回報的類型取自 `scam_guard.pii` 的常數，不是自己編的字串 ——
+    畫面上的顯示名由 `PII_LABELS` 決定，而它的鍵就是這四個常數。"""
     return [
-        (match.start(), match.end(), "身分證") for match in re.finditer(r"[A-Z][12]\d{8}", sentence)
+        (match.start(), match.end(), pii.TW_ID)
+        for match in re.finditer(r"[A-Z][12]\d{8}", sentence)
     ]
+
+
+def app_style_recognizer(sentence: str) -> list[demo_ui.PiiSpan]:
+    """與兩份介面層掛上的轉接函式同形：真的 `find_pii()`，轉成三元組。"""
+    return [(span.start, span.end, span.entity_type) for span in pii.find_pii(sentence)]
+
+
+def recognizer_out_of_range(sentence: str) -> list[demo_ui.PiiSpan]:
+    return [(0, len(sentence) + 7, pii.TW_ID)]
+
+
+def recognizer_overlapping(sentence: str) -> list[demo_ui.PiiSpan]:
+    return [(0, 4, pii.TW_ID), (2, 6, pii.TW_MOBILE)]
+
+
+def recognizer_unknown_type(sentence: str) -> list[demo_ui.PiiSpan]:
+    return [(0, 2, "PASSPORT")]
+
+
+def strip_markup(rendered: str) -> str:
+    """剝掉全部標記並還原逸出。
+
+    類型標籤連同它的 `<span>` 一起剝掉：它是**標註的一部分**，不是原文的一部分。
+    剩下的必須逐字等於原文 —— `.lines` 是 `white-space: pre-wrap`，
+    標記串接時多出來的任何一個換行或縮排都會被渲染成空白字元。
+    """
+    without_kind = re.sub(r'<span class="pii-kind">.*?</span>', "", rendered)
+    return html.unescape(re.sub(r"<[^>]+>", "", without_kind))
 
 
 def test_user_input_is_escaped() -> None:
@@ -815,6 +849,42 @@ def test_escaped_url_round_trips() -> None:
     assert demo_ui.escaped("https://x.cc/a?id=1&ref=2") == "https://x.cc/a?id=1&amp;ref=2"
 
 
+def test_pii_labels_cover_the_closed_set() -> None:
+    """封閉集合日後加第五類時，這條測試紅掉 —— 而不是畫面上安靜地掉回英文識別字。"""
+    assert set(demo_ui.PII_LABELS) == set(pii.ENTITY_TYPES)
+
+
+def test_pii_label_raises_on_unknown_type() -> None:
+    """不回退成印出識別字本身：那會把「掛了不合契約的辨識器」變成
+    「畫面上偶爾出現英文」，而後者沒有人會回報。"""
+    with pytest.raises(KeyError, match="NOT_A_TYPE"):
+        demo_ui.pii_label("NOT_A_TYPE")
+
+
+def test_pii_labels_make_no_exclusive_or_graded_claim() -> None:
+    """駕照號與軍人補給證號與身分證共用形狀與 checksum，字元層不可區分。"""
+    assert "國民" not in demo_ui.PII_LABELS[pii.TW_ID]
+    for label in demo_ui.PII_LABELS.values():
+        for word in ("準確", "信心", "可能", "疑似", "%"):
+            assert word not in label
+
+
+def test_no_measurement_numbers_reach_the_screen() -> None:
+    """量測數據屬開發者文件。對一個收到可疑訊息的人，嚴格 precision 是雜訊。"""
+    copy = "".join(
+        [
+            demo_ui.PII_HEADING,
+            demo_ui.PII_NOT_MOUNTED,
+            demo_ui.PII_NO_HIT,
+            demo_ui.PII_SCOPE_NOTE,
+            demo_ui.PII_NORMALIZED_NOTE,
+            *demo_ui.PII_LABELS.values(),
+        ]
+    )
+    for term in ("precision", "recall", "F1", "82.3", "誤遮"):
+        assert term not in copy
+
+
 def test_pii_highlight_slices_before_escaping() -> None:
     """迴歸測試：`html.escape()` 是一對多的（`&` → `&amp;`）。
 
@@ -826,20 +896,202 @@ def test_pii_highlight_slices_before_escaping() -> None:
     spans = recognizer_tw_id(sentence)
     assert spans, "測試前提：句中有一筆身分證"
     rendered = demo_ui.render_pii_highlight(sentence, spans)
-    marked = re.findall(r'<mark class="pii-mark"[^>]*>(.*?)</mark>', rendered)
+    marked = re.findall(r'<mark class="pii-mark"[^>]*>(.*?)<span', rendered)
     assert marked == ["A123456789"]
     assert "&amp;ref=2" in rendered
 
 
+def test_pii_annotation_on_raw_slices_before_escaping() -> None:
+    """同一條性質在**原文**這條路徑上再驗一次 —— 換座標系之後它是一條新的路徑。
+
+    兩個 `&` 的追蹤參數：先逸出再切片的話，身分證那一段會往左偏 8 格。
+    """
+    text = "請至 https://x.cc/a?utm_source=line&utm_medium=share&id=1 驗證，身分證 A123456789"
+    message = Message(text=text)
+    document = build_document([message], LIMITS)
+    conversation = demo_ui.render_conversation(
+        [message], (), document, "你", "對方", recognizer_tw_id
+    )
+    marked = re.findall(r'<mark class="pii-mark"[^>]*>(.*?)<span', conversation)
+    assert marked == ["A123456789"]
+    assert "&amp;utm_medium=share&amp;id=1" in conversation
+
+
+def test_pii_annotation_maps_coordinates_instead_of_searching_the_raw_text() -> None:
+    """全形書寫：辨識器看到 `A123456789`，原文裡是 `Ａ１２３４５６７８９`。
+
+    `raw.find()` 在這一則上回傳 `-1`，而氣泡上仍然要標到那段全形文字 ——
+    換算走 `Document.raw_bounds_at()`。偵測細節裡標的則是半形的正規化文字，
+    兩處標的是兩個不同的東西。
+    """
+    text = "請回傳身分證 Ａ１２３４５６７８９ 謝謝。"
+    message = Message(text=text)
+    document = build_document([message], LIMITS)
+    assert document.raw_sentences[0].find(document.sentences[0][7:17]) == -1
+
+    conversation = demo_ui.render_conversation(
+        [message], (), document, "你", "對方", recognizer_tw_id
+    )
+    assert re.findall(r'<mark class="pii-mark"[^>]*>(.*?)<span', conversation) == [
+        "Ａ１２３４５６７８９"
+    ]
+
+    block = demo_ui.render_pii_block(document, recognizer_tw_id)
+    assert re.findall(r'<mark class="pii-mark"[^>]*>(.*?)<span', block) == ["A123456789"]
+    assert demo_ui.PII_NORMALIZED_NOTE in block
+
+
+def test_pii_annotation_survives_zero_width_characters() -> None:
+    """零寬字元是 `add-evasion-check` 在偵測的規避手法之一。
+
+    以 `find()` 定位的話標註會在這一則上安靜消失 —— 一個可被利用的沉默。
+    """
+    text = "身分證A123​456789請確認。"
+    message = Message(text=text)
+    document = build_document([message], LIMITS)
+    conversation = demo_ui.render_conversation(
+        [message], (), document, "你", "對方", recognizer_tw_id
+    )
+    assert re.findall(r'<mark class="pii-mark"[^>]*>(.*?)<span', conversation) == ["A123​456789"]
+
+
+def test_pii_marks_are_character_level_and_do_not_rewrite_text() -> None:
+    """承接 `test_pii_tags_are_sentence_level_and_do_not_rewrite_text`。
+
+    「不改寫文字」這條性質不放寬；句尾的類型計數標籤則不再存在 ——
+    字元層級的標註落地之後，那是同一行裡把同一件事講兩次。
+    """
+    text = "我的身分證是 A123456789 請確認。"
+    message = Message(text=text)
+    document = build_document([message], LIMITS)
+    conversation = demo_ui.render_conversation(
+        [message], (), document, "你", "對方", recognizer_tw_id
+    )
+    assert '<mark class="pii-mark"' in conversation
+    assert "A123456789" in conversation
+    assert "<TW_ID>" not in conversation
+    assert "×1" not in conversation
+    assert not hasattr(demo_ui, "render_pii_tags")
+    assert not hasattr(demo_ui, "pii_counts")
+
+
+def test_two_pii_in_one_sentence_each_get_their_own_mark() -> None:
+    text = "身分證 A123456789 手機 0912345678 都給你。"
+    message = Message(text=text)
+    document = build_document([message], LIMITS)
+    conversation = demo_ui.render_conversation(
+        [message], (), document, "你", "對方", app_style_recognizer
+    )
+    marks = re.findall(r'<mark class="pii-mark"[^>]*>(.*?)</mark>', conversation)
+    assert len(marks) == 2
+    assert marks[0].startswith("A123456789")
+    assert marks[1].startswith("0912345678")
+
+
+def test_the_type_is_a_text_node_not_only_an_attribute() -> None:
+    """觸控裝置上 `title` 完全不顯示，`:hover` 要先點一下；而手機是主要載體。
+
+    `aria-label` 更糟 —— 掛在 `<mark>` 上會**取代**內部文字，
+    報讀器會唸出「身分證字號」而不唸出號碼本身。
+    """
+    text = "身分證 A123456789。"
+    message = Message(text=text)
+    document = build_document([message], LIMITS)
+    conversation = demo_ui.render_conversation(
+        [message], (), document, "你", "對方", recognizer_tw_id
+    )
+    assert f'<span class="pii-kind">{demo_ui.PII_LABELS[pii.TW_ID]}</span>' in conversation
+    assert "aria-label" not in conversation
+    assert "aria-labelledby" not in conversation
+    without_attributes = re.sub(r'title="[^"]*"', "", conversation)
+    assert demo_ui.PII_LABELS[pii.TW_ID] in without_attributes
+
+
+def test_stripping_the_markup_gives_back_the_raw_sentences() -> None:
+    """`.lines` 是 `white-space: pre-wrap`：標記串接多出來的任何一個換行或縮排
+    都會被渲染成空白字元，而原文裡沒有它。"""
+    text = "身分證 A123456789 手機 0912345678 市話 02-2720-8889 都給你。"
+    message = Message(text=text)
+    document = build_document([message], LIMITS)
+    conversation = demo_ui.render_conversation(
+        [message], (), document, "你", "對方", app_style_recognizer
+    )
+    lines = re.search(r'<div class="lines">(.*?)</div>', conversation, flags=re.S)
+    assert lines is not None
+    assert strip_markup(lines.group(1)) == "".join(document.raw_sentences)
+
+
+def test_out_of_range_span_raises_with_its_value() -> None:
+    """不截斷至合法範圍：截斷會把「產生區間的元件算錯了」變成「偶爾錯一格」。"""
+    message = Message(text="一則短訊息。")
+    document = build_document([message], LIMITS)
+    sentence = document.sentences[0]
+    with pytest.raises(ValueError, match=str(len(sentence) + 7)):
+        demo_ui.render_conversation([message], (), document, "你", "對方", recognizer_out_of_range)
+    with pytest.raises(ValueError, match=str(len(sentence) + 7)):
+        demo_ui.render_pii_highlight(sentence, recognizer_out_of_range(sentence))
+
+
+def test_overlapping_spans_raise_instead_of_producing_a_shifted_mark() -> None:
+    message = Message(text="一則短訊息。")
+    document = build_document([message], LIMITS)
+    with pytest.raises(ValueError, match="重疊"):
+        demo_ui.render_conversation([message], (), document, "你", "對方", recognizer_overlapping)
+
+
+def test_unknown_entity_type_raises_instead_of_falling_back() -> None:
+    message = Message(text="一則短訊息。")
+    document = build_document([message], LIMITS)
+    with pytest.raises(KeyError, match="PASSPORT"):
+        demo_ui.render_conversation([message], (), document, "你", "對方", recognizer_unknown_type)
+
+
+def test_pii_paths_neither_swallow_exceptions_nor_search_the_raw_text() -> None:
+    """兩條界線同時掃，掃的是**語法樹**不是字串 —— docstring 裡寫得出
+    `raw.find()` 這個反例，而那正是這些 docstring 在做的事。
+
+    吞掉例外會讓算錯區間的辨識器看起來只是「標得比較少」，而在一個 recall 本來
+    就低的功能上，「標得比較少」看不出來。以個資文字回頭搜尋原文則在全形或
+    零寬字元時必然指錯。
+    """
+    for name in ("demo_ui.py", "app.py"):
+        tree = ast.parse((Path(__file__).resolve().parents[1] / name).read_text(encoding="utf-8"))
+        called = {
+            node.func.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        assert "find" not in called
+        assert "index" not in called
+        for handler in (node for node in ast.walk(tree) if isinstance(node, ast.ExceptHandler)):
+            assert handler.type is not None
+            assert not (
+                isinstance(handler.type, ast.Name)
+                and handler.type.id in {"Exception", "BaseException"}
+            )
+
+
 def test_pii_not_mounted_is_not_the_same_as_no_pii() -> None:
-    """承接既有的同名測試：兩個狀態仍然可分辨。"""
-    document = build_document([Message(text="測試訊息。")], LIMITS)
+    """承接既有的同名測試：兩個狀態仍然可分辨，且在**兩處**都可分辨。"""
+    message = Message(text="測試訊息。")
+    document = build_document([message], LIMITS)
+
     not_mounted = demo_ui.render_pii_block(document, None)
     mounted = demo_ui.render_pii_block(document, recognizer_none)
     assert demo_ui.PII_NOT_MOUNTED in not_mounted
     assert demo_ui.PII_NO_HIT not in not_mounted
     assert demo_ui.PII_NO_HIT in mounted
     assert demo_ui.PII_NOT_MOUNTED not in mounted
+
+    unmounted_echo = demo_ui.render_conversation([message], (), document, "你", "對方")
+    mounted_echo = demo_ui.render_conversation(
+        [message], (), document, "你", "對方", recognizer_none
+    )
+    assert demo_ui.PII_NOT_MOUNTED in unmounted_echo
+    assert demo_ui.PII_NO_HIT not in unmounted_echo
+    assert demo_ui.PII_NO_HIT in mounted_echo
+    assert demo_ui.PII_NOT_MOUNTED not in mounted_echo
+    assert demo_ui.PII_NOT_MOUNTED != demo_ui.PII_NO_HIT
 
 
 def test_pii_block_discloses_its_scope() -> None:
@@ -850,19 +1102,29 @@ def test_pii_block_discloses_its_scope() -> None:
     assert "姓名與地址不在辨識範圍內" in block
 
 
-def test_pii_tags_are_sentence_level_and_do_not_rewrite_text() -> None:
-    document = build_document([Message(text="我的身分證是 A123456789 請確認。")], LIMITS)
+def test_conversation_discloses_the_scope_outside_any_collapsed_block() -> None:
+    """「它會標 → 它沒標 → 這則沒個資」是錯的推論，而它一定會發生。
+
+    揭露因此與標註同層，不留在 `render_pii_block()` 那個預設收合的 `<details>` 裡。
+    """
+    text = "身分證 A123456789。"
+    message = Message(text=text)
+    document = build_document([message], LIMITS)
     conversation = demo_ui.render_conversation(
-        [Message(text="我的身分證是 A123456789 請確認。")],
-        (),
-        document,
-        "你",
-        "對方",
-        recognizer_tw_id,
+        [message], (), document, "你", "對方", recognizer_tw_id
     )
-    assert "身分證 ×1" in conversation
-    assert "A123456789" in conversation
-    assert "<TW_ID>" not in conversation
+    assert demo_ui.PII_SCOPE_NOTE in conversation
+    for label in ("身分證", "手機", "市話", "信用卡"):
+        assert label in conversation
+    assert "姓名與地址不在辨識範圍內" in conversation
+    assert "<details" not in conversation
+
+
+def test_no_enable_control_for_names_or_addresses() -> None:
+    """姓名與地址以事實陳述表達，不是「暫時未開啟」，畫面上也沒有開關。"""
+    assert "姓名與地址不在辨識範圍內" in demo_ui.PII_SCOPE_NOTE
+    for attempt in ("<input", "<button", "<select", "checkbox"):
+        assert attempt not in demo_ui.PII_SCOPE_NOTE
 
 
 # ---------------------------------------------------------------------------
@@ -884,6 +1146,34 @@ def test_css_only_references_the_declared_theme_variables() -> None:
     used = set(re.findall(r"var\((--[a-z-]+)\)", demo_ui.CSS))
     assert used
     assert used <= set(demo_ui.THEME_VARIABLES)
+
+
+def test_the_static_page_defines_every_theme_variable_in_both_schemes() -> None:
+    """`docs/index.html` 不是 Gradio，那七個變數由它自己給值。
+
+    標註的類型標籤走 `--body-text-color-subdued`，少一邊定義的後果是它在某一個
+    明暗模式下變成看不見的字 —— 而那正是開發者的螢幕上永遠看不到的那種錯。
+    """
+    page = (Path(__file__).resolve().parents[1] / "docs" / "index.html").read_text(encoding="utf-8")
+    light, _, dark = page.partition("@media (prefers-color-scheme: dark)")
+    assert dark
+    for variable in demo_ui.THEME_VARIABLES:
+        assert f"{variable}:" in light
+        assert f"{variable}:" in dark
+
+
+def test_the_type_label_is_never_hidden_behind_hover() -> None:
+    """觸控裝置上沒有 hover，而手機是這個服務的主要載體。
+
+    hover 只准改顏色與底線粗細；一旦它改到 `display` / `visibility` / `opacity`，
+    類型就變成 hover 限定，等於在主要載體上把它刪掉。
+    """
+    hover_rules = re.findall(r"\.pii-mark:hover[^{]*\{([^}]*)\}", demo_ui.CSS)
+    assert hover_rules
+    for body in hover_rules:
+        for property_name in ("display", "visibility", "opacity", "content"):
+            assert property_name not in body
+    assert ".pii-kind { font-size:" in demo_ui.CSS
 
 
 def test_scam_type_values_never_become_colour_grades() -> None:
