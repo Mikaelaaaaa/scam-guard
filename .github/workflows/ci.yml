@@ -20,10 +20,16 @@ jobs:
       # 必須含 llm extra，理由相同：`tests/test_llm_grammar.py` 以
       # `importorskip("llama_cpp")` 開頭。`--extra-index-url` 是作者維護的
       # 預編譯 wheel index；少了它 pip 會拿 PyPI 上的 sdist 並編譯數分鐘。
+      #
+      # 必須含 eval extra（scikit-learn）：`test_baseline_tfidf.py`、
+      # `test_eval_ablation.py`、`test_random_escalation.py` 經由
+      # `tools.eval.baseline_tfidf` 間接 import sklearn，而那是**模組層**
+      # import，不是 `importorskip` —— 少了它整個檔案在收集階段就 ImportError，
+      # 不是 skip。TF-IDF 對照組是專題的驗收數據，CI 該真的跑它。
       - name: Install
         run: |
           pip install --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu \
-            -e ".[dev,demo,llm]"
+            -e ".[dev,demo,llm,eval]"
 
       - name: Lint
         run: ruff check .
