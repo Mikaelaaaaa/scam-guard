@@ -188,9 +188,6 @@
           <b>語意判讀</b>
           <span class="model-detail" id="model-state"></span>
         </div>
-        <div class="model-detail" id="model-detail">
-          模型由第三方 CDN（huggingface.co）送達；訊息仍只在你的瀏覽器裡處理。
-        </div>
       </div>
 
       <section id="panel-inquiry">
@@ -239,7 +236,7 @@
 
       <div id="error" class="error" hidden></div>
 
-      <p class="sg-foot note">你貼的訊息不離開這台電腦；模型由第三方 CDN 取得，你的 IP 會出現在其記錄裡。</p>
+      <p class="sg-foot note">你貼的訊息不離開這台電腦。</p>
       </div>
     </main>
 
@@ -564,18 +561,21 @@
           model.tokenizer = loaded.tokenizer;
           model.instance = loaded.instance;
           model.state = READY;
-          modelStateIs("語意判讀已開啟。下一次送出的判定會多一層語意判讀。");
+          // 成功時模型那一列不承載任何語意判讀文字（清空「正在載入」）；語意判讀
+          // 是否有跑由判定卡的四源列語意格說。
+          modelStateIs("");
           entryProgress.value = 100;
           entryProgress.dataset.state = "ready";
           return true;
         } catch (reason) {
           clearTimeout(timeoutId);
           modelInitializationActive = false;
-          // 失敗原文上畫面，MUST NOT 改寫成一句泛用的「模型載入失敗」——
-          // 三個前提失敗的處置各不相同，而泛用訊息把那個差別擦掉了。
+          // 語意格只顯示唯一一句定稿文案；失敗的技術原文（WebGPU 缺什麼、
+          // shader-f16 缺什麼）留在下方進度 bar 的失敗態說明（bootDetail），
+          // 兩者分工：語意格給使用者一句「本次以規則判定」，bootDetail 給要查的人原文。
           model.state = LOAD_FAILED;
           const message = String(reason?.message ?? reason);
-          modelStateIs(`這個瀏覽器不支援語意判讀或模型載入失敗：${message}`);
+          modelStateIs("語意模型載入失敗，本次以規則判定");
           entryProgress.dataset.state = "failed";
           bootHead.textContent = "語意判讀無法初始化，已直接使用規則層";
           bootDetail.textContent = message;
@@ -699,10 +699,21 @@
 
           // 判定卡已經在畫面上了。下面這一段可以慢，慢不影響上面那一張卡。
           try {
-            const second =
-              model.state === READY && first.prompt
-                ? JSON.parse(app.inquiry_second(first.token, await readingGeneration(first.prompt)))
-                : JSON.parse(app.inquiry_without_model(first.token, model.state));
+            let second;
+            if (first.short_circuit) {
+              // 硬證據命中：pipeline 第二趟一定會短路 LlmCheck，所以連生成都不跑
+              // （省 2–5 秒）。走 without_model(READY) 得到的 Verdict 與「先生成再讓
+              // pipeline 短路」逐欄位相同，差別只有省時與語意格子原因（無需動用）。
+              second = JSON.parse(app.inquiry_without_model(first.token, READY));
+            } else if (model.state === READY && first.prompt) {
+              // 無硬證據且模型就緒：LLM 一定要跑 —— 這正是召回讓出來要靠 LLM 補的那段。
+              second = JSON.parse(
+                app.inquiry_second(first.token, await readingGeneration(first.prompt))
+              );
+            } else {
+              // 模型未就緒（載入中／失敗），或正規化後無句可讀：非阻塞收尾，不自動補跑。
+              second = JSON.parse(app.inquiry_without_model(first.token, model.state));
+            }
             renderResult(second.card, "card", "inquiry-details");
             if (second.status) {
               $("inquiry-llm-status").textContent = second.status;
@@ -808,13 +819,22 @@
           try {
             // 2 與 3. 判讀生成，然後含 LlmCheck 的那一趟 —— 卡片與排行再更新一次，
             //    而受害方台詞取自**這一趟**的 Verdict。
-            const second =
-              model.state === READY && first.prompt
-                ? JSON.parse(app.practice_second(first.token, await readingGeneration(first.prompt)))
-                : JSON.parse(app.practice_without_model(first.token, model.state));
+            let second;
+            if (first.short_circuit) {
+              // 硬證據命中：省掉判讀生成（pipeline 第二趟一定會短路 LlmCheck）。
+              // 潤飾（persona 生成）不受短路影響，仍在下方 model.state===READY 時跑。
+              second = JSON.parse(app.practice_without_model(first.token, READY));
+            } else if (model.state === READY && first.prompt) {
+              second = JSON.parse(
+                app.practice_second(first.token, await readingGeneration(first.prompt))
+              );
+            } else {
+              second = JSON.parse(app.practice_without_model(first.token, model.state));
+            }
             renderPractice(second);
 
-            // 4. persona 生成。模型沒開時不發生，畫面保留確定性底稿。
+            // 4. persona 生成。模型沒開時不發生，畫面保留確定性底稿；硬證據短路時
+            //    仍跑（潤飾是對話回應，不是判定）。
             if (model.state === READY) {
               await polish(second.polish_system, second.polish_prompt);
             }

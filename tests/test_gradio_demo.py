@@ -549,7 +549,7 @@ def test_removed_copy_is_absent_and_synthetic_disclosure_remains() -> None:
     assert "合成範例" in app.SYNTHETIC_SAMPLE_NOTE
     assert "真實訊息" in app.SYNTHETIC_SAMPLE_NOTE
     assert "評估報告" in app.SYNTHETIC_SAMPLE_NOTE
-    assert "模型由第三方 CDN 取得" in page
+    assert "第三方 CDN" not in page
     assert "你貼的訊息不離開這台電腦" in page
 
 

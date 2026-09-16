@@ -1406,7 +1406,6 @@ def test_static_page_initializes_model_without_a_load_control() -> None:
     assert '$("main-app").hidden = false' in page
     assert 'entryProgress.dataset.state = "failed"' in page
     assert "通常只下載一次" in page
-    assert "第三方 CDN" in page
     assert "if (inquiryBusy)" in page
     assert "setInquiryBusy(true)" in page
 
