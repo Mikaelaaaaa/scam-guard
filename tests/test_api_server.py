@@ -99,7 +99,7 @@ def test_startup_validation_rejects_a_check_missing_from_the_weight_table() -> N
     以測試用的組裝驗證，不依賴真的啟動一個 ASGI server ——
     行程啟動時執行的是同一個呼叫。
     """
-    registry = build_registry()
+    registry = build_registry(None, None, None, None)
     registry.register(_NeverRegisteredCheck())
     with pytest.raises(ValueError) as caught:
         load_weights().validate_against(registry)
@@ -132,17 +132,16 @@ def test_unregistered_checks_do_not_overlap_the_registry() -> None:
 
 
 def test_build_registry_returns_a_fresh_instance() -> None:
-    first = build_registry()
-    second = build_registry()
+    first = build_registry(None, None, None, None)
+    second = build_registry(None, None, None, None)
     assert first is not second
     assert isinstance(first, CheckRegistry)
     assert [check.name for check in first.enabled()] == [check.name for check in second.enabled()]
 
 
 def test_blocklist_max_age_days_is_a_single_source() -> None:
-    """載入時與健康檢查重算時用同一個數字，不在兩處各寫一個。"""
-    assert isinstance(BLOCKLIST_MAX_AGE_DAYS, int)
-    assert BLOCKLIST_MAX_AGE_DAYS > 0
+    """載入與健康檢查共用同一份逐來源門檻，不在兩處各寫一份。"""
+    assert BLOCKLIST_MAX_AGE_DAYS == {"176455": 60, "165027": 60}
 
 
 def test_log_record_carries_no_message_text(

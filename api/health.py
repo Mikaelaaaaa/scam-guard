@@ -27,10 +27,9 @@ docstring 明寫「一致性檢查全部在此完成，MUST NOT 於每次查詢�
 `scam_guard.url.parse_iso_date` 與 `utc_today`（既有公開函式），
 **不修改 `scam_guard/` 一行**。
 
-**不檢查語言模型是否載入。** `detect-api` 的 `depends-on` 只有 `[scoring]`，
-不含 `llm-layer`；本層的 registry 裡沒有任何一個 LLM 檢查可以回報它載入了沒有，
-現在寫這一項是在為一個不存在的東西寫健康檢查。若日後 `llm-layer` 落地且被這個
-組裝層掛載，健康檢查 MUST 補上這一項 —— 但不預先開一個永遠回傳固定值的欄位。
+**語言模型是否載入沿用既有的 registry／未註冊清單表達。** LLM 載入時，
+`llm_scam` 計入 `checks_registered`；未載入時則出現在 `checks_unregistered` 並附上
+可行動的理由。不新增 `llm_loaded` 之類只服務單一檢查的 schema 欄位。
 """
 
 from collections.abc import Sequence
@@ -105,9 +104,15 @@ class HealthResponse(BaseModel):
 
 
 def source_freshness(
-    dataset_id: str, meta: dict[str, object], max_age_days: int
+    dataset_id: str, meta: dict[str, object], max_age_days: dict[str, int]
 ) -> SourceFreshness:
-    """單一 source 的天數與是否超標。缺欄位即拋例外並指名欄位。"""
+    """單一 source 的天數與是否超標。缺欄位即拋例外並指名欄位。
+
+    `max_age_days` 為逐 source 的門檻對應表（比照 `BlocklistStore.load`）：非
+    `retired` 的 source 缺門檻即拋例外並指名，一如載入時的 `_check_freshness`。
+    `retired` 的 source 不列入對應表（其天數 MUST NOT 影響整體狀態），此時門檻
+    不適用、以 0 回報且 `stale` 恆為 `false`。
+    """
     for field_name in ("retired", "data_through"):
         if field_name not in meta:
             raise ValueError(
@@ -115,19 +120,28 @@ def source_freshness(
                 f"實際欄位為 {sorted(meta)}"
             )
     retired = bool(meta["retired"])
+    if dataset_id in max_age_days:
+        threshold = max_age_days[dataset_id]
+    elif retired:
+        threshold = 0
+    else:
+        raise ValueError(
+            f"max_age_days 未涵蓋非 retired 資料集 {dataset_id!r}："
+            f"實際提供的門檻為 {sorted(max_age_days)}。請比照 `BlocklistStore.load` 補上"
+        )
     data_through = parse_iso_date(meta["data_through"], f"sources[{dataset_id!r}].data_through")
     age_days = (utc_today() - data_through).days
     return SourceFreshness(
         source=dataset_id,
         data_through=data_through.isoformat(),
         age_days=age_days,
-        max_age_days=max_age_days,
+        max_age_days=threshold,
         retired=retired,
-        stale=(not retired) and age_days > max_age_days,
+        stale=(not retired) and age_days > threshold,
     )
 
 
-def blocklist_health(store: BlocklistStore | None, max_age_days: int) -> BlocklistHealth:
+def blocklist_health(store: BlocklistStore | None, max_age_days: dict[str, int]) -> BlocklistHealth:
     """逐 source 重算新鮮度。`store` 為 `None` 代表組裝層沒有載入黑名單。"""
     if store is None:
         return BlocklistHealth(loaded=False, sources=[])
@@ -148,12 +162,15 @@ def build_health(
     registry: CheckRegistry,
     unregistered: Sequence[tuple[str, str]],
     store: BlocklistStore | None,
-    max_age_days: int,
+    max_age_days: dict[str, int],
     table: WeightTable,
 ) -> HealthResponse:
     """組出一次健康檢查回應。不發出任何網路請求，也不呼叫 `detect()`。"""
     blocklist = blocklist_health(store, max_age_days)
-    degraded = any(source.stale for source in blocklist.sources)
+    unregistered_names = {name for name, _reason in unregistered}
+    degraded = "url_blocklist" in unregistered_names or any(
+        source.stale for source in blocklist.sources
+    )
     return HealthResponse(
         status=STATUS_DEGRADED if degraded else STATUS_OK,
         checks_registered=len(registry.enabled()),
