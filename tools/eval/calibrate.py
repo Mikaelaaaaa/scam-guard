@@ -657,7 +657,8 @@ def _decision_lines(report: CalibrationReport) -> list[str]:
         "change 刪除。重算需要 measured 的 weight_soft 當下界、measured 的 weight_hard 當",
         "上界，但 tune 上沒有任何 weight_hard 量得出 measured（全部 hard_capable 訊號的硬",
         "命中數為 0），而唯一夠強的 measured 弱訊號是門檻在同一份 tune 上選過的",
-        "`ngram_classifier`（4.467675）。區間因此不可滿足，decision_score 維持 1.5。",
+        "`ngram_classifier`（4.351698，add-conversation-ham 重訓後值）。區間因此不可滿足，"
+        "decision_score 維持 1.5。",
         "",
     ]
 

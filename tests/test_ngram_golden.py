@@ -18,7 +18,9 @@ _HAS_TESTSET = _TESTSET.is_dir() and any(_TESTSET.iterdir())
 @pytest.mark.skipif(not _HAS_TESTSET, reason="data/testset 未重建（operator-local，CI 上不存在）")
 def test_all_tune_scores_match_the_serialized_model() -> None:
     samples = train_ngram.tune_samples(Path("data/testset"), Path("testset/manifest.json"))
-    assert len(samples) == 1396
+    # add-conversation-ham：新 tune = 572 Cofacts scam + 824 Cofacts ham + 434 對話 ham 的
+    # tune 部分（見 testset/manifest.json 的 conversation_ham.splits）。
+    assert len(samples) == 1830
     texts = [train_ngram.normalized_text(sample) for sample in samples]
     labels = train_ngram._labels(samples)
     document = json.loads(DEFAULT_MODEL_PATH.read_text(encoding="utf-8"))

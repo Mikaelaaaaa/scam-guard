@@ -138,6 +138,28 @@ SELF_SMS_HAM = Subset(
     ),
 )
 
+CONVERSATION_HAM = Subset(
+    name="conversation_ham",
+    label=LABEL_HAM,
+    target=800,
+    cofacts_filter=None,
+    provenance=(
+        "公開語料：zake7749/Gossiping-Chinese-Corpus（PTT 八卦版使用者貼文，"
+        "作者以 Apache-2.0 釋出彙整資料集）。原生台灣繁中，未經 OpenCC 轉繁。"
+    ),
+    assumption=(
+        "標籤依據是**語域**而非查核：這些是 PTT 八卦版的推文，正常網友的口語短句，"
+        "經內容閘門（丟 `沒有資料`、丟規則層 `hard=True` 或 165 黑名單命中者、"
+        "丟詐騙標記詞表命中者、長度下限、精確去重）濾除詐騙樣態之後，"
+        "用以覆蓋**問候與閒聊**這個既有三個 ham 池全缺的語域 —— "
+        "宣導文（`cofacts_ham_ad`）、疑似送查（`cofacts_ham_suspected`）與"
+        "制式通知（`self_sms_ham`）都不含口語問候，而分類器正因此把「你好」判成詐騙。"
+        "與 `self_sms_ham` 的兩點差異：一、**可重現**（由 pinned 版本的公開非 gated "
+        "語料經確定性過濾與切分產生，第三人可重建同一份），二、**tune/holdout 皆有**"
+        "（tune 部分是訓練材料讓分類器學到閒聊是 ham，holdout 部分才是獨立誤判率量測）。"
+    ),
+)
+
 SELF_SMS_SCAM = Subset(
     name="self_sms_scam",
     label=LABEL_CASE_ONLY,
@@ -185,27 +207,40 @@ SELF_SUBSETS: tuple[Subset, ...] = (SELF_SMS_HAM, SELF_SMS_SCAM)
 
 MULTI_MESSAGE_SUBSETS: tuple[Subset, ...] = (MULTI_MESSAGE_SCAM, MULTI_MESSAGE_HAM)
 
+CONVERSATION_SUBSETS: tuple[Subset, ...] = (CONVERSATION_HAM,)
+"""對話語料子集。**可重現但非 Cofacts** —— 由公開非 gated 語料經確定性過濾與
+切分產生，因此不進版控的 Cofacts 識別字清單（見 `COFACTS_DERIVED_NAMES`），
+但 `testset/manifest.json` 記錄語料 pinning 使第三人可重建。
+"""
+
 COFACTS_DERIVED_NAMES: tuple[str, ...] = tuple(
     subset.name for subset in COFACTS_SUBSETS + MULTI_MESSAGE_SUBSETS
 )
 """由 Cofacts 取得、因此可被第三人重建的子集名稱。這些才進版控的識別字清單。"""
 
 SUBSETS: Mapping[str, Subset] = MappingProxyType(
-    {subset.name: subset for subset in COFACTS_SUBSETS + SELF_SUBSETS + MULTI_MESSAGE_SUBSETS}
+    {
+        subset.name: subset
+        for subset in COFACTS_SUBSETS + SELF_SUBSETS + MULTI_MESSAGE_SUBSETS + CONVERSATION_SUBSETS
+    }
 )
 
 HAM_SUBSETS: tuple[str, ...] = (
     COFACTS_HAM_AD.name,
     COFACTS_HAM_SUSPECTED.name,
     SELF_SMS_HAM.name,
+    CONVERSATION_HAM.name,
 )
-"""三個 ham 子集。
+"""四個 ham 子集。
 
-**誤判率 MUST 分別計算並呈現，MUST NOT 合併。** 合併之後 n ≈ 1,863，
-零誤判的 Wilson 上界是 0.21% —— 一個看起來非常好的數字，但它幾乎完全由
-Cofacts 的一千餘則決定，而 Cofacts 裡沒有一則真實的銀行或物流通知。
-合併的效果是讓容易的樣本把困難的樣本淹掉。頭條的「系統誤判率」MUST 取三者中
-95% Wilson 上界最大的那一個。
+**誤判率 MUST 分別計算並呈現，MUST NOT 合併。** 合併之後零誤判的 Wilson 上界
+會是一個看起來非常好的數字，但它幾乎完全由 Cofacts 的一千餘則決定，而 Cofacts
+裡沒有一則真實的銀行或物流通知、也沒有一句口語問候。合併的效果是讓容易的樣本
+把困難的樣本淹掉。頭條的「系統誤判率」MUST 取四者中 95% Wilson 上界最大的那一個。
+
+`conversation_ham` 是第四個，補的是問候與閒聊這個前三者全缺的語域 ——
+`add-ngram-classifier` 在 Cofacts 上量到的 0.97% 誤判率對真人對話完全不成立
+（八則問候七則命中），這個子集讓那一類的誤判量得到。
 """
 
 EXCLUDED_POOLS: Mapping[str, str] = MappingProxyType(

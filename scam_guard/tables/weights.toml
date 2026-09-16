@@ -550,9 +550,9 @@ group = "ngram_classifier"
 hard_capable = false
 strong = true
 [signal.weight_soft]
-value = 4.467675
+value = 4.351698
 basis = "measured"
-p_hit_given_scam = 0.846154
+p_hit_given_scam = 0.753497
 p_hit_given_ham = 0.009709
 measured_on = "testset/manifest.json 的 tune 切分（572 則 scam、824 則 ham；門檻亦在同一切分選定）"
 
@@ -570,9 +570,9 @@ measured_on = "testset/manifest.json 的 tune 切分（572 則 scam、824 則 ha
 # add-score-compute、add-confidence、add-verdict-render 各自填入。
 
 [thresholds.ngram_threshold]
-value = 0.376648
+value = 0.241478
 basis = "measured"
-p_hit_given_scam = 0.846154
+p_hit_given_scam = 0.753497
 p_hit_given_ham = 0.009709
 measured_on = "testset/manifest.json 的 tune 切分（572 則 scam、824 則 ham；門檻亦在同一切分選定）"
 
@@ -598,7 +598,7 @@ blocked_on = "add-metrics"
 [thresholds.decision_score]
 value = 1.5
 basis = "placeholder"
-rationale = "約束為「單一 measured 弱訊號不跨過門檻、單一 measured 硬證據跨過門檻」。measured 弱訊號權重的下界為 ngram_classifier 的 4.467675，沒有任何 weight_hard 條目量得出 measured（全部 hard_capable 訊號在 tune 上的硬命中數為 0），區間不可滿足，故 decision_score 維持 1.5、不挑一個數字。這代表在此語料上規則層幾乎不產生硬證據，門檻無法由量測重新錨定"
+rationale = "約束為「單一 measured 弱訊號不跨過門檻、單一 measured 硬證據跨過門檻」。measured 弱訊號權重的下界為 ngram_classifier 的 4.351698（add-conversation-ham 重訓後由新 tune 重算），沒有任何 weight_hard 條目量得出 measured（全部 hard_capable 訊號在 tune 上的硬命中數為 0），區間不可滿足，故 decision_score 維持 1.5、不挑一個數字。這代表在此語料上規則層幾乎不產生硬證據，門檻無法由量測重新錨定"
 blocked_on = "add-metrics"
 
 # ── add-confidence ──

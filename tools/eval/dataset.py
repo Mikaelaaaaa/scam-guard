@@ -32,6 +32,7 @@ from pathlib import Path
 from types import MappingProxyType
 
 from tools.eval.selectors import (
+    CONVERSATION_HAM,
     HOLDOUT,
     LABEL_CASE_ONLY,
     SELF_SMS_HAM,
@@ -144,9 +145,18 @@ class Sample:
 
     @property
     def split(self) -> str:
-        """歸屬由識別字現算。自建通知子集全部為 holdout，不經雜湊切分。"""
+        """歸屬由識別字現算。自建通知子集全部為 holdout，不經雜湊切分。
+
+        `conversation_ham` 的 `id` 是**正規化文字的 sha256 十六進位**（見
+        `tools/fetch_conversation_corpus.py`），因此其首位元組即
+        `sha256(正規化文字).digest()[0]`（十六進位前兩碼 = 首位元組的值）。
+        切點沿用 `SPLIT_BOUNDARY`：`< 128 → tune`、`>= 128 → holdout`。
+        不重新雜湊 `id` —— 那會變成 `sha256(sha256(文字))`，切的不是設計要的內容雜湊。
+        """
         if self.subset == SELF_SMS_HAM.name:
             return HOLDOUT
+        if self.subset == CONVERSATION_HAM.name:
+            return TUNE if int(self.id[:2], 16) < SPLIT_BOUNDARY else HOLDOUT
         return split_of(self.id)
 
     @property

@@ -73,8 +73,16 @@ def test_an_empty_split_raises_instead_of_returning_a_meaningless_model() -> Non
         train_and_evaluate(only_tune)
 
 
+_BANNED_CORE_IMPORTS = frozenset({"sklearn", "numpy", "scipy", "opencc"})
+"""偵測核心 `scam_guard/` 不得 import 的訓練/評估側依賴根。
+
+`opencc` 由 add-conversation-ham 加入 —— 它只在 `tools/fetch_conversation_corpus.py`
+的簡體備援路徑，列於 `[eval]` extra，與 `sklearn` 同性質。
+"""
+
+
 def test_the_detection_core_never_imports_sklearn() -> None:
-    """`scikit-learn` 只進 `[project.optional-dependencies].eval`。"""
+    """`scikit-learn`（與 `opencc`）只進 `[project.optional-dependencies].eval`。"""
     for path in sorted((REPO_ROOT / "scam_guard").rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
@@ -82,10 +90,10 @@ def test_the_detection_core_never_imports_sklearn() -> None:
                 assert not [
                     alias
                     for alias in node.names
-                    if alias.name.split(".")[0] in {"sklearn", "numpy", "scipy"}
+                    if alias.name.split(".")[0] in _BANNED_CORE_IMPORTS
                 ], path
             if isinstance(node, ast.ImportFrom) and node.module is not None:
-                assert node.module.split(".")[0] not in {"sklearn", "numpy", "scipy"}, path
+                assert node.module.split(".")[0] not in _BANNED_CORE_IMPORTS, path
 
 
 def test_sklearn_is_declared_only_in_the_eval_extra() -> None:

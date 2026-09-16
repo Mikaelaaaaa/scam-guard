@@ -45,7 +45,7 @@ def test_hit_is_soft_untyped_and_detail_does_not_leak() -> None:
     assert result.hard is False
     assert result.scam_types == []
     assert result.evidence == []
-    forbidden = ("ngram_classifier", "10.0", "4.467675", "今天下午開會")
+    forbidden = ("ngram_classifier", "10.0", "4.351698", "今天下午開會")
     assert not any(value in result.detail for value in forbidden)
     assert not any(value in result.detail for value in SPECULATIVE_TERMS)
     assert not any(value in result.detail for value in VERDICT_CLAIMS)

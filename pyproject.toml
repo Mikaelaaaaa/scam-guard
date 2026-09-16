@@ -70,6 +70,12 @@ llm = [
 # 由 `tests/test_baseline_tfidf.py` 的一條掃描 import 的測試守著。
 eval = [
     "scikit-learn>=1.4",
+    # 對話 ham 語料的繁簡轉換。**來源條件式**：working corpus
+    # `Gossiping-Chinese-Corpus` 是原生台灣繁中，MUST NOT 轉換；OpenCC 只在啟用
+    # 簡體備援（CrossWOZ / KdConv）時才以 `s2twp` 全量轉繁。列於此處是宣告備援
+    # 路徑的依賴，與 `scikit-learn` 同性質：只在 `tools/`，`scam_guard/` 不 import，
+    # 由 `tests/test_baseline_tfidf.py` 的掃描測試守著。
+    "opencc>=1.1",
 ]
 
 [tool.setuptools.packages.find]
