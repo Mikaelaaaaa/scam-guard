@@ -403,7 +403,7 @@ def test_samples_file_declares_its_own_license() -> None:
 
 
 def test_every_synthetic_sample_hits_using_rules_only() -> None:
-    registry = app.build_registry()
+    registry = app.build_registry(None, None, None, None)
     for sample in app.SAMPLES:
         verdict = detect(Request(messages=[Message(text=sample.text)]), registry, app.TABLE)
         assert any(result.hit for result in verdict.checks), sample.short_label
@@ -651,13 +651,19 @@ def test_limits_is_a_single_value_shared_by_detect_and_build_document() -> None:
 
 def test_registry_is_built_once_by_the_assembly_layer() -> None:
     assert isinstance(app.REGISTRY, CheckRegistry)
-    rebuilt: list[Check] = app.build_registry().enabled()
+    rebuilt: list[Check] = app.build_registry(
+        app.PSL, app.STORE, app.ALLOWLIST, app.LLM_CHECK
+    ).enabled()
     assert [check.name for check in app.REGISTRY.enabled()] == [check.name for check in rebuilt]
 
 
 def test_unregistered_list_holds_only_implemented_checks() -> None:
+    """未註冊清單依載入結果算出：基底恆含 `domain_age`；`url_blocklist` 只在黑白名單
+    失敗時出現、`llm_scam` 只在 LLM 未載入時出現。三者都是已實作、有「未註冊」語義
+    的檢查，不會出現未實作檢查的名稱。"""
     names = {name for name, _label, _reason in app.UNREGISTERED_CHECKS}
-    assert names == {"domain_age"}
+    assert "domain_age" in names
+    assert names <= {"domain_age", "url_blocklist", "llm_scam"}
     for _name, label, reason in app.UNREGISTERED_CHECKS:
         assert label.strip()
         assert reason.strip()

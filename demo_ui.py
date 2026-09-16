@@ -274,12 +274,21 @@ SOURCE_SEMANTIC = "語意"
 
 STATE_HIT = "命中"
 STATE_CLEAR = "未命中"
-STATE_SKIP = "未執行"
+STATE_STANDBY = "無需動用"
+STATE_UNLOADED = "未載入"
+
+TERM_UNREGISTERED = "Unregistered"
+"""未註冊成員的內部標記（不顯示）。與 `TERM_SKIPPED`（短路，層已載入但 pipeline
+跳過）刻意不同：短路的語意是「規則已足夠、無需動用」，未註冊的語意是「必備的一層
+沒裝起來」。LLM 必備之後，把「沒裝模型」顯示成像「無需動用」會誤導，所以兩者在
+聚合階段就分開。"""
 
 STATE_CLASS: Mapping[str, str] = MappingProxyType(
-    {STATE_HIT: "hit", STATE_CLEAR: "clear", STATE_SKIP: "skip"}
+    {STATE_HIT: "hit", STATE_CLEAR: "clear", STATE_STANDBY: "skip", STATE_UNLOADED: "skip"}
 )
-"""三態對應的 CSS class 後綴。三態的區分不只靠顏色 —— 狀態字本身就是文字。"""
+"""狀態對應的 CSS class 後綴。「無需動用」與「未載入」共用淡化的 `skip` 視覺，
+以**文字**區分（不只靠顏色）——沿用 `add-integration-panel`「區分不只靠顏色」的約束，
+不在此處寫死新色碼。"""
 
 
 @dataclass(frozen=True)
@@ -336,12 +345,15 @@ def source_statuses(
 ) -> list[SourceStatus]:
     """把 `checks` 與 `unregistered` 重新分組成四個源的狀態。
 
-    三態聚合（優先序）：任一成員命中（`Conclusive`/`Indicative`）為命中；否則任一
-    成員跑過未命中（`Clear`）為未命中；否則未執行（`Skipped`、或只在 `unregistered`
-    而不在 `checks`、或該源根本沒有成員）。短路與未掛載都落在未執行，不顯示為未命中。
+    聚合（優先序）：任一成員命中（`Conclusive`/`Indicative`）為命中；否則任一成員
+    跑過未命中（`Clear`）為未命中；否則若有成員因短路未執行（`Skipped`，層已載入但
+    pipeline 跳過）為**無需動用**；否則（成員只在 `unregistered`、或該源根本沒有
+    成員）為**未載入**。
 
-    語意源的未執行要判對，同時看 `checks` 與 `unregistered`：`unregistered` 的成員
-    一律計為未執行（它們沒有跑），不改變已由 `checks` 決定的命中或未命中。
+    「無需動用」與「未載入」是兩個語義相反的狀態：前者是規則已足夠、系統正常且完整
+    地運作；後者是必備的一層根本沒裝起來。在 LLM 變必備之後把兩者壓成同一個字會讓
+    使用者以為系統完整而其實少了它賴以成立的那一層，所以在聚合階段就分開——短路的
+    成員帶 `TERM_SKIPPED`（來自 `checks`），未註冊的成員帶 `TERM_UNREGISTERED`。
 
     計數用相異 `hit=True` 的 `name` 數（`hit_ranking()` 那條長條數的是命中句子數，
     兩者不同，混用會讓同一個數字在兩處指不同的東西）。
@@ -354,7 +366,7 @@ def source_statuses(
         if result.hit:
             hit_names[label].add(result.name)
     for name, _label, _reason in unregistered:
-        terms[source_of(name)].append(TERM_SKIPPED)
+        terms[source_of(name)].append(TERM_UNREGISTERED)
 
     statuses: list[SourceStatus] = []
     for source in SOURCES:
@@ -363,8 +375,10 @@ def source_statuses(
             state = STATE_HIT
         elif TERM_CLEAR in member_terms:
             state = STATE_CLEAR
+        elif TERM_SKIPPED in member_terms:
+            state = STATE_STANDBY
         else:
-            state = STATE_SKIP
+            state = STATE_UNLOADED
         statuses.append(
             SourceStatus(
                 label=source.label,
@@ -379,10 +393,11 @@ def source_statuses(
 def render_source_grid(
     checks: Sequence[CheckResult], unregistered: Sequence[UnregisteredCheck]
 ) -> str:
-    """四源狀態列：四格平鋪，每格顯示源名與三態；網址與規則命中時附「命中 N 項」。
+    """四源狀態列：四格平鋪，每格顯示源名與狀態；網址與規則命中時附「命中 N 項」。
 
-    狀態字本身（未執行 / 未命中 / 命中）就是文字，顏色是冗餘強化不是唯一載體 ——
-    深淺兩色下都讀得出，色盲也讀得出。
+    狀態字本身（命中 / 未命中 / 無需動用 / 未載入）就是文字，顏色是冗餘強化不是
+    唯一載體 —— 深淺兩色下都讀得出，色盲也讀得出。「無需動用」（短路，規則已足夠）
+    與「未載入」（必備的一層沒裝起來）以文字區分，共用淡化視覺。
     """
     cells: list[str] = []
     for status in source_statuses(checks, unregistered):
@@ -1259,8 +1274,8 @@ CSS = """
   color: var(--color-accent); }
 
 /* 四源狀態列 —— card-head 之後、刻度尺之前。四個偵測源各一格。
-   三態靠狀態字（未執行 / 未命中 / 命中）區分，顏色與淡化是冗餘強化不是唯一載體，
-   顏色一律取自主題變數，深淺兩色下皆可見。 */
+   狀態靠狀態字（命中 / 未命中 / 無需動用 / 未載入）區分，顏色與淡化是冗餘強化不是
+   唯一載體，顏色一律取自主題變數，深淺兩色下皆可見。 */
 .source-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: .5rem; margin-top: .9rem; }
 .source { border: 1px solid var(--border-color-primary); border-radius: 8px;
