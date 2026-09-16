@@ -56,7 +56,7 @@ from scam_guard.llm.validate import (
     LlmOutcomeCounter,
 )
 from scam_guard.normalize import DEFAULT_LIMITS, Document, Limits, build_document
-from scam_guard.pipeline import detect
+from scam_guard.pipeline import _should_short_circuit, detect
 from scam_guard.types import Coord, Message, Request, Verdict
 from scam_guard.weights import WeightTable
 
@@ -153,10 +153,7 @@ class LlmState(Enum):
     READY = "ready"
 
 
-STATUS_NOT_LOADED = "語意判讀尚未完成初始化：這次的判定只有規則層。"
-STATUS_LOADING = "模型還在下載，這次的判定只有規則層。下載完成後再送出一次就會多一層語意判讀。"
 STATUS_LOAD_FAILED = "模型載入失敗，這次的判定只有規則層。失敗的原文寫在上方的模型那一列。"
-STATUS_RUNNING = "規則層已經判完（下方就是結果），語意判讀還在跑，跑完會再更新一次。"
 STATUS_STRUCTURE = "這次的語意判讀沒有產生一個完整的 JSON 物件，整筆作廢，判定維持規則層的結果。"
 STATUS_SEMANTIC = (
     "這次的語意判讀沒有通過語意驗證（例如指到一句不存在的句子），整筆作廢，判定維持規則層的結果。"
@@ -167,9 +164,11 @@ STATUS_HIT = "語意判讀完成：模型判出話術，判定卡上多了一項
 """畫面上關於模型層的文字，一個狀態一段。
 
 **沒有任何一段可以被讀成「模型說沒問題」，除了 `STATUS_NO_SIGNAL`** ——
-而那一段的前提是模型真的跑完、輸出真的通過了七條語意驗證。三種失敗與三種
-「沒有跑」各自說自己的事，理由是它們指向不同的處置（見
-`scam_guard.llm.validate.LlmOutcome` 的對照表）。
+而那一段的前提是模型真的跑完、輸出真的通過了七條語意驗證。三種失敗
+（結構／語意／逾時）與載入失敗各自說自己的事，理由是它們指向不同的處置（見
+`scam_guard.llm.validate.LlmOutcome` 的對照表）。三種「未執行」的子原因
+（無需動用／語意模型載入中／語意模型載入失敗）不在這一列，走四源列語意格的
+`unregistered` 通道（`_UNREGISTERED_REASON` / `_SKIPPED_REASON`）。
 """
 
 _OUTCOME_STATUS: Mapping[LlmOutcome, str] = {
@@ -181,12 +180,18 @@ _OUTCOME_STATUS: Mapping[LlmOutcome, str] = {
 LLM_CHECK_LABEL = "語意判讀"
 
 _UNREGISTERED_REASON: Mapping[LlmState, str] = {
-    LlmState.NOT_LOADED: "模型沒有載入，這一層在這次判定裡不存在",
-    LlmState.LOADING: "模型還在下載，這次判定沒有用到它",
-    LlmState.LOAD_FAILED: "模型載入失敗，這次判定沒有用到它",
+    LlmState.NOT_LOADED: "語意模型載入中",
+    LlmState.LOADING: "語意模型載入中",
+    LlmState.LOAD_FAILED: "語意模型載入失敗",
     LlmState.READY: "這次的語意判讀還在跑",
 }
-"""模型層出現在「未提供的檢查」清單裡時的一行理由。
+"""模型層出現在「未提供的檢查」清單裡時的一行子原因（四源列語意格「未執行」底下）。
+
+三個定稿的互斥詞（`browser-llm-autoload` D4），沒有任何 toggle 語義：`LOADING` 與
+`NOT_LOADED` 併為「語意模型載入中」（進場自動載下 `NOT_LOADED` 是瞬時態），
+`LOAD_FAILED` 為「語意模型載入失敗」。短路那一種（state 為 `READY` 而被短路）走
+`_SKIPPED_REASON` 的「無需動用」。`READY`（判讀還在跑）維持原文，它不是「未執行」
+的子原因、只在第一趟尚未收尾的瞬間出現。
 
 沿用 `docs/pages_app.py` 那個常數自己的 docstring 寫的理由：少一個訊號要在畫面上
 看得見，否則「沒有訊號」與「沒有資料」在結果裡長得一模一樣。
@@ -198,7 +203,7 @@ _FAILED_REASON: Mapping[LlmOutcome, str] = {
     LlmOutcome.TIMEOUT: "這次的生成在期限內沒有完成",
 }
 
-_SKIPPED_REASON = "規則層已有硬證據，昂貴階段依設計短路"
+_SKIPPED_REASON = "無需動用（規則層已有硬證據）"
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +259,13 @@ class FirstPass:
     `window_coords` 是這次 prompt 實際涵蓋的句子座標。它在這裡是為了讓
     「兩趟看到的是同一個視窗」這件事可以被斷言 —— 第二趟的 `LlmCheck` 會自己
     再算一次視窗，而模型回報的證據座標是拿那一份驗的。`prompt` 為空字串時它也是空的。
+
+    `short_circuit` 取自 pipeline 同一個 `_should_short_circuit(verdict.checks)`，
+    不在這裡重寫一份判斷。JS 側據它決定第二趟要不要生成：為真時 pipeline 第二趟
+    一定會短路 `LlmCheck`，所以連生成都不必跑（省 2–5 秒）；為假時無硬證據，
+    模型就緒就一定要跑（`add-conversation-ham` 之後讓出的召回靠 LLM 補）。
+    第一趟的註冊表只有 `Stage.LOCAL` 檢查，`verdict.checks` 就是第二趟拿去判短路的
+    那一批結果，因此這裡的旗標與第二趟 pipeline 的短路結果逐位元一致。
     """
 
     token: str
@@ -261,6 +273,7 @@ class FirstPass:
     window_coords: tuple[Coord, ...]
     verdict: Verdict
     document: Document
+    short_circuit: bool
 
 
 @dataclass(frozen=True)
@@ -335,6 +348,7 @@ class TwoPass:
             window_coords=() if prompt is None else tuple(prompt.window.coords),
             verdict=verdict,
             document=document,
+            short_circuit=_should_short_circuit(verdict.checks),
         )
 
     def second_pass(self, token: str, raw: str) -> SecondPass:
@@ -452,14 +466,16 @@ def _llm_hit(verdict: Verdict) -> bool:
 
 
 def first_pass_status(state: LlmState) -> str:
-    """第一趟之後關於模型層的一段文字。"""
-    if state is LlmState.READY:
-        return STATUS_RUNNING
-    if state is LlmState.LOADING:
-        return STATUS_LOADING
+    """第一趟之後 per-分析狀態列（`#inquiry-llm-status` / `#practice-llm-status`）的文字。
+
+    成功（就緒／還在跑）與載入中不再輸出文字（`browser-llm-autoload` D5）：那兩種狀態
+    的呈現交給四源列語意格「未執行」的子原因（無需動用／語意模型載入中，走
+    `unregistered` 通道）與進度 bar，per-分析狀態列不重複、也不帶任何「再送一次就會
+    多一層」的 toggle 語義。只有載入失敗仍輸出一句，指向模型那一列的失敗說明。
+    """
     if state is LlmState.LOAD_FAILED:
         return STATUS_LOAD_FAILED
-    return STATUS_NOT_LOADED
+    return ""
 
 
 def second_pass_status(result: SecondPass) -> str:
@@ -516,6 +532,7 @@ class InquiryMode:
         return {
             "token": result.token,
             "prompt": result.prompt,
+            "short_circuit": result.short_circuit,
             "card": self._card(
                 result.verdict,
                 result.document,
@@ -626,6 +643,7 @@ class PracticeMode:
         return {
             "token": result.token,
             "prompt": result.prompt,
+            "short_circuit": result.short_circuit,
             "card": self._card(
                 result.verdict,
                 result.document,

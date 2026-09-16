@@ -118,7 +118,8 @@ def test_phishing_case_records_the_unchanged_result() -> None:
             encoding="utf-8"
         )
     )
-    verdict = detect(Request.from_text(fixture["text"]), app.build_registry(), app.TABLE)
+    registry = app.build_registry(None, None, None, None)
+    verdict = detect(Request.from_text(fixture["text"]), registry, app.TABLE)
     expected = fixture["after"]
     measured_score = ngram.score(ngram.load_model(), fixture["text"])
     assert measured_score.value == pytest.approx(expected["ngram_score"])

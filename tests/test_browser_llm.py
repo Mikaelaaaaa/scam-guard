@@ -46,7 +46,22 @@ PHISHING = (
 )
 """design 的 Context 那一則。規則層對它命中 0 項，而那是結構性的（四個分量跨句）。"""
 
+HARD_EVIDENCE = (
+    "我是刑事局偵查員，您的帳戶涉及洗錢。請立即到提款機依指示操作解除，"
+    "並將存款匯入監管帳戶接受清查，過程中不得告知家人或行員。"
+)
+"""硬證據命中（`safe_account` / `atm_operation` 等 `hard` 規則）→ 短路旗標為真。"""
+
+AWARENESS_POST = "最近很多假檢警詐騙，會叫你把錢匯到監管帳戶，千萬不要相信"
+"""引述偵測命中並否決短路：即使 `safe_account`（硬）也命中，短路旗標仍為假 ——
+這種訊息正需要 LLM 釐清（`add-quotation-check` 的反直覺邏輯）。"""
+
+WEAK_SIGNAL = "保證獲利，穩賺不賠。"
+"""只命中非硬的 Tier-B 規則（`guaranteed_return`）→ 無硬證據，短路旗標為假，LLM 照跑。"""
+
 SOURCE = Path(browser_llm.__file__).read_text(encoding="utf-8")
+
+INDEX_HTML = (Path(browser_llm.__file__).parent / "docs" / "index.html").read_text(encoding="utf-8")
 
 PRESENTATION = Presentation(
     table=TABLE,
@@ -369,28 +384,45 @@ def test_the_model_layer_opens_confidence_but_not_the_decision_gate() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_the_four_states_are_four_different_sentences() -> None:
-    texts = [browser_llm.first_pass_status(state) for state in LlmState]
-    assert len(set(texts)) == len(texts)
+def test_first_pass_status_carries_no_success_or_loading_text() -> None:
+    """成功（就緒）與載入中不再輸出 per-分析狀態列文字（browser-llm-autoload D5/3.3）：
+    那兩種狀態的呈現交給四源列語意格的子原因與進度 bar。只有載入失敗仍輸出一句。"""
+    assert browser_llm.first_pass_status(LlmState.READY) == ""
+    assert browser_llm.first_pass_status(LlmState.LOADING) == ""
+    assert browser_llm.first_pass_status(LlmState.NOT_LOADED) == ""
+    assert browser_llm.first_pass_status(LlmState.LOAD_FAILED) == browser_llm.STATUS_LOAD_FAILED
+
+
+def test_the_three_unrun_subreasons_are_distinct_and_carry_no_toggle() -> None:
+    """三種「未執行」子原因兩兩不同文，且不含「再送一次就會多一層」的 toggle 語義
+    （browser-llm-autoload D4/3.4）。載入中與尚未載入併為同一句（進場自動載下
+    `NOT_LOADED` 是瞬時態）。"""
+    standby = browser_llm._SKIPPED_REASON
+    loading = browser_llm._UNREGISTERED_REASON[LlmState.LOADING]
+    failed = browser_llm._UNREGISTERED_REASON[LlmState.LOAD_FAILED]
+    assert len({standby, loading, failed}) == 3
+    assert browser_llm._UNREGISTERED_REASON[LlmState.NOT_LOADED] == loading
+    for text in (standby, loading, failed):
+        assert "再送" not in text
+        assert "多一層" not in text
 
 
 def test_no_state_can_be_read_as_the_model_found_nothing() -> None:
-    """三種失敗、兩種沒有跑，與「模型判為無話術」是互不相同的文字。
-
-    短路那一段（`STATUS_SKIPPED`）已移除，短路的呈現改由四源列的「語意：未執行」
-    承接（`add-integration-panel`），所以這裡少了一段。
-    """
-    failures = [
+    """三種驗證失敗、載入失敗，與三種「未執行」子原因，都不可被讀成「模型讀完判無
+    話術」——那只有 `STATUS_NO_SIGNAL` 能說。短路那一段（`STATUS_SKIPPED`）已移除，
+    短路的呈現改由四源列的「語意：未執行」承接。"""
+    non_signal = [
         browser_llm.STATUS_STRUCTURE,
         browser_llm.STATUS_SEMANTIC,
         browser_llm.STATUS_TIMEOUT,
-        browser_llm.STATUS_NOT_LOADED,
-        browser_llm.STATUS_LOADING,
         browser_llm.STATUS_LOAD_FAILED,
+        browser_llm._SKIPPED_REASON,
+        browser_llm._UNREGISTERED_REASON[LlmState.LOADING],
+        browser_llm._UNREGISTERED_REASON[LlmState.LOAD_FAILED],
     ]
-    assert browser_llm.STATUS_NO_SIGNAL not in failures
-    assert len(set([*failures, browser_llm.STATUS_NO_SIGNAL, browser_llm.STATUS_HIT])) == 8
-    for text in failures:
+    assert browser_llm.STATUS_NO_SIGNAL not in non_signal
+    assert len({*non_signal, browser_llm.STATUS_NO_SIGNAL, browser_llm.STATUS_HIT}) == 9
+    for text in non_signal:
         assert "沒有詐騙話術" not in text
         assert "判為" not in text
 
@@ -430,6 +462,126 @@ def test_a_failed_reading_stays_on_the_unregistered_list_with_its_own_reason() -
 
 
 # ---------------------------------------------------------------------------
+# 短路旗標：第一趟算出、沿用 pipeline 判斷、JS 據它決定要不要生成
+# ---------------------------------------------------------------------------
+
+
+def test_short_circuit_true_on_hard_evidence() -> None:
+    first = a_two_pass().first_pass(Request.from_text(HARD_EVIDENCE))
+    assert first.short_circuit is True
+
+
+def test_short_circuit_false_on_quotation_veto() -> None:
+    """引述命中否決短路 —— 即使有硬證據，這種訊息仍要 LLM 跑。"""
+    first = a_two_pass().first_pass(Request.from_text(AWARENESS_POST))
+    assert any(r.name == "safe_account" and r.hit and r.hard for r in first.verdict.checks)
+    assert first.short_circuit is False
+
+
+def test_short_circuit_false_on_weak_signal_without_hard() -> None:
+    first = a_two_pass().first_pass(Request.from_text(WEAK_SIGNAL))
+    assert any(r.hit and not r.hard for r in first.verdict.checks)
+    assert not any(r.hit and r.hard for r in first.verdict.checks)
+    assert first.short_circuit is False
+
+
+def test_short_circuit_false_when_nothing_hits() -> None:
+    first = a_two_pass().first_pass(Request.from_text("明天下午三點開會。"))
+    assert first.short_circuit is False
+
+
+def test_short_circuit_flag_is_true_iff_second_pass_skips_the_llm() -> None:
+    """旗標為真當且僅當第二趟 pipeline 短路 `LlmCheck`（`outcome is None` 且成因為硬證據）。
+    無硬證據時旗標為假、第二趟真的跑了 `LlmCheck`（`outcome` 非 `None`）。"""
+    two_pass = a_two_pass()
+    hard = two_pass.first_pass(Request.from_text(HARD_EVIDENCE))
+    assert hard.short_circuit is True
+    hard_second = two_pass.second_pass(hard.token, an_output([[0, 0]]))
+    assert hard_second.outcome is None
+
+    soft = two_pass.first_pass(Request.from_text(PHISHING))
+    assert soft.short_circuit is False
+    soft_second = two_pass.second_pass(soft.token, an_output([[0, 0]]))
+    assert soft_second.outcome is not None
+
+
+def test_short_circuit_finish_and_generated_finish_give_the_same_verdict() -> None:
+    """同一則硬證據訊息：走短路收尾（`without_model(READY)`）與走「生成後 pipeline
+    短路」（`second_pass`），計分／信心／類型／證據與命中的訊號完全相同 —— 省掉的只是
+    2–5 秒的生成。兩者唯一的差是 `LlmCheck` 在 `second_pass` 為 `SKIPPED` 佔位、在
+    `without_model` 根本沒註冊；那筆 `hit=False` 佔位對計分與信心的貢獻是零（D1）。"""
+    two_pass = a_two_pass()
+    a = two_pass.first_pass(Request.from_text(HARD_EVIDENCE))
+    standby = two_pass.without_model(a.token)
+    b = two_pass.first_pass(Request.from_text(HARD_EVIDENCE))
+    generated = two_pass.second_pass(b.token, an_output([[0, 0]]))
+    assert standby.verdict.scam_probability == generated.verdict.scam_probability
+    assert standby.verdict.confidence == generated.verdict.confidence
+    assert standby.verdict.scam_type == generated.verdict.scam_type
+    assert standby.verdict.evidence == generated.verdict.evidence
+    standby_hits = sorted(r.name for r in standby.verdict.checks if r.hit)
+    generated_hits = sorted(r.name for r in generated.verdict.checks if r.hit)
+    assert standby_hits == generated_hits
+    # 唯一多出來的是被短路的 llm_scam 佔位（hit=False）
+    extra = {r.name for r in generated.verdict.checks} - {r.name for r in standby.verdict.checks}
+    assert extra == {SCAM_SIGNAL}
+
+
+def test_first_pass_payload_carries_short_circuit_flag() -> None:
+    inquiry = InquiryMode(a_two_pass(), PRESENTATION).first(
+        Request.from_text(HARD_EVIDENCE), LlmState.READY
+    )
+    assert inquiry["short_circuit"] is True
+    soft = InquiryMode(a_two_pass(), PRESENTATION).first(
+        Request.from_text(PHISHING), LlmState.READY
+    )
+    assert soft["short_circuit"] is False
+    practice = PracticeMode(a_two_pass(), PRESENTATION).first(HARD_EVIDENCE, LlmState.READY)
+    assert practice["short_circuit"] is True
+
+
+def test_ready_with_empty_prompt_reports_standby_not_a_clean_reading() -> None:
+    """state `READY` 但 `first.prompt` 為空（貼圖／純空白）走末分支 `without_model(READY)`，
+    子原因落到「無需動用」——它不可被讀成「模型讀過判它安全」（browser-llm-autoload 7.1）。"""
+    two_pass = a_two_pass()
+    first = two_pass.first_pass(Request.from_text("　"))
+    assert first.prompt == ""
+    result = two_pass.without_model(first.token)
+    rows = browser_llm.second_pass_unregistered(PRESENTATION, LlmState.READY, result)
+    assert rows[-1][0] == SCAM_SIGNAL
+    assert rows[-1][2] == browser_llm._SKIPPED_REASON
+    assert "安全" not in rows[-1][2]
+    assert "判它" not in rows[-1][2]
+
+
+# ---------------------------------------------------------------------------
+# docs/index.html：移除 CDN 揭露與成功/載入中文字、載入失敗單句、短路生成閘門
+# ---------------------------------------------------------------------------
+
+
+def test_index_html_drops_cdn_and_toggle_and_success_text() -> None:
+    assert "第三方 CDN" not in INDEX_HTML
+    assert "huggingface.co）送達" not in INDEX_HTML
+    assert "下一次送出的判定會多一層" not in INDEX_HTML
+    assert "語意判讀已開啟" not in INDEX_HTML
+    assert "你貼的訊息不離開這台電腦" in INDEX_HTML
+
+
+def test_index_html_load_failure_is_the_single_finalized_sentence() -> None:
+    assert "語意模型載入失敗，本次以規則判定" in INDEX_HTML
+    assert "這個瀏覽器不支援語意判讀或模型載入失敗" not in INDEX_HTML
+    # 技術原文留在進度 bar 的失敗態說明（bootDetail），不進語意格
+    assert "bootDetail.textContent = message" in INDEX_HTML
+
+
+def test_index_html_second_pass_gates_generation_on_short_circuit() -> None:
+    """三分支：硬證據短路不生成、無硬證據且就緒一定生成、未就緒非阻塞收尾。"""
+    assert "first.short_circuit" in INDEX_HTML
+    assert "app.inquiry_without_model(first.token, READY)" in INDEX_HTML
+    assert "app.practice_without_model(first.token, READY)" in INDEX_HTML
+
+
+# ---------------------------------------------------------------------------
 # 模式一
 # ---------------------------------------------------------------------------
 
@@ -439,7 +591,7 @@ def test_the_inquiry_card_is_complete_before_any_generation() -> None:
     first = mode.first(Request.from_text(PHISHING), LlmState.READY)
     assert '<section class="analysis-panel card">' in first["card"]
     assert first["prompt"]
-    assert first["status"] == browser_llm.STATUS_RUNNING
+    assert first["status"] == ""
 
 
 def test_an_empty_document_yields_no_prompt() -> None:
@@ -447,7 +599,7 @@ def test_an_empty_document_yields_no_prompt() -> None:
     mode = InquiryMode(a_two_pass(), PRESENTATION)
     first = mode.first(Request.from_text("　"), LlmState.NOT_LOADED)
     assert first["prompt"] == ""
-    assert first["status"] == browser_llm.STATUS_NOT_LOADED
+    assert first["status"] == ""
 
 
 # ---------------------------------------------------------------------------

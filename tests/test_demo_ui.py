@@ -534,19 +534,21 @@ def test_every_registered_check_name_lands_in_a_source() -> None:
         assert demo_ui.source_of(name) == demo_ui.SOURCE_RULE
 
 
-def test_three_states_aggregate_from_member_states() -> None:
+def test_aggregate_from_member_states() -> None:
     statuses = status_map([_hit("url_blocklist"), _clear("evasion"), _skipped(SCAM_SIGNAL)])
     assert statuses[demo_ui.SOURCE_URL].state == demo_ui.STATE_HIT
     assert statuses[demo_ui.SOURCE_RULE].state == demo_ui.STATE_CLEAR
-    assert statuses[demo_ui.SOURCE_SEMANTIC].state == demo_ui.STATE_SKIP
-    assert statuses[demo_ui.SOURCE_CLASSIFIER].state == demo_ui.STATE_SKIP
+    assert statuses[demo_ui.SOURCE_SEMANTIC].state == demo_ui.STATE_STANDBY
+    assert statuses[demo_ui.SOURCE_CLASSIFIER].state == demo_ui.STATE_UNLOADED
 
 
-def test_short_circuited_member_is_not_reported_as_not_hit() -> None:
-    """短路（`detail == SKIPPED`）落未執行，不落未命中 —— 這是本 change 最實質的一條。"""
+def test_short_circuited_member_is_standby_not_unloaded_nor_not_hit() -> None:
+    """短路（`detail == SKIPPED`，層已載入但被跳過）落「無需動用」，不落「未命中」
+    也不落「未載入」——這是本 change 最實質的一條：無需動用與未載入是相反的兩件事。"""
     semantic = status_map([_skipped(SCAM_SIGNAL)])[demo_ui.SOURCE_SEMANTIC]
-    assert semantic.state == demo_ui.STATE_SKIP
+    assert semantic.state == demo_ui.STATE_STANDBY
     assert semantic.state != demo_ui.STATE_CLEAR
+    assert semantic.state != demo_ui.STATE_UNLOADED
 
 
 def test_any_member_hit_makes_the_source_a_hit() -> None:
@@ -555,10 +557,11 @@ def test_any_member_hit_makes_the_source_a_hit() -> None:
     assert statuses[demo_ui.SOURCE_URL].state == demo_ui.STATE_HIT
 
 
-def test_semantic_unmounted_from_unregistered_shows_not_run() -> None:
+def test_semantic_unmounted_from_unregistered_shows_unloaded() -> None:
     unregistered = ((SCAM_SIGNAL, "語意判讀", "模型沒有載入，這一層在這次判定裡不存在"),)
     statuses = status_map([_clear("evasion")], unregistered)
-    assert statuses[demo_ui.SOURCE_SEMANTIC].state == demo_ui.STATE_SKIP
+    assert statuses[demo_ui.SOURCE_SEMANTIC].state == demo_ui.STATE_UNLOADED
+    assert statuses[demo_ui.SOURCE_SEMANTIC].state != demo_ui.STATE_STANDBY
 
 
 def test_semantic_ran_and_clear_shows_not_hit() -> None:
@@ -605,12 +608,12 @@ def test_source_grid_does_not_reprint_the_verdict_title() -> None:
         assert f">{label}</span>" in panel
 
 
-def test_local_verdict_shows_semantic_and_classifier_not_run() -> None:
-    """本機註冊表沒有語意層與分類器 → 兩格未執行；規則命中 → 規則格命中。"""
+def test_local_verdict_shows_semantic_and_classifier_unloaded() -> None:
+    """這個測試註冊表沒有語意層與分類器 → 兩格未載入；規則命中 → 規則格命中。"""
     verdict, _ = verdict_for(DECIDED_TEXT)
     statuses = status_map(verdict.checks, UNREGISTERED)
-    assert statuses[demo_ui.SOURCE_SEMANTIC].state == demo_ui.STATE_SKIP
-    assert statuses[demo_ui.SOURCE_CLASSIFIER].state == demo_ui.STATE_SKIP
+    assert statuses[demo_ui.SOURCE_SEMANTIC].state == demo_ui.STATE_UNLOADED
+    assert statuses[demo_ui.SOURCE_CLASSIFIER].state == demo_ui.STATE_UNLOADED
     assert statuses[demo_ui.SOURCE_RULE].state == demo_ui.STATE_HIT
 
 
@@ -1403,7 +1406,6 @@ def test_static_page_initializes_model_without_a_load_control() -> None:
     assert '$("main-app").hidden = false' in page
     assert 'entryProgress.dataset.state = "failed"' in page
     assert "通常只下載一次" in page
-    assert "第三方 CDN" in page
     assert "if (inquiryBusy)" in page
     assert "setInquiryBusy(true)" in page
 

@@ -24,8 +24,12 @@ repo 根目錄的 `app.py`。
 function，第一次 `yield` 已含完整的判定卡。
 """
 
+import importlib
+import importlib.util
 import json
+import os
 import re
+import sys
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -34,7 +38,12 @@ from pathlib import Path
 import gradio as gr
 
 import demo_ui
+from scam_guard.allowlist import RankAllowlist
+from scam_guard.blocklist import BlocklistStore
 from scam_guard.check import CheckRegistry
+from scam_guard.llm.check import LlmCheck
+from scam_guard.llm.prompt import DEFAULT_BUDGET
+from scam_guard.llm.validate import SCAM_SIGNAL, LlmOutcomeCounter
 from scam_guard.normalize import DEFAULT_LIMITS, Document, Limits, build_document
 from scam_guard.pii import find_pii
 from scam_guard.pipeline import detect
@@ -44,6 +53,8 @@ from scam_guard.rules.quotation import QuotationCheck
 from scam_guard.rules.speech_act import register_speech_act_rules
 from scam_guard.ngram import load_model, register_ngram_check
 from scam_guard.types import Message, Request, Verdict
+from scam_guard.url import PublicSuffixList
+from scam_guard.url_check import load_tables, register_url_checks
 from scam_guard.weights import load_weights
 
 # ---------------------------------------------------------------------------
@@ -69,20 +80,6 @@ ASSETS_PATH = Path(__file__).with_name("assets")
 SCAMMER_AVATAR = "/gradio_api/file=assets/2.png"
 PERSONA_AVATAR = "/gradio_api/file=assets/3.png"
 gr.set_static_paths(paths=[ASSETS_PATH])
-
-UNREGISTERED_CHECKS: tuple[demo_ui.UnregisteredCheck, ...] = (
-    ("domain_age", "網域年齡查詢", "需要向網域註冊局查詢，本服務不對外連線"),
-)
-"""組裝層**明確知道其存在、但選擇不註冊**的檢查：識別字、中文名與一行理由。
-
-只收錄已實作且有 spec 定義「未註冊」狀態的檢查。尚未實作的檢查不列入 ——
-把它們寫進清單等於臆測未來的名稱，而名稱一旦不符，畫面上會永遠掛著一行
-指向不存在的東西的「未註冊」。
-
-清單本身要留著：少一個訊號要在畫面上看得見，否則「沒有訊號」與「沒有資料」
-長得一模一樣。理由縮成一行 —— 使用者關心的是「它有沒有把我的網址送出去」，
-不是共用出口 IP 的論證，那段論證在 `README.md`。
-"""
 
 PiiRecognizer = demo_ui.PiiRecognizer
 PiiSpan = demo_ui.PiiSpan
@@ -144,24 +141,220 @@ TABLE = load_weights()
 NGRAM_MODEL = load_model()
 
 
-def build_registry() -> CheckRegistry:
-    """建立本介面唯一的檢查註冊表。每落地一項檢查，此處多一行。
+# ---------------------------------------------------------------------------
+# URL 層與必備 LLM 層的組裝 —— 全部 module-level，一次性解析，不進 per-request 路徑
+# ---------------------------------------------------------------------------
 
-    **URL 層的五個檢查今日不註冊**：`register_url_checks()` 需要一份
-    `PublicSuffixList`，由 `tools/fetch_psl.py` 落到被版控排除的 `data/`，
-    而 HF Spaces 上 clone 出來的 repo 裡沒有那個目錄。權重表已經落地
-    （`weights.toml` 進了版控），所以擋住的只剩 PSL 快照這一項 ——
-    部署環境備妥該檔之後，此處多兩行。
+DATA_DIR = Path(__file__).with_name("data")
+PSL_DIR = DATA_DIR / "psl"
+BLOCKLIST_DIR = DATA_DIR / "blocklist"
+ALLOWLIST_DIR = DATA_DIR / "allowlist"
+
+PSL_MAX_AGE_DAYS = 90
+"""PSL 快照新鮮度上限。取自 `docs/pages_app.py` 的 `PSL_MAX_AGE_DAYS` ——
+同一份資料在本機與瀏覽器兩個部署上不該有兩個門檻。"""
+
+BLOCKLIST_MAX_AGE_DAYS = {"176455": 60, "165027": 60}
+"""165 涉詐網址黑名單新鮮度上限，逐 source。取自 `api/app.py` 的
+`BLOCKLIST_MAX_AGE_DAYS`。160055 標記為 `retired`，`_check_freshness` 會跳過它，
+不列入對應表。"""
+
+ALLOWLIST_MAX_AGE_DAYS = 30
+"""Tranco 白名單新鮮度上限。取自 `RankAllowlist.load()` 的 docstring。"""
+
+LLM_DEADLINE_S = 45.0
+"""LLM 判讀期限。取自 `llm_runtime/__init__.py` 的組裝範例。涵蓋不了 prefill
+（見 `LlmRuntime.generate` 的 docstring），對 prefill 設限的是 `PromptBudget`。"""
+
+GGUF_ENV = "SCAM_GUARD_GGUF"
+"""本機模型來源的環境變數名，指向本機 GGUF 檔。與 `tests/test_llm_grammar.py`、
+`.github/workflows/ci.yml` 既有的約定同名。"""
+
+DOMAIN_AGE_UNREGISTERED: demo_ui.UnregisteredCheck = (
+    "domain_age",
+    "網域年齡查詢",
+    "需要向網域註冊局查詢，本服務不對外連線",
+)
+"""唯一一筆與載入結果無關的未註冊紀錄：本服務不對外連線是這個載體的性質。"""
+
+LLM_UNREGISTERED: demo_ui.UnregisteredCheck = (
+    SCAM_SIGNAL,
+    "語意判讀",
+    f"LLM 為必備層，尚未載入：請下載 GGUF 模型並設定 {GGUF_ENV}，並安裝 llm extra。",
+)
+"""LLM 未載入時的未註冊紀錄。措辭傳達「必備但未載入」（你少了一個必要的東西，
+這樣補），而非「可選、沒開」——LLM 必備之後，把「沒裝模型」說成像「無需動用」會誤導。"""
+
+
+def load_psl() -> PublicSuffixList | None:
+    """從 `data/psl` 載入 PSL 快照。缺席或載入失敗即回 `None`，整個 URL 層不註冊。
+
+    `data/` 是 `.gitignore` 排除的 operator-local 目錄，剛 clone 的工作區沒有它，
+    缺席是**正常首次狀態**、不致命——與 `docs/pages_app.py`（PSL 缺席在 import
+    階段致命）不同，因為那邊的 PSL 是建置產物、缺席代表建置壞了。
+
+    **MUST NOT 以空 `PublicSuffixList` 代替。** 以空 PSL 註冊的 URL 層會對每個網址
+    算錯可註冊網域、產出看似正常的錯誤判定——那是把大聲的缺席換成安靜的錯答。
+    只捕捉 `(FileNotFoundError, ValueError)`，不 `except Exception`、不裸 `except`。
+    """
+    try:
+        return PublicSuffixList.load(PSL_DIR, max_age_days=PSL_MAX_AGE_DAYS)
+    except (FileNotFoundError, ValueError) as error:
+        print(
+            f"[scam-guard] URL 層未註冊：PSL 快照無法載入（{error}）。"
+            "請執行 `python -m tools.fetch_psl` 取得快照。",
+            file=sys.stderr,
+        )
+        return None
+
+
+def load_url_snapshots(
+    psl: PublicSuffixList,
+) -> tuple[BlocklistStore | None, RankAllowlist | None, str]:
+    """成對載入黑名單與白名單，回傳 `(store, allowlist, 未註冊理由)`。
+
+    形狀與 `docs/pages_app.load_snapshots` 相同（但**不共用同一個函式**，理由見
+    design：本機與瀏覽器的快照路徑、PSL 致命性、LLM 掛法皆不同）。任一載入失敗即
+    `(None, None, 例外訊息原文)`，`url_blocklist` 不註冊，其餘四個 URL 檢查照常
+    （它們不需要黑白名單）。只捕捉 `(FileNotFoundError, ValueError)`；
+    `require_redistributable` 用預設 `True`（`app.py` 也跑在公開的 HuggingFace Spaces）。
+
+    **MUST NOT 建立空的 `BlocklistStore`。**「這個網域不在名單上」與「這裡沒有名單」
+    在 `Verdict.checks` 裡長得一模一樣，前者是一次成功的推論、後者是一次缺席。
+    """
+    try:
+        store = BlocklistStore.load(BLOCKLIST_DIR, psl, max_age_days=BLOCKLIST_MAX_AGE_DAYS)
+    except (FileNotFoundError, ValueError) as error:
+        print(
+            f"[scam-guard] url_blocklist 未註冊：165 涉詐網址名單快照無法載入（{error}）。"
+            "請執行 `python -m tools.fetch_blocklist` 取得快照。",
+            file=sys.stderr,
+        )
+        return None, None, f"165 涉詐網址名單快照無法載入：{error}"
+    try:
+        allowlist = RankAllowlist.load(ALLOWLIST_DIR, max_age_days=ALLOWLIST_MAX_AGE_DAYS)
+    except (FileNotFoundError, ValueError) as error:
+        print(
+            f"[scam-guard] url_blocklist 未註冊：Tranco 白名單快照無法載入（{error}）。"
+            "請執行 `python -m tools.fetch_tranco` 取得快照。",
+            file=sys.stderr,
+        )
+        return (
+            None,
+            None,
+            f"Tranco 排名白名單快照無法載入，涉詐網址名單因此一併不啟用"
+            f"（沒有白名單時它會重現一筆已知的硬證據偽陽性，而畫面上無處申報）：{error}",
+        )
+    return store, allowlist, ""
+
+
+def build_llm_check() -> LlmCheck | None:
+    """建必備 LLM 語意層的 `LlmCheck`；未裝好時回 `None`（誠實降級）。
+
+    掛載的兩個條件皆須滿足：`SCAM_GUARD_GGUF` 指向存在的檔案、`llm` extra 已安裝。
+    處置（次序見 design）：
+
+    - `SCAM_GUARD_GGUF` 未設定（缺席）→ `None`，語意格「未載入」，印必備提示。
+    - `find_spec("llama_cpp")` 為 `None`（extra 未裝）→ `None`，印必備提示。extra 探測
+      擋在 `import_module` 之前，一個殘留在環境裡的 `SCAM_GUARD_GGUF` 不會讓沒裝
+      extra 的 demo 崩潰。
+    - `SCAM_GUARD_GGUF` 已設定但檔案不存在（設定錯誤）→ `raise FileNotFoundError`
+      指名該路徑。缺席與設定錯誤是兩個狀態，前者略過、後者 raise。
+
+    extra 是否安裝以 `importlib.util.find_spec` 布林探測，**不用 `try`/`except import`**；
+    確認 spec 存在後的 `import_module` 因此不可能拋 `ModuleNotFoundError`。
+    **不呼叫 `ensure_model()`**（本機不下載 806 MB，demo 啟動不連網）。
+    本機同步呼叫 `llama.cpp`，直接建 `LlmCheck`，不需 `TwoPass` / `ReplayRuntime`。
+    """
+    model_path = os.environ.get(GGUF_ENV)
+    if not model_path:
+        print(
+            "[scam-guard] 語意層（LLM）未載入。LLM 為必備層：請下載 GGUF 模型並設定 "
+            f"{GGUF_ENV}，且安裝 llm extra。demo 以規則版繼續（誠實降級）。",
+            file=sys.stderr,
+        )
+        return None
+    if importlib.util.find_spec("llama_cpp") is None:
+        print(
+            "[scam-guard] 語意層（LLM）未載入：未安裝 llm extra（llama-cpp-python）。"
+            "LLM 為必備層，請安裝 llm extra。demo 以規則版繼續（誠實降級）。",
+            file=sys.stderr,
+        )
+        return None
+    path = Path(model_path)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{GGUF_ENV} 指向的 GGUF 模型檔不存在：{path}。"
+            "這是設定錯誤（已設定但檔案不在），請確認路徑或重新下載模型。"
+        )
+    module = importlib.import_module("llm_runtime.llama_cpp_runtime")
+    runtime = module.LlamaCppRuntime(path)
+    return LlmCheck(
+        runtime=runtime,
+        counter=LlmOutcomeCounter(),
+        table=TABLE,
+        budget=DEFAULT_BUDGET,
+        deadline_s=LLM_DEADLINE_S,
+    )
+
+
+def build_registry(
+    psl: PublicSuffixList | None,
+    store: BlocklistStore | None,
+    allowlist: RankAllowlist | None,
+    llm_check: LlmCheck | None,
+) -> CheckRegistry:
+    """建立本介面唯一的檢查註冊表。三個既有注入點各自的缺席行為：
+
+    - **URL 層**：`psl` 非 `None` 時以 `register_url_checks()` 註冊五個 URL 檢查
+      （`store` 為 `None` 時該函式本來就不註冊 `url_blocklist`）；`psl` 為 `None`
+      時完全不呼叫它，整層不註冊。
+    - **黑白名單**：成對，任一缺席即 `store`／`allowlist` 皆 `None`，`url_blocklist`
+      不註冊，其餘四個 URL 檢查照常。
+    - **LLM 語意層**：`llm_check` 非 `None` 時註冊進**同一個** `REGISTRY`，短路、
+      `prior` 傳遞、消融的 `disable()` 全由既有機制驅動（本機同步呼叫 `llama.cpp`，
+      不需 `TwoPass` / `ReplayRuntime`）；為 `None` 時不註冊（誠實降級為純規則版）。
     """
     registry = CheckRegistry()
     register_speech_act_rules(registry)
     register_evasion_checks(registry)
     registry.register(QuotationCheck())
     register_ngram_check(registry, TABLE, model=NGRAM_MODEL)
+    if psl is not None:
+        register_url_checks(registry, psl, load_tables(), store=store, allowlist=allowlist)
+    if llm_check is not None:
+        registry.register(llm_check)
     return registry
 
 
-REGISTRY: CheckRegistry = build_registry()
+def build_unregistered(
+    blocklist_reason: str, llm_loaded: bool
+) -> tuple[demo_ui.UnregisteredCheck, ...]:
+    """依載入結果組出未註冊清單（比照 `pages_app.unregistered_checks`），而非寫死。
+
+    基底恆含 `domain_age`；黑白名單失敗時多一列 `url_blocklist`（理由為例外訊息
+    原文）；LLM 未載入時多一列語意層（識別字 `llm_scam`，措辭傳達「必備但未載入」），
+    讓四源面板語意格顯示「未載入」且細節欄告訴使用者為什麼、怎麼補。
+
+    PSL 缺席、整個 URL 層不註冊時**不**為五個 URL 檢查各塞一列：網址格的「未載入」
+    加上 stderr 的 `tools.fetch_psl` 提示已讓這個狀態可見且可行動。
+    """
+    rows: list[demo_ui.UnregisteredCheck] = [DOMAIN_AGE_UNREGISTERED]
+    if blocklist_reason:
+        rows.append(("url_blocklist", "涉詐網址名單比對", blocklist_reason))
+    if not llm_loaded:
+        rows.append(LLM_UNREGISTERED)
+    return tuple(rows)
+
+
+PSL = load_psl()
+if PSL is not None:
+    STORE, ALLOWLIST, BLOCKLIST_UNREGISTERED_REASON = load_url_snapshots(PSL)
+else:
+    STORE, ALLOWLIST, BLOCKLIST_UNREGISTERED_REASON = None, None, ""
+LLM_CHECK = build_llm_check()
+
+REGISTRY: CheckRegistry = build_registry(PSL, STORE, ALLOWLIST, LLM_CHECK)
 """權重表的單一來源。`detect()` 的必填參數 —— 一個有預設表的 `detect()`
 會讓呼叫端在沒有表的情況下跑出一個看起來正常的結果。
 
@@ -169,6 +362,13 @@ REGISTRY: CheckRegistry = build_registry()
 放進請求路徑等於每則訊息都重讀一次 TOML。它同時在 import 時就驗證
 `REGISTRY` 的每個檢查都登記在表中 —— 缺漏會在啟動時炸，不是在第一次命中時。
 """
+
+UNREGISTERED_CHECKS: tuple[demo_ui.UnregisteredCheck, ...] = build_unregistered(
+    BLOCKLIST_UNREGISTERED_REASON, LLM_CHECK is not None
+)
+"""組裝層**明確知道其存在、但選擇不註冊**的檢查：識別字、中文名與一行理由，
+依載入結果在 import 時算出。清單要留著：少一個訊號要在畫面上看得見，否則
+「沒有訊號」與「沒有資料」長得一模一樣。"""
 
 
 # ---------------------------------------------------------------------------
