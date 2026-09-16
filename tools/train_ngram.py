@@ -43,17 +43,29 @@ from sklearn.model_selection import StratifiedKFold, cross_val_predict
 from sklearn.pipeline import Pipeline
 
 from scam_guard.ngram import (
+    DEFAULT_MODEL_PATH,
     MANIFEST_FIELDS,
     NGRAM_SIGNAL,
     NGRAM_THRESHOLD,
+    NgramModel,
     document_text,
+    load_model,
+    score,
 )
 from scam_guard.normalize import DEFAULT_LIMITS, build_document
 from scam_guard.types import Message
 from scam_guard.weights import load_weights
-from tools.eval.dataset import MANIFEST_FILENAME, Sample, file_sha256, load_testset
+from tools.eval.dataset import MANIFEST_FILENAME, Sample, Testset, file_sha256, load_testset
 from tools.eval.run import build_registry, load_blocklist, load_psl, run_over
-from tools.eval.selectors import LABEL_HAM, LABEL_SCAM, TUNE
+from tools.eval.selectors import (
+    COFACTS_SCAM,
+    CONVERSATION_HAM,
+    HAM_SUBSETS,
+    HOLDOUT,
+    LABEL_HAM,
+    LABEL_SCAM,
+    TUNE,
+)
 from tools.eval.stats import Rate
 
 ANALYZER = "char_wb"
@@ -89,6 +101,20 @@ HAM_UPPER_CEILING = 0.02
 不是系統的誤判率。**
 """
 
+RECALL_FLOOR = 0.75
+"""停線：重訓後 scam 召回（Cofacts scam tune，`p_hit_given_scam`）低於此值即停。
+
+75% 不是隨手挑的：`add-ngram-classifier` 已量到
+`P(命中 | scam, 至少一條規則命中) = 76.24%`，低於此值意味分類器的單獨補充覆蓋
+已被侵蝕到規則已能覆蓋的水準以下 —— 那正是這個訊號存在理由變弱的訊號。
+觸發時印出完整曲線、以非零結束碼結束、不寫入表（沿用 `choose_threshold` 的精神）。
+"""
+
+CONVERSATION_UPPER_CEILING = 0.02
+"""停線：對話誤判目標。`conversation_ham` 的 holdout 部分在選定門檻上的誤判率，
+其 95% Wilson 上界須 ≤ 此值。掃遍門檻都下不到即停 —— MUST NOT 放寬 2%、
+MUST NOT 挑一個看起來可以的門檻。"""
+
 MAX_ITERATIONS = 1000
 RANDOM_STATE = 20260915
 CV_FOLDS = 5
@@ -106,8 +132,11 @@ DEFAULT_REPORT_DIR = Path("data/reports/ngram")
 MODEL_NOTE = "訓練產物。人工編輯此檔案沒有意義 —— 值由 tools/train_ngram.py 產生。"
 
 TRAINED_ON = (
-    "testset/manifest.json 的 tune 切分（Cofacts 公開查核資料，CC BY-SA 4.0；"
-    "姓名標示與授權條款見 testset/LICENSE-DATA）"
+    "testset/manifest.json 的 tune 切分：Cofacts 公開查核資料（CC BY-SA 4.0；"
+    "姓名標示與授權條款見 testset/LICENSE-DATA）+ conversation_ham 的 tune 部分"
+    "（Gossiping-Chinese-Corpus，PTT 八卦版使用者貼文，作者 zake7749 以 Apache-2.0 "
+    "釋出；原生台灣繁中，未經 OpenCC 轉繁）。**trained_on 記錄完整訓練組成，"
+    "與 weights.toml 的 measured_on（量測池，只有 Cofacts tune）不同名是刻意的**"
 )
 
 GRID_COLUMNS = (
@@ -628,6 +657,127 @@ def _nearest_point(points: Sequence[SweepPoint], target: float) -> SweepPoint | 
     return nearest
 
 
+@dataclass(frozen=True)
+class SubsetHoldout:
+    """一個 ham 子集在其 holdout 上的分類器誤判率。`None` 代表該子集未載入。"""
+
+    name: str
+    rate: Rate | None
+
+
+def _holdout_texts(samples: Sequence[Sample]) -> list[str]:
+    """一批樣本中 holdout 部分的正規化文字，與 `detect()` 同一條路徑。"""
+    return [normalized_text(sample) for sample in samples if sample.split == HOLDOUT]
+
+
+def pipeline_hit_rate(pipeline: Pipeline, texts: Sequence[str], threshold: float) -> Rate | None:
+    """以擬合好的 pipeline（`decision_function`，float64）量一批文字的命中率。
+
+    量測與門檻選擇同用 `decision_function`，兩者座標一致；golden test 保證它與
+    推論端讀表的分數在 `1e-12` 內，因此命中判定與線上一致。空集合回 `None`。
+    """
+    if not texts:
+        return None
+    scores = [float(value) for value in pipeline.decision_function(list(texts))]
+    return Rate(numerator=sum(1 for value in scores if value >= threshold), denominator=len(scores))
+
+
+def model_hit_rate(model: NgramModel, texts: Sequence[str], threshold: float) -> Rate | None:
+    """以序列化模型的推論端（`scam_guard.ngram.score`）量命中率。
+
+    供「現行模型」的 before 量測 —— 它讀的是版控中的那份表，是真正上線的推論路徑。
+    空集合回 `None`。
+    """
+    if not texts:
+        return None
+    return Rate(
+        numerator=sum(1 for text in texts if score(model, text).value >= threshold),
+        denominator=len(texts),
+    )
+
+
+def measure_ham_subsets(
+    testset: Testset, pipeline: Pipeline, threshold: float
+) -> tuple[SubsetHoldout, ...]:
+    """四個 ham 子集各自在 holdout 上的分類器誤判率。未載入的子集 `rate` 為 `None`。
+
+    分開量、分開報告，MUST NOT 合併 —— 頭條取上界最大者（沿用 `HAM_SUBSETS` 規則）。
+    """
+    measured: list[SubsetHoldout] = []
+    for name in HAM_SUBSETS:
+        if name not in testset.subsets:
+            measured.append(SubsetHoldout(name=name, rate=None))
+            continue
+        texts = _holdout_texts(testset.samples(name))
+        rate = pipeline_hit_rate(pipeline, texts, threshold)
+        measured.append(SubsetHoldout(name=name, rate=rate))
+    return tuple(measured)
+
+
+def _rate_cell(rate: Rate | None) -> str:
+    return "（未載入）" if rate is None else str(rate)
+
+
+def _holdout_report_lines(
+    ham_holdouts: Sequence[SubsetHoldout],
+    scam_recall_tune: Rate,
+    scam_recall_holdout: Rate | None,
+    before_conv: Rate | None,
+    before_threshold: float,
+    after_conv: Rate | None,
+    chosen_threshold: float,
+    stop_reasons: Sequence[str],
+) -> list[str]:
+    """驗收看的三個量：scam 召回、四個 ham 子集 holdout 誤判、對話 before/after。
+
+    **不看聚合 CV-F1** —— 閒聊在非問候特徵上與 scam、宣導文皆可分，加入它可能抬高
+    聚合 F1，而真正的改變局部在問候特徵往中性移動（見 design Decision 五）。
+    """
+    lines = [
+        "## 驗收：召回、四個 ham 子集 holdout 誤判、對話 before/after",
+        "",
+        "**驗收不看聚合 CV-F1。** 見 design Decision 五：閒聊是可分的第三類，"
+        "會抬高聚合 F1，而真正的改變局部在問候特徵。",
+        "",
+        f"- **scam 召回（Cofacts scam tune，與 `add-ngram-classifier` 的 84.62% 同準則同池）"
+        f"= {scam_recall_tune}**",
+        f"- scam 召回（Cofacts scam holdout）= {_rate_cell(scam_recall_holdout)}",
+        "",
+        "### 四個 ham 子集各自的 holdout 誤判率（分類器命中率，取上界最大者為頭條）",
+        "",
+        "| ham 子集 | holdout 誤判率（95% Wilson） |",
+        "|---|---|",
+    ]
+    for entry in ham_holdouts:
+        lines.append(f"| {entry.name} | {_rate_cell(entry.rate)} |")
+    headline = [entry for entry in ham_holdouts if entry.rate is not None]
+    if headline:
+        worst = max(headline, key=operator.attrgetter("rate.upper"))
+        lines += [
+            "",
+            f"頭條（四子集中 95% Wilson 上界最大者）：**{worst.name} {worst.rate}**",
+        ]
+    lines += [
+        "",
+        "### 對話誤判 before/after（`conversation_ham` holdout，各模型於各自操作點）",
+        "",
+        f"- **before（現行 `ngram_model.json`，門檻 {before_threshold:.6f}）"
+        f"= {_rate_cell(before_conv)}**",
+        f"- **after（重訓後，門檻 {chosen_threshold:.6f}）= {_rate_cell(after_conv)}**",
+        "",
+    ]
+    if stop_reasons:
+        lines += ["### ⚠️ 停線觸發", ""]
+        lines += [f"- {reason}" for reason in stop_reasons]
+        lines += [
+            "",
+            "依 design Decision 六：不放寬約束、不寫入表；印出完整曲線，由人決定"
+            '調數量、啟用 `class_weight="balanced"` 或重審語料。',
+            "",
+        ]
+    return lines
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m tools.train_ngram",
@@ -643,12 +793,24 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     manifest_path = Path(args.testset_dir) / MANIFEST_FILENAME
+    testset = load_testset(Path(args.data_dir), manifest_path)
     samples = tune_samples(Path(args.data_dir), manifest_path)
     texts = [normalized_text(sample) for sample in samples]
     labels = _labels(samples)
-    n_scam = sum(labels)
-    n_ham = len(labels) - n_scam
-    print(f"[data] tune {len(samples)} 則（scam {n_scam}、ham {n_ham}）", file=sys.stderr)
+    # 三個池分開（design Decision 三）：LR 擬合於全部 tune（含對話 ham 的 tune 部分）；
+    # 門檻選擇與兩個 measured 條目的量測池維持只有 Cofacts tune。
+    cofacts = [
+        index for index, sample in enumerate(samples) if sample.subset != CONVERSATION_HAM.name
+    ]
+    cofacts_labels = [labels[index] for index in cofacts]
+    n_scam = sum(cofacts_labels)
+    n_ham = len(cofacts_labels) - n_scam
+    n_conversation = len(samples) - len(cofacts)
+    print(
+        f"[data] 訓練池 tune {len(samples)} 則（含對話 ham tune {n_conversation}）；"
+        f"量測池 Cofacts scam {n_scam}、ham {n_ham}",
+        file=sys.stderr,
+    )
 
     cells = scan_grid(texts, labels)
     peak_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
@@ -663,17 +825,93 @@ def main(argv: list[str] | None = None) -> int:
     pipeline = build_pipeline(chosen_cell.ngram_range, chosen_cell.max_features)
     pipeline.fit(texts, labels)
     scores = [float(value) for value in pipeline.decision_function(texts)]
+    cofacts_scores = [scores[index] for index in cofacts]
 
-    points = sweep_thresholds(scores, labels)
+    report_dir = Path(args.report_dir)
+    points = sweep_thresholds(cofacts_scores, cofacts_labels)
     try:
         chosen = choose_threshold(points)
     except ValueError as error:
         write_csv(
-            Path(args.report_dir) / "ngram_threshold_sweep.csv",
+            report_dir / "ngram_threshold_sweep.csv",
             SWEEP_COLUMNS,
             _sweep_rows(points),
         )
         print(f"[threshold] {error}", file=sys.stderr)
+        return 1
+
+    # 驗收量測（新模型的 in-memory pipeline）：四個 ham 子集 holdout + scam 召回。
+    ham_holdouts = measure_ham_subsets(testset, pipeline, chosen.threshold)
+    scam_recall_holdout: Rate | None = None
+    if COFACTS_SCAM.name in testset.subsets:
+        scam_holdout_texts = _holdout_texts(testset.samples(COFACTS_SCAM.name))
+        scam_recall_holdout = pipeline_hit_rate(pipeline, scam_holdout_texts, chosen.threshold)
+
+    # 對話誤判 before/after：現行模型於其自身門檻、新模型於新門檻。
+    conversation_holdout_texts: list[str] = []
+    if CONVERSATION_HAM.name in testset.subsets:
+        conversation_holdout_texts = _holdout_texts(testset.samples(CONVERSATION_HAM.name))
+    after_conversation = pipeline_hit_rate(pipeline, conversation_holdout_texts, chosen.threshold)
+    before_model = load_model(DEFAULT_MODEL_PATH) if DEFAULT_MODEL_PATH.is_file() else None
+    before_threshold = (
+        float(before_model.manifest["threshold"]) if before_model is not None else float("nan")
+    )
+    before_conversation = (
+        model_hit_rate(before_model, conversation_holdout_texts, before_threshold)
+        if before_model is not None
+        else None
+    )
+
+    # 停線（design Decision 六）：召回掉破下界，或對話誤判壓不到 ≤2%。
+    stop_reasons: list[str] = []
+    if chosen.p_hit_given_scam.value < RECALL_FLOOR:
+        stop_reasons.append(
+            f"scam 召回 {chosen.p_hit_given_scam.value:.2%} 低於下界 {RECALL_FLOOR:.0%}"
+        )
+    if after_conversation is not None and after_conversation.upper > CONVERSATION_UPPER_CEILING:
+        stop_reasons.append(
+            f"conversation_ham holdout 誤判 95% Wilson 上界 {after_conversation.upper:.2%} "
+            f"超過 {CONVERSATION_UPPER_CEILING:.0%}"
+        )
+
+    holdout_lines = _holdout_report_lines(
+        ham_holdouts,
+        chosen.p_hit_given_scam,
+        scam_recall_holdout,
+        before_conversation,
+        before_threshold,
+        after_conversation,
+        chosen.threshold,
+        stop_reasons,
+    )
+
+    rule_hits = rule_hit_flags(samples, Path(args.psl_dir), Path(args.blocklist_dir))
+    correlation = measure_correlation(scores, labels, rule_hits, chosen.threshold)
+
+    write_csv(report_dir / "ngram_grid.csv", GRID_COLUMNS, _grid_rows(cells))
+    write_csv(report_dir / "ngram_threshold_sweep.csv", SWEEP_COLUMNS, _sweep_rows(points))
+
+    if stop_reasons:
+        base_lines = _report_lines(
+            cells,
+            chosen_cell,
+            points,
+            chosen,
+            correlation,
+            _nearest_point(points, 0.0),
+            (0.0, 0),
+            peak_rss_bytes,
+        )
+        (report_dir / "report.md").write_text(
+            "\n".join(base_lines + [""] + holdout_lines).rstrip() + "\n", encoding="utf-8"
+        )
+        for reason in stop_reasons:
+            print(f"[stop] {reason}", file=sys.stderr)
+        print(
+            f"[stop] 停線觸發，不寫入 {args.model_out}、不更新 weights.toml；"
+            f"完整曲線見 {report_dir}",
+            file=sys.stderr,
+        )
         return 1
 
     manifest = {
@@ -709,12 +947,6 @@ def main(argv: list[str] | None = None) -> int:
         if (a >= chosen.threshold) != (b >= chosen.threshold)
     )
 
-    rule_hits = rule_hit_flags(samples, Path(args.psl_dir), Path(args.blocklist_dir))
-    correlation = measure_correlation(scores, labels, rule_hits, chosen.threshold)
-
-    report_dir = Path(args.report_dir)
-    write_csv(report_dir / "ngram_grid.csv", GRID_COLUMNS, _grid_rows(cells))
-    write_csv(report_dir / "ngram_threshold_sweep.csv", SWEEP_COLUMNS, _sweep_rows(points))
     lines = _report_lines(
         cells,
         chosen_cell,
@@ -725,7 +957,9 @@ def main(argv: list[str] | None = None) -> int:
         (max(deltas), flips),
         peak_rss_bytes,
     )
-    (report_dir / "report.md").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    (report_dir / "report.md").write_text(
+        "\n".join(lines + [""] + holdout_lines).rstrip() + "\n", encoding="utf-8"
+    )
 
     weight = math.log(chosen.p_hit_given_scam.value / chosen.p_hit_given_ham.value)
     print(

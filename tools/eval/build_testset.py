@@ -45,6 +45,7 @@ from tools.eval.dataset import (
 from tools.eval.selectors import (
     COFACTS_DERIVED_NAMES,
     COFACTS_SUBSETS,
+    CONVERSATION_HAM,
     EXCLUDED_POOLS,
     LABEL_SCAM,
     MULTI_MESSAGE_HAM,
@@ -62,6 +63,9 @@ DEFAULT_TESTSET_DIR = Path("testset")
 DEFAULT_OUT_DIR = Path("data/testset")
 DEFAULT_POOL_DIR = Path("data/testset/pools")
 DEFAULT_DEV_SAMPLE = Path("data/dev_sample.jsonl")
+DEFAULT_CONVERSATION_DIR = Path("data/conversation")
+CONVERSATION_SUBSET_FILENAME = "conversation_ham.jsonl"
+CONVERSATION_MANIFEST_FILENAME = "manifest.json"
 
 DRIFT_FILENAME = "drift.json"
 SNIPPET_LENGTH = 40
@@ -273,12 +277,70 @@ def _self_subset_status(out_dir: Path) -> dict:
     return status
 
 
+def _conversation_status(out_dir: Path, conversation_dir: Path) -> dict:
+    """把對話語料落地為 `conversation_ham` 子集並回傳狀態與語料 pinning。
+
+    **可重現但非 Cofacts**：語料由 `tools/fetch_conversation_corpus.py` 從 pinned
+    版本的公開非 gated 語料經內容閘門過濾與精確去重產生，因此**不進版控的識別字
+    清單**（那份只放 Cofacts 識別字，見 `write_ids`），改由本狀態把語料的
+    release/commit、是否轉繁、過濾與去重規則、子集 sha256 記入 `testset/manifest.json`，
+    使第三人可重建同一份輸入。切分不在此處 —— 由 `dataset.Sample.split` 依
+    `sha256(正規化文字)` 首位元組確定性計算。
+
+    語料未取得（`data/conversation/` 無檔）時回傳 `collected = False`，MUST 於報告
+    中明說對話這一類的誤判未被量測，MUST NOT 以其餘子集冒充。
+    """
+    subset_source = conversation_dir / CONVERSATION_SUBSET_FILENAME
+    manifest_source = conversation_dir / CONVERSATION_MANIFEST_FILENAME
+    if not subset_source.is_file():
+        return {
+            "collected": False,
+            "target": CONVERSATION_HAM.target,
+            "note": (
+                "未取得。執行 `python -m tools.fetch_conversation_corpus`；"
+                "缺席時對話這一類的誤判未被量測，MUST 於報告中明說。"
+            ),
+        }
+    records = read_jsonl(subset_source)
+    out_path = subset_path(out_dir, CONVERSATION_HAM.name)
+    _require_git_ignored(out_path)
+    write_jsonl(
+        out_path,
+        (
+            {"id": record["id"], "text": record["text"], "subset": CONVERSATION_HAM.name}
+            for record in records
+        ),
+    )
+    samples = [
+        Sample(id=record["id"], text=record["text"], subset=CONVERSATION_HAM.name)
+        for record in records
+    ]
+    corpus_manifest = json.loads(manifest_source.read_text(encoding="utf-8"))
+    return {
+        "collected": True,
+        "count": len(records),
+        "target": CONVERSATION_HAM.target,
+        "splits": split_counts(samples),
+        "file_sha256": file_sha256(out_path),
+        "corpus": corpus_manifest["corpus"],
+        "repo": corpus_manifest["repo"],
+        "commit": corpus_manifest["commit"],
+        "license": corpus_manifest["license"],
+        "converted_to_traditional": corpus_manifest["converted_to_traditional"],
+        "opencc_config": corpus_manifest["opencc_config"],
+        "content_gate": corpus_manifest["content_gate"],
+        "corpus_counts": corpus_manifest["counts"],
+        "subset_sha256": corpus_manifest["subset_sha256"],
+    }
+
+
 def build_manifest(
     written: Mapping[str, object],
     stats: Mapping[str, object],
     dev_sample: Path,
     out_dir: Path,
     dev_intersection: int,
+    conversation_dir: Path,
 ) -> dict:
     """組出版控的 manifest。selector 常數寫進去，使子集的定義與筆數在同一份檔案裡。"""
     multi_total = sum(
@@ -296,6 +358,7 @@ def build_manifest(
         "selection": dict(stats),
         "subsets": dict(written),
         "self_built": _self_subset_status(out_dir),
+        "conversation_ham": _conversation_status(out_dir, conversation_dir),
         "multi_message": {
             "count": multi_total,
             "sufficient": multi_total >= MULTI_MESSAGE_SUFFICIENT_MINIMUM,
@@ -411,6 +474,7 @@ def rebuild(
     testset_dir: Path,
     out_dir: Path,
     pool_dir: Path,
+    conversation_dir: Path,
     *,
     reuse_pools: bool,
     accept_drift: Path | None,
@@ -477,6 +541,7 @@ def rebuild(
     manifest["rebuilt_at"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     manifest["subsets"] = written
     manifest["self_built"] = _self_subset_status(out_dir)
+    manifest["conversation_ham"] = _conversation_status(out_dir, conversation_dir)
     manifest["accepted_drift"] = [
         {"id": article_id, "kind": "deleted"} for article_id in accepted["deleted"]
     ] + [{"id": entry["id"], "kind": "edited"} for entry in accepted["edited"]]
@@ -490,7 +555,13 @@ def rebuild(
 
 
 def run_select(
-    testset_dir: Path, out_dir: Path, pool_dir: Path, dev_sample: Path, *, reuse_pools: bool
+    testset_dir: Path,
+    out_dir: Path,
+    pool_dir: Path,
+    dev_sample: Path,
+    conversation_dir: Path,
+    *,
+    reuse_pools: bool,
 ) -> int:
     _require_not_git_ignored(testset_dir / IDS_FILENAME)
     chosen, stats = select(pool_dir, dev_sample, reuse_pools=reuse_pools)
@@ -505,7 +576,9 @@ def run_select(
         )
     written = write_subsets(out_dir, chosen)
     count = write_ids(testset_dir, chosen)
-    manifest = build_manifest(written, stats, dev_sample, out_dir, len(intersection))
+    manifest = build_manifest(
+        written, stats, dev_sample, out_dir, len(intersection), conversation_dir
+    )
     (testset_dir / MANIFEST_FILENAME).write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
@@ -525,6 +598,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR))
     parser.add_argument("--pool-dir", default=str(DEFAULT_POOL_DIR))
     parser.add_argument("--dev-sample", default=str(DEFAULT_DEV_SAMPLE))
+    parser.add_argument("--conversation-dir", default=str(DEFAULT_CONVERSATION_DIR))
     parser.add_argument(
         "--reuse-pools",
         action="store_true",
@@ -542,12 +616,14 @@ def main(argv: list[str] | None = None) -> int:
                 Path(args.out_dir),
                 Path(args.pool_dir),
                 Path(args.dev_sample),
+                Path(args.conversation_dir),
                 reuse_pools=args.reuse_pools,
             )
         return rebuild(
             testset_dir,
             Path(args.out_dir),
             Path(args.pool_dir),
+            Path(args.conversation_dir),
             reuse_pools=args.reuse_pools,
             accept_drift=None if args.accept_drift is None else Path(args.accept_drift),
         )

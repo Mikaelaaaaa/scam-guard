@@ -360,11 +360,13 @@ def test_sigmoid_offset_and_prior_unchanged() -> None:
 
 
 def test_ngram_entries_not_remeasured() -> None:
-    """`ngram_classifier` 與 `ngram_threshold` 由 add-ngram-classifier 量出，本 change 不動。"""
+    """`ngram_classifier` 與 `ngram_threshold` 是 measured，且 `measure-weights` / `calibrate`
+    不重量它們。值由 add-ngram-classifier 首次量出、由 add-conversation-ham 重訓後重算
+    （重訓改變了模型，兩個輸出必須由新的 tune 掃描重新導出）—— 兩者都不是 calibrate 的產物。"""
     table = load_weights()
-    assert table.signals["ngram_classifier"].weight_soft.value == 4.467675
+    assert table.signals["ngram_classifier"].weight_soft.value == 4.351698
     assert table.signals["ngram_classifier"].weight_soft.basis == BASIS_MEASURED
-    assert table.threshold("ngram_threshold") == 0.376648
+    assert table.threshold("ngram_threshold") == 0.241478
 
 
 def test_all_measured_entries_satisfy_log_ratio() -> None:

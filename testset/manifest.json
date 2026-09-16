@@ -119,7 +119,56 @@
     "balanced_sampling": "不做平衡取樣：本系統的兩個主要指標是誤判率與召回率，兩者各自在 ham 與 scam 上計算，都不依賴類別比例，平衡取樣的唯一效果是丟掉樣本。`add-score-compute` 把先驗設為 0 也是同一個理由。"
   },
   "accepted_drift": [],
-  "rebuilt_at": "2026-09-14T18:33:06Z",
+  "rebuilt_at": "2026-09-16T03:17:01Z",
   "drift_share": 0.0,
-  "drift_comparable": true
+  "drift_comparable": true,
+  "conversation_ham": {
+    "collected": true,
+    "count": 800,
+    "target": 800,
+    "splits": {
+      "tune": 434,
+      "holdout": 366
+    },
+    "file_sha256": "6bb0e2e19f9d16a5bfe6c4730bfe805a5089b57eefc4db864b4c8cb4b65f6ccf",
+    "corpus": "Gossiping-Chinese-Corpus",
+    "repo": "zake7749/Gossiping-Chinese-Corpus",
+    "commit": "65b7e3630a560223a2b4d702d78d120d5ff1e8dd",
+    "license": "Apache-2.0（作者 zake7749 以此授權釋出彙整資料集）",
+    "converted_to_traditional": false,
+    "opencc_config": null,
+    "content_gate": {
+      "no_data_marker": "沒有資料",
+      "min_content_chars": 4,
+      "scam_marker_terms": [
+        "監管帳戶",
+        "保證獲利",
+        "穩賺",
+        "包賺",
+        "加賴",
+        "加 line",
+        "私訊領取",
+        "私訊我",
+        "投資群組",
+        "帶你賺",
+        "老師帶單",
+        "內線",
+        "博弈",
+        "點數卡",
+        "解除分期",
+        "解除設定",
+        "monitored"
+      ],
+      "rule_layer": "規則層 hard=True 或 165 黑名單命中者（非 n-gram 分類器）",
+      "dedup": "正規化文字精確去重（sha256 相同者只留一則）"
+    },
+    "corpus_counts": {
+      "raw_answers": 774114,
+      "after_cheap_gate_deduped": 751558,
+      "rule_gate_rejected": 0,
+      "selected": 800,
+      "target": 800
+    },
+    "subset_sha256": "cc1da96ec2ecf92149ec37b13c2036e85d80ce0ea1f4bb714f04b449b2baee58"
+  }
 }

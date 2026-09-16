@@ -9,8 +9,8 @@
     "hits": 0
   },
   "after": {
-    "ngram_score": 0.2340761636307888,
-    "ngram_threshold": 0.376648,
+    "ngram_score": -0.1742092759658317,
+    "ngram_threshold": 0.241478,
     "scam_probability": null,
     "confidence": 0.05,
     "scam_type": null,
@@ -24,13 +24,13 @@
       "cap_unseen_pattern": 0.35,
       "confidence": 0.35,
       "scam_probability": null,
-      "score": 4.467675,
+      "score": 4.351698,
       "decision_score": 1.5
     },
     "classifier_and_typed_llm": {
       "base": 0.70,
       "confidence": 0.70,
-      "score": 5.067675,
+      "score": 4.951698,
       "decision_score": 1.5,
       "is_decision": true
     }

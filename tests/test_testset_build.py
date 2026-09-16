@@ -298,6 +298,7 @@ def test_rebuild_reports_nonzero_exit_and_names_every_drifting_id(tmp_path: Path
             testset_dir,
             tmp_path / "out",
             tmp_path / "pools",
+            tmp_path / "conversation",
             reuse_pools=False,
             accept_drift=None,
         )
@@ -312,6 +313,7 @@ def test_rebuild_reports_nonzero_exit_and_names_every_drifting_id(tmp_path: Path
             testset_dir,
             tmp_path / "out",
             tmp_path / "pools",
+            tmp_path / "conversation",
             reuse_pools=False,
             accept_drift=accepted,
         )
