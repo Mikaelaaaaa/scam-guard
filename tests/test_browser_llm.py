@@ -375,7 +375,11 @@ def test_the_four_states_are_four_different_sentences() -> None:
 
 
 def test_no_state_can_be_read_as_the_model_found_nothing() -> None:
-    """三種失敗、三種沒有跑，與「模型判為無話術」是六段互不相同的文字。"""
+    """三種失敗、兩種沒有跑，與「模型判為無話術」是互不相同的文字。
+
+    短路那一段（`STATUS_SKIPPED`）已移除，短路的呈現改由四源列的「語意：未執行」
+    承接（`add-integration-panel`），所以這裡少了一段。
+    """
     failures = [
         browser_llm.STATUS_STRUCTURE,
         browser_llm.STATUS_SEMANTIC,
@@ -383,13 +387,25 @@ def test_no_state_can_be_read_as_the_model_found_nothing() -> None:
         browser_llm.STATUS_NOT_LOADED,
         browser_llm.STATUS_LOADING,
         browser_llm.STATUS_LOAD_FAILED,
-        browser_llm.STATUS_SKIPPED,
     ]
     assert browser_llm.STATUS_NO_SIGNAL not in failures
-    assert len(set([*failures, browser_llm.STATUS_NO_SIGNAL, browser_llm.STATUS_HIT])) == 9
+    assert len(set([*failures, browser_llm.STATUS_NO_SIGNAL, browser_llm.STATUS_HIT])) == 8
     for text in failures:
         assert "沒有詐騙話術" not in text
         assert "判為" not in text
+
+
+def test_a_short_circuit_shows_no_status_text() -> None:
+    """短路（outcome 為 None）不再顯示說明文字：改由四源列的「語意：未執行」承接。"""
+    assert not hasattr(browser_llm, "STATUS_SKIPPED")
+    two_pass = a_two_pass()
+    first = two_pass.first_pass(Request.from_text(PHISHING))
+    skipped = two_pass.without_model(first.token)
+    assert skipped.outcome is None
+    status = browser_llm.second_pass_status(skipped)
+    assert status == ""
+    assert "昂貴階段依設計短路" not in status
+    assert "沒有用到語意判讀" not in status
 
 
 def test_a_successful_reading_leaves_the_unregistered_list_alone() -> None:

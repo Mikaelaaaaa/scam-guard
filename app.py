@@ -346,9 +346,7 @@ def practice_submit(
 
     baseline, updated_spoken = demo_ui.victim_reply(verdict, spoken)
     updated_replies = [*replies, baseline]
-    card = demo_ui.render_verdict_card(
-        verdict, document, TABLE, UNREGISTERED_CHECKS, PII_RECOGNIZER
-    )
+    card = demo_ui.render_verdict_card(verdict, document, TABLE, UNREGISTERED_CHECKS)
     ranking = demo_ui.render_ranking(verdict.checks, len(updated))
     conversation = render_practice_conversation(updated, updated_replies, document)
     status = demo_ui.POLISH_NOT_INJECTED if POLISHER is None else demo_ui.POLISH_STREAMING
@@ -459,7 +457,7 @@ def inquiry_submit(text: str) -> tuple[str, str]:
     document = build_document(request.messages, LIMITS)
     log_transcript(verdict)
     return (
-        demo_ui.render_verdict_card(verdict, document, TABLE, UNREGISTERED_CHECKS, PII_RECOGNIZER),
+        demo_ui.render_verdict_card(verdict, document, TABLE, UNREGISTERED_CHECKS),
         demo_ui.render_conversation(
             request.messages, (), document, INQUIRY_SENDER, PRACTICE_REPLY, PII_RECOGNIZER
         ),

@@ -33,6 +33,8 @@ from types import MappingProxyType
 from typing import TypeAlias
 
 from scam_guard import pii
+from scam_guard.llm.validate import SCAM_SIGNAL, SUSPICIOUS_SIGNAL
+from scam_guard.ngram import NGRAM_SIGNAL
 from scam_guard.normalize import Document
 from scam_guard.pipeline import NOT_HIT, SKIPPED
 from scam_guard.render import QUOTE_SEPARATOR
@@ -135,18 +137,7 @@ QUIET_SUMMARY = "其餘 {count} 項沒有命中（{breakdown}）"
 TRUNCATION_LINE = "訊息太長，最舊的 {dropped} 則沒有納入這次判定。"
 DROPPED_LABEL = "未納入本次判定"
 
-PII_HEADING = "訊息裡的個人資料"
 PII_NOT_MOUNTED = "這個版本沒有開啟個人資料標註。"
-PII_NO_HIT = "沒有在訊息裡找到個人資料。"
-PII_SCOPE_NOTE = (
-    "能認出來的只有身分證字號、手機號碼、市話與信用卡號四種。"
-    "<b>姓名與地址不在辨識範圍內</b>，要認出這兩種得換一套誤判率很高的模型，"
-    "本服務預設關閉它。"
-)
-PII_NORMALIZED_NOTE = (
-    "上面顯示的是系統整理過的句子（統一全形半形、去掉隱藏字元），不是原文。"
-    "標示只指出位置與類型，不改寫任何文字。"
-)
 
 PII_LABELS: Mapping[str, str] = MappingProxyType(
     {
@@ -260,6 +251,152 @@ def check_state(result: CheckResult) -> str:
         f"無法分類的檢查記錄：name={result.name!r}、hit=False、detail={result.detail!r}"
         f"（未命中的 detail 只能是 pipeline.NOT_HIT 或 pipeline.SKIPPED）"
     )
+
+
+# ---------------------------------------------------------------------------
+# 四個偵測源 —— `verdict.checks` 的重新分組，不改任何判定邏輯
+# ---------------------------------------------------------------------------
+
+URL_PREFIX = "url_"
+"""網址層所有檢查的共同前綴（`url_blocklist`、`url_shortener`、`url_tld_risk`…）。
+
+判別走前綴而非一張名單：URL 層日後新增檢查時自動落進網址源，面板不必改。
+"""
+
+SEMANTIC_SIGNALS = frozenset({SCAM_SIGNAL, SUSPICIOUS_SIGNAL})
+"""語意源的兩個成員名。取自核心常數而非字面值 —— 常數改名時這裡是 import 失敗，
+不是面板上安靜地把語意層歸錯源。"""
+
+SOURCE_URL = "網址"
+SOURCE_RULE = "規則"
+SOURCE_CLASSIFIER = "分類器"
+SOURCE_SEMANTIC = "語意"
+
+STATE_HIT = "命中"
+STATE_CLEAR = "未命中"
+STATE_SKIP = "未執行"
+
+STATE_CLASS: Mapping[str, str] = MappingProxyType(
+    {STATE_HIT: "hit", STATE_CLEAR: "clear", STATE_SKIP: "skip"}
+)
+"""三態對應的 CSS class 後綴。三態的區分不只靠顏色 —— 狀態字本身就是文字。"""
+
+
+@dataclass(frozen=True)
+class Source:
+    """一個偵測源的宣告：顯示名，以及命中時是否附相異檢查數。
+
+    `counts` 只對可能有多個成員的源（網址、規則）為真：分類器與語意各只有一個
+    成員名，`命中 N 項` 的 N 恆為 1，是廢話，不顯示。
+    """
+
+    label: str
+    counts: bool
+
+
+SOURCES: tuple[Source, ...] = (
+    Source(SOURCE_URL, True),
+    Source(SOURCE_RULE, True),
+    Source(SOURCE_CLASSIFIER, False),
+    Source(SOURCE_SEMANTIC, False),
+)
+"""四個源的固定顯示順序：網址 → 規則 → 分類器 → 語意。
+
+順序是宣告的不是算的，渲染照序取，不需要排序鍵。
+"""
+
+
+def source_of(name: str) -> str:
+    """把一筆 `CheckResult.name` 判到恰好一個源。「規則」是殘量。
+
+    判別走穩定識別字（`url_` 前綴、分類器訊號名、語意訊號名），不是一張規則名單：
+    言語行為規則每落地一條就多一個 `name`，殘量分類讓新規則自動落進規則源。
+    """
+    if name.startswith(URL_PREFIX):
+        return SOURCE_URL
+    if name == NGRAM_SIGNAL:
+        return SOURCE_CLASSIFIER
+    if name in SEMANTIC_SIGNALS:
+        return SOURCE_SEMANTIC
+    return SOURCE_RULE
+
+
+@dataclass(frozen=True)
+class SourceStatus:
+    """一個源在畫面上的一格：顯示名、三態狀態、命中的相異檢查數、是否顯示計數。"""
+
+    label: str
+    state: str
+    count: int
+    counts: bool
+
+
+def source_statuses(
+    checks: Sequence[CheckResult], unregistered: Sequence[UnregisteredCheck]
+) -> list[SourceStatus]:
+    """把 `checks` 與 `unregistered` 重新分組成四個源的狀態。
+
+    三態聚合（優先序）：任一成員命中（`Conclusive`/`Indicative`）為命中；否則任一
+    成員跑過未命中（`Clear`）為未命中；否則未執行（`Skipped`、或只在 `unregistered`
+    而不在 `checks`、或該源根本沒有成員）。短路與未掛載都落在未執行，不顯示為未命中。
+
+    語意源的未執行要判對，同時看 `checks` 與 `unregistered`：`unregistered` 的成員
+    一律計為未執行（它們沒有跑），不改變已由 `checks` 決定的命中或未命中。
+
+    計數用相異 `hit=True` 的 `name` 數（`hit_ranking()` 那條長條數的是命中句子數，
+    兩者不同，混用會讓同一個數字在兩處指不同的東西）。
+    """
+    terms: dict[str, list[str]] = {source.label: [] for source in SOURCES}
+    hit_names: dict[str, set[str]] = {source.label: set() for source in SOURCES}
+    for result in checks:
+        label = source_of(result.name)
+        terms[label].append(check_state(result))
+        if result.hit:
+            hit_names[label].add(result.name)
+    for name, _label, _reason in unregistered:
+        terms[source_of(name)].append(TERM_SKIPPED)
+
+    statuses: list[SourceStatus] = []
+    for source in SOURCES:
+        member_terms = terms[source.label]
+        if any(term in (TERM_CONCLUSIVE, TERM_INDICATIVE) for term in member_terms):
+            state = STATE_HIT
+        elif TERM_CLEAR in member_terms:
+            state = STATE_CLEAR
+        else:
+            state = STATE_SKIP
+        statuses.append(
+            SourceStatus(
+                label=source.label,
+                state=state,
+                count=len(hit_names[source.label]),
+                counts=source.counts,
+            )
+        )
+    return statuses
+
+
+def render_source_grid(
+    checks: Sequence[CheckResult], unregistered: Sequence[UnregisteredCheck]
+) -> str:
+    """四源狀態列：四格平鋪，每格顯示源名與三態；網址與規則命中時附「命中 N 項」。
+
+    狀態字本身（未執行 / 未命中 / 命中）就是文字，顏色是冗餘強化不是唯一載體 ——
+    深淺兩色下都讀得出，色盲也讀得出。
+    """
+    cells: list[str] = []
+    for status in source_statuses(checks, unregistered):
+        count = (
+            f'<span class="source-count">命中 {status.count} 項</span>'
+            if status.state == STATE_HIT and status.counts
+            else ""
+        )
+        cells.append(
+            f'<div class="source source-{STATE_CLASS[status.state]}">'
+            f'<span class="source-name">{status.label}</span>'
+            f'<span class="source-state">{status.state}</span>{count}</div>'
+        )
+    return f'<div class="source-grid">{"".join(cells)}</div>'
 
 
 def confidence_band(confidence: float, table: WeightTable) -> str | None:
@@ -441,7 +578,6 @@ def render_verdict_card(
     doc: Document,
     table: WeightTable,
     unregistered: Sequence[UnregisteredCheck],
-    recognizer: PiiRecognizer | None = None,
 ) -> str:
     """判定卡 —— 判定結果在畫面上的**唯一**出處。
 
@@ -450,8 +586,8 @@ def render_verdict_card(
     """
     return (
         '<div class="demo-result">'
-        f"{render_analysis_panel(verdict, table)}"
-        f"{render_detection_details(verdict, doc, unregistered, recognizer)}"
+        f"{render_analysis_panel(verdict, table, unregistered)}"
+        f"{render_detection_details(verdict, doc, unregistered)}"
         "</div>"
     )
 
@@ -470,8 +606,15 @@ def split_result(rendered: str) -> tuple[str, str]:
     return f"{panel}</section>", f'<section class="detection-detail">{details}</section>'
 
 
-def render_analysis_panel(verdict: Verdict, table: WeightTable) -> str:
-    """全寬判定摘要：三態、唯一一份機率、信心、類型與圖形刻度。"""
+def render_analysis_panel(
+    verdict: Verdict, table: WeightTable, unregistered: Sequence[UnregisteredCheck]
+) -> str:
+    """全寬判定摘要：三態、四源狀態列、唯一一份機率、信心、類型與圖形刻度。
+
+    四源列插在 `card-head`（三態標題 + 機率 + 信心 + 類型）之後、刻度尺之前 ——
+    上方那個三態標題就是「綜合判定」，四源列不另印第二份，否則機率/類型/信心會
+    多出一次，`redo-demo-layout` 的「各恰好一次」性質會紅。
+    """
     state = verdict_state(verdict, table)
     score = None if verdict.scam_probability is None else compute_score(verdict.checks, table)
     scale = "" if score is None else render_score_scale(score)
@@ -479,6 +622,7 @@ def render_analysis_panel(verdict: Verdict, table: WeightTable) -> str:
         '<section class="analysis-panel card">'
         f'<div class="card-head"><div class="card-title">{escaped(state)}</div>'
         f"{_facts(verdict, state, table)}</div>"
+        f"{render_source_grid(verdict.checks, unregistered)}"
         f"{scale}"
         f"{_lead(verdict, state)}"
         "</section>"
@@ -489,9 +633,13 @@ def render_detection_details(
     verdict: Verdict,
     doc: Document,
     unregistered: Sequence[UnregisteredCheck],
-    recognizer: PiiRecognizer | None = None,
 ) -> str:
-    """右欄內容；判定摘要的機率、信心與類型不在這裡重複。"""
+    """右欄內容；判定摘要的機率、信心與類型不在這裡重複。
+
+    不再重複個資：訊息氣泡上已有 inline 的字元標註（`render_message` 那條路徑），
+    右欄再標一次同一批個資是同一事實出現兩次。順序因此是「命中的檢查 → 為什麼 →
+    完整檢查」。
+    """
     hits = [result for result in verdict.checks if result.hit]
     hit_rows = []
     for result in hits:
@@ -505,8 +653,6 @@ def render_detection_details(
         '<section class="detection-detail">'
         "<h3>命中的檢查</h3>"
         f'<div class="hit-checks">{hit_markup}</div>'
-        "<h3>PII 標註</h3>"
-        f"{render_pii_block(doc, recognizer)}"
         f"{render_why(verdict)}"
         f"{render_details(verdict, doc, unregistered)}"
         f"{render_actions(verdict)}"
@@ -939,63 +1085,17 @@ def render_raw_sentence(doc: Document, coord: Coord, recognizer: PiiRecognizer |
     return render_pii_highlight(raw, spans)
 
 
-def pii_conversation_note(doc: Document, recognizer: PiiRecognizer | None) -> str:
-    """對話區塊末尾的個資說明。**與標註同層，不收合。**
+def pii_conversation_note(recognizer: PiiRecognizer | None) -> str:
+    """對話區塊末尾的個資說明。
 
-    標註一旦出現在氣泡上，使用者的推論路徑會是「系統會標個資 → 它沒標 →
-    這則沒個資」，而那個推論是錯的：姓名、地址、銀行帳號、護照號碼全部不在四條
-    樣式裡。揭露因此必須看得見，不能留在 `render_pii_block()` 那個預設收合的
-    `<details>` 裡。
-
-    「沒有開啟」與「沒有找到」是兩個狀態，兩段文字不同且不同時出現：前者是
-    「沒有人在看」，後者是「看過了，沒有」。
+    辨識器未掛載時說明本版本沒有開啟個資標註（「沒有人在看」與「看過了沒有」是
+    兩件事，前者仍需說明）。已掛載時不輸出任何說明：個資偵測結果由氣泡上的 inline
+    標註（`render_pii_highlight`）承接，辨識範圍不再於畫面文字說明，無命中時也不輸出
+    「沒有找到個資」——「沒標」與「沒有」的差別由標註本身呈現。
     """
     if recognizer is None:
         return f'<div class="note">{PII_NOT_MOUNTED}</div>'
-    found = any(recognizer(sentence) for sentence in doc.sentences)
-    no_hit = "" if found else PII_NO_HIT
-    return f'<div class="note">{no_hit}{PII_SCOPE_NOTE}</div>'
-
-
-def render_pii_block(doc: Document, recognizer: PiiRecognizer | None) -> str:
-    """偵測細節裡的個資區塊。這裡的標示標在**正規化句子**上。
-
-    **與氣泡上的標註不重複，兩者標的是不同的東西**：氣泡標原文（使用者寫的
-    那個樣子），這裡標正規化後的句子（系統實際拿去比對的那個樣子），
-    `PII_NORMALIZED_NOTE` 講的就是這個差別。一則以全形數字書寫的身分證，
-    氣泡上標的是全形、這裡標的是半形。
-
-    「沒有開啟」與「沒有找到」是兩個狀態，文字必須不同：前者是「沒有人在看」，
-    後者是「看過了，沒有」。在一個以展示偵測能力為目的的畫面上混淆這兩者，
-    剛好是最糟的謊。
-
-    本路徑**不 import 也不呼叫任何遮蔽程式碼**：標示指出位置與類型、文字不變、
-    呈現給使用者；遮蔽改寫文字、只有 log 能讀。兩條不同的路徑。
-    """
-    scope = f'<div class="note">{PII_SCOPE_NOTE}</div>'
-    if recognizer is None:
-        return (
-            f'<div class="pii"><h4>{PII_HEADING}</h4>'
-            f'<div class="note">{PII_NOT_MOUNTED}</div>{scope}</div>'
-        )
-    rows: list[str] = []
-    for coord, sentence in zip(doc.coords, doc.sentences):
-        spans = recognizer(sentence)
-        if not spans:
-            continue
-        rows.append(
-            f'<div class="pii-row"><span class="coord">({coord[0]},{coord[1]})</span>'
-            f"{render_pii_highlight(sentence, spans)}</div>"
-        )
-    if not rows:
-        return (
-            f'<div class="pii"><h4>{PII_HEADING}</h4>'
-            f'<div class="note">{PII_NO_HIT}</div>{scope}</div>'
-        )
-    return (
-        f'<div class="pii"><h4>{PII_HEADING}</h4>{"".join(rows)}'
-        f'<div class="note">{PII_NORMALIZED_NOTE}</div>{scope}</div>'
-    )
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -1060,7 +1160,7 @@ def render_conversation(
     用自繪的 HTML 而非 `gr.Chatbot`：後者的單位是一則訊息，而這裡需要的最小
     單位是**句子**（證據座標的粒度就是句子），還要在句子裡標出個資的位置。
 
-    末尾的那一行是辨識範圍的揭露，**不收合** —— 見 `pii_conversation_note()`。
+    末尾只在辨識器未掛載時附一行說明 —— 見 `pii_conversation_note()`。
     """
     blocks: list[str] = []
     for message_index, message in enumerate(messages):
@@ -1079,9 +1179,7 @@ def render_conversation(
                 f'<div class="who">{escaped(reply_label)}</div>'
                 f'<div class="lines">{escaped(replies[message_index])}</div></div></div>'
             )
-    return (
-        f'<div class="conversation">{"".join(blocks)}{pii_conversation_note(doc, recognizer)}</div>'
-    )
+    return f'<div class="conversation">{"".join(blocks)}{pii_conversation_note(recognizer)}</div>'
 
 
 # ---------------------------------------------------------------------------
@@ -1159,6 +1257,25 @@ CSS = """
 .todo li { font-size: .95rem; line-height: 1.7; padding-left: .9rem; position: relative; }
 .todo li::before { content: "→"; position: absolute; left: 0;
   color: var(--color-accent); }
+
+/* 四源狀態列 —— card-head 之後、刻度尺之前。四個偵測源各一格。
+   三態靠狀態字（未執行 / 未命中 / 命中）區分，顏色與淡化是冗餘強化不是唯一載體，
+   顏色一律取自主題變數，深淺兩色下皆可見。 */
+.source-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: .5rem; margin-top: .9rem; }
+.source { border: 1px solid var(--border-color-primary); border-radius: 8px;
+  padding: .45rem .55rem; display: flex; flex-direction: column; gap: .15rem;
+  background: var(--block-background-fill); }
+.source-name { font-size: .78rem; color: var(--body-text-color-subdued); }
+.source-state { font-size: .95rem; font-weight: 700; color: var(--body-text-color); }
+.source-count { font-size: .72rem; color: var(--body-text-color-subdued); }
+.source-hit { border-left: 3px solid var(--color-accent);
+  background: var(--color-accent-soft); }
+.source-clear { border-left: 3px solid var(--border-color-primary); }
+.source-skip { border-left: 3px solid var(--border-color-primary); opacity: .6; }
+@media (max-width: 40rem) {
+  .source-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 
 /* 分數刻度尺 —— 門檻標在它真正的位置上，軸的右界超過門檻，
    所以它讀起來是「分數在門檻左邊」而不是「進度條快滿了」。 */
@@ -1248,10 +1365,7 @@ a.quote { font-size: .8rem; line-height: 1.6; color: var(--color-accent);
 .sentence:target { background: var(--color-accent-soft);
   outline: 2px solid var(--color-accent); }
 
-/* 個人資料標示 */
-.pii { margin-top: .7rem; padding-top: .6rem;
-  border-top: 1px solid var(--border-color-primary); }
-.pii h4 { font-size: .8rem; }
+/* 個人資料標示（氣泡上的 inline 標註） */
 .pii-mark { background: var(--color-accent-soft); color: var(--body-text-color);
   border-bottom: 2px solid var(--color-accent); border-radius: 3px;
   padding: 0 2px; }
@@ -1265,9 +1379,6 @@ a.quote { font-size: .8rem; line-height: 1.6; color: var(--color-accent);
    正是上面那條規則反對的事。 */
 .pii-mark:hover { border-bottom-width: 3px; }
 .pii-mark:hover .pii-kind { color: var(--body-text-color); }
-.pii-row { font-family: ui-monospace, monospace; font-size: .8rem; margin: .25rem 0;
-  color: var(--body-text-color); word-break: break-all; }
-.coord { color: var(--body-text-color-subdued); margin-right: .4rem; }
 
 /* 範例標籤與頁尾 */
 .chips { display: flex; flex-wrap: wrap; gap: .4rem; }

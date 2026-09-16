@@ -8,6 +8,7 @@
 
 import ast
 import html
+import inspect
 import re
 import subprocess
 import sys
@@ -18,8 +19,9 @@ import pytest
 import demo_ui
 from scam_guard import pii
 from scam_guard.check import CheckRegistry, Stage
+from scam_guard.llm.validate import SCAM_SIGNAL, SUSPICIOUS_SIGNAL
 from scam_guard.normalize import DEFAULT_LIMITS, Document, Limits, build_document
-from scam_guard.ngram import NGRAM_DETAIL
+from scam_guard.ngram import NGRAM_DETAIL, NGRAM_SIGNAL
 from scam_guard.pipeline import NOT_HIT, SKIPPED, detect
 from scam_guard.redact import RedactedText
 from scam_guard.render import CONTRADICTION_NOTE, TRUNCATION_NOTE
@@ -451,7 +453,7 @@ def test_raw_quotes_do_not_appear_in_the_why_block() -> None:
 
 def test_analysis_panel_and_detail_column_do_not_repeat_verdict_facts() -> None:
     verdict, document = verdict_for(DECIDED_TEXT)
-    panel = demo_ui.render_analysis_panel(verdict, TABLE)
+    panel = demo_ui.render_analysis_panel(verdict, TABLE, UNREGISTERED)
     details = demo_ui.render_detection_details(verdict, document, UNREGISTERED)
     probability = f"{verdict.scam_probability:.0%}"
     band = demo_ui.confidence_band(verdict.confidence, TABLE)
@@ -480,12 +482,155 @@ def test_detail_column_uses_the_required_product_order() -> None:
     details = demo_ui.render_detection_details(verdict, document, UNREGISTERED)
     positions = [
         details.index("命中的檢查"),
-        details.index("PII 標註"),
         details.index(demo_ui.WHY_HEADING),
         details.index("完整檢查（"),
     ]
     assert positions == sorted(positions)
     assert '<details class="details">' in details
+    assert "PII 標註" not in details
+
+
+# ---------------------------------------------------------------------------
+# 4b. 四源狀態列
+# ---------------------------------------------------------------------------
+
+
+def _clear(name: str) -> CheckResult:
+    return CheckResult(name=name, hit=False, detail=NOT_HIT)
+
+
+def _skipped(name: str) -> CheckResult:
+    return CheckResult(name=name, hit=False, detail=SKIPPED)
+
+
+def _hit(name: str) -> CheckResult:
+    return CheckResult(name=name, hit=True, detail="命中了某個東西")
+
+
+def status_map(checks, unregistered=()):
+    return {status.label: status for status in demo_ui.source_statuses(checks, unregistered)}
+
+
+def test_source_of_maps_names_by_stable_identifiers() -> None:
+    assert demo_ui.source_of("url_blocklist") == demo_ui.SOURCE_URL
+    assert demo_ui.source_of("url_brand") == demo_ui.SOURCE_URL
+    assert demo_ui.source_of(NGRAM_SIGNAL) == demo_ui.SOURCE_CLASSIFIER
+    assert demo_ui.source_of(SCAM_SIGNAL) == demo_ui.SOURCE_SEMANTIC
+    assert demo_ui.source_of(SUSPICIOUS_SIGNAL) == demo_ui.SOURCE_SEMANTIC
+    assert demo_ui.source_of("solicit_otp") == demo_ui.SOURCE_RULE
+    assert demo_ui.source_of("evasion") == demo_ui.SOURCE_RULE
+
+
+def test_every_registered_check_name_lands_in_a_source() -> None:
+    """走訪 `build_registry()` 的每個 name：全部分到四源之一，沒有落在四源之外。
+
+    這個註冊表只含言語行為規則、規避、引用 —— 全部是殘量，落規則源。新增一條名稱
+    以 `url_` 起始、或撞到分類器/語意訊號名的檢查時這條會紅，而不是面板上安靜地
+    把它歸錯源。
+    """
+    names = [check.name for check in REGISTRY.enabled()]
+    assert names
+    for name in names:
+        assert demo_ui.source_of(name) == demo_ui.SOURCE_RULE
+
+
+def test_three_states_aggregate_from_member_states() -> None:
+    statuses = status_map([_hit("url_blocklist"), _clear("evasion"), _skipped(SCAM_SIGNAL)])
+    assert statuses[demo_ui.SOURCE_URL].state == demo_ui.STATE_HIT
+    assert statuses[demo_ui.SOURCE_RULE].state == demo_ui.STATE_CLEAR
+    assert statuses[demo_ui.SOURCE_SEMANTIC].state == demo_ui.STATE_SKIP
+    assert statuses[demo_ui.SOURCE_CLASSIFIER].state == demo_ui.STATE_SKIP
+
+
+def test_short_circuited_member_is_not_reported_as_not_hit() -> None:
+    """短路（`detail == SKIPPED`）落未執行，不落未命中 —— 這是本 change 最實質的一條。"""
+    semantic = status_map([_skipped(SCAM_SIGNAL)])[demo_ui.SOURCE_SEMANTIC]
+    assert semantic.state == demo_ui.STATE_SKIP
+    assert semantic.state != demo_ui.STATE_CLEAR
+
+
+def test_any_member_hit_makes_the_source_a_hit() -> None:
+    """網址源中 `url_blocklist` 命中而其餘未命中 → 網址格命中。"""
+    statuses = status_map([_hit("url_blocklist"), _clear("url_brand")])
+    assert statuses[demo_ui.SOURCE_URL].state == demo_ui.STATE_HIT
+
+
+def test_semantic_unmounted_from_unregistered_shows_not_run() -> None:
+    unregistered = ((SCAM_SIGNAL, "語意判讀", "模型沒有載入，這一層在這次判定裡不存在"),)
+    statuses = status_map([_clear("evasion")], unregistered)
+    assert statuses[demo_ui.SOURCE_SEMANTIC].state == demo_ui.STATE_SKIP
+
+
+def test_semantic_ran_and_clear_shows_not_hit() -> None:
+    """模型跑完判無訊號（`Clear`）→ 未命中，與未執行是兩件事。"""
+    statuses = status_map([_clear(SCAM_SIGNAL)])
+    assert statuses[demo_ui.SOURCE_SEMANTIC].state == demo_ui.STATE_CLEAR
+
+
+def test_multi_check_source_appends_distinct_hit_count() -> None:
+    checks = [_hit("url_blocklist"), _hit("url_brand"), _hit(NGRAM_SIGNAL), _hit(SCAM_SIGNAL)]
+    statuses = status_map(checks)
+    assert statuses[demo_ui.SOURCE_URL].count == 2
+    assert statuses[demo_ui.SOURCE_URL].counts is True
+    assert statuses[demo_ui.SOURCE_CLASSIFIER].counts is False
+    assert statuses[demo_ui.SOURCE_SEMANTIC].counts is False
+
+    grid = demo_ui.render_source_grid(checks, ())
+    assert "命中 2 項" in grid
+    assert "命中 1 項" not in grid
+
+
+def test_hit_count_is_distinct_names_not_sentences() -> None:
+    checks = [
+        CheckResult(name="solicit_otp", hit=True, detail="a", evidence=[(0, 0), (0, 1)]),
+        CheckResult(name="solicit_otp", hit=True, detail="a", evidence=[(0, 2)]),
+        CheckResult(name="urgency", hit=True, detail="b"),
+    ]
+    assert status_map(checks)[demo_ui.SOURCE_RULE].count == 2
+
+
+def test_source_grid_does_not_reprint_the_verdict_title() -> None:
+    """四源列上方的三態標題就是「綜合判定」，四源列不另印第二份。"""
+    verdict, _ = verdict_for(DECIDED_TEXT)
+    panel = demo_ui.render_analysis_panel(verdict, TABLE, UNREGISTERED)
+    title = demo_ui.verdict_state(verdict, TABLE)
+    assert panel.count(title) == 1
+    assert 'class="source-grid"' in panel
+    for label in (
+        demo_ui.SOURCE_URL,
+        demo_ui.SOURCE_RULE,
+        demo_ui.SOURCE_CLASSIFIER,
+        demo_ui.SOURCE_SEMANTIC,
+    ):
+        assert f">{label}</span>" in panel
+
+
+def test_local_verdict_shows_semantic_and_classifier_not_run() -> None:
+    """本機註冊表沒有語意層與分類器 → 兩格未執行；規則命中 → 規則格命中。"""
+    verdict, _ = verdict_for(DECIDED_TEXT)
+    statuses = status_map(verdict.checks, UNREGISTERED)
+    assert statuses[demo_ui.SOURCE_SEMANTIC].state == demo_ui.STATE_SKIP
+    assert statuses[demo_ui.SOURCE_CLASSIFIER].state == demo_ui.STATE_SKIP
+    assert statuses[demo_ui.SOURCE_RULE].state == demo_ui.STATE_HIT
+
+
+def test_verdict_card_signatures_drop_the_recognizer_parameter() -> None:
+    for fn in (demo_ui.render_verdict_card, demo_ui.render_detection_details):
+        assert "recognizer" not in inspect.signature(fn).parameters
+    assert not hasattr(demo_ui, "render_pii_block")
+    assert "PII 標註" not in card_for(DECIDED_TEXT)
+
+
+def test_no_scope_note_text_reaches_any_output() -> None:
+    assert not hasattr(demo_ui, "PII_SCOPE_NOTE")
+    message = Message(text="身分證 A123456789。")
+    document = build_document([message], LIMITS)
+    conversation = demo_ui.render_conversation(
+        [message], (), document, "你", "對方", recognizer_tw_id
+    )
+    for stray in ("姓名與地址不在辨識範圍內", "能認出來的只有"):
+        assert stray not in conversation
+        assert stray not in card_for(DECIDED_TEXT)
 
 
 # ---------------------------------------------------------------------------
@@ -1008,11 +1153,7 @@ def test_no_measurement_numbers_reach_the_screen() -> None:
     """量測數據屬開發者文件。對一個收到可疑訊息的人，嚴格 precision 是雜訊。"""
     copy = "".join(
         [
-            demo_ui.PII_HEADING,
             demo_ui.PII_NOT_MOUNTED,
-            demo_ui.PII_NO_HIT,
-            demo_ui.PII_SCOPE_NOTE,
-            demo_ui.PII_NORMALIZED_NOTE,
             *demo_ui.PII_LABELS.values(),
         ]
     )
@@ -1056,8 +1197,7 @@ def test_pii_annotation_maps_coordinates_instead_of_searching_the_raw_text() -> 
     """全形書寫：辨識器看到 `A123456789`，原文裡是 `Ａ１２３４５６７８９`。
 
     `raw.find()` 在這一則上回傳 `-1`，而氣泡上仍然要標到那段全形文字 ——
-    換算走 `Document.raw_bounds_at()`。偵測細節裡標的則是半形的正規化文字，
-    兩處標的是兩個不同的東西。
+    換算走 `Document.raw_bounds_at()`。
     """
     text = "請回傳身分證 Ａ１２３４５６７８９ 謝謝。"
     message = Message(text=text)
@@ -1070,10 +1210,6 @@ def test_pii_annotation_maps_coordinates_instead_of_searching_the_raw_text() -> 
     assert re.findall(r'<mark class="pii-mark"[^>]*>(.*?)<span', conversation) == [
         "Ａ１２３４５６７８９"
     ]
-
-    block = demo_ui.render_pii_block(document, recognizer_tw_id)
-    assert re.findall(r'<mark class="pii-mark"[^>]*>(.*?)<span', block) == ["A123456789"]
-    assert demo_ui.PII_NORMALIZED_NOTE in block
 
 
 def test_pii_annotation_survives_zero_width_characters() -> None:
@@ -1206,60 +1342,25 @@ def test_pii_paths_neither_swallow_exceptions_nor_search_the_raw_text() -> None:
             )
 
 
-def test_pii_not_mounted_is_not_the_same_as_no_pii() -> None:
-    """承接既有的同名測試：兩個狀態仍然可分辨，且在**兩處**都可分辨。"""
+def test_pii_not_mounted_is_still_disclosed_but_no_hit_is_silent() -> None:
+    """辨識器未掛載仍需說明（「沒有人在看」）；已掛載時不再輸出任何個資說明。
+
+    「沒有找到個資」與辨識範圍說明整段移除（`demo-copy-trim`）：個資的偵測結果只由
+    氣泡上的 inline 標註承接，「沒標」與「沒有」的差別由標註本身呈現。
+    """
     message = Message(text="測試訊息。")
     document = build_document([message], LIMITS)
 
-    not_mounted = demo_ui.render_pii_block(document, None)
-    mounted = demo_ui.render_pii_block(document, recognizer_none)
-    assert demo_ui.PII_NOT_MOUNTED in not_mounted
-    assert demo_ui.PII_NO_HIT not in not_mounted
-    assert demo_ui.PII_NO_HIT in mounted
-    assert demo_ui.PII_NOT_MOUNTED not in mounted
+    expected_unmounted = f'<div class="note">{demo_ui.PII_NOT_MOUNTED}</div>'
+    assert demo_ui.pii_conversation_note(None) == expected_unmounted
+    assert demo_ui.pii_conversation_note(recognizer_none) == ""
 
     unmounted_echo = demo_ui.render_conversation([message], (), document, "你", "對方")
     mounted_echo = demo_ui.render_conversation(
         [message], (), document, "你", "對方", recognizer_none
     )
     assert demo_ui.PII_NOT_MOUNTED in unmounted_echo
-    assert demo_ui.PII_NO_HIT not in unmounted_echo
-    assert demo_ui.PII_NO_HIT in mounted_echo
     assert demo_ui.PII_NOT_MOUNTED not in mounted_echo
-    assert demo_ui.PII_NOT_MOUNTED != demo_ui.PII_NO_HIT
-
-
-def test_pii_block_discloses_its_scope() -> None:
-    document = build_document([Message(text="測試訊息。")], LIMITS)
-    block = demo_ui.render_pii_block(document, None)
-    for label in ("身分證", "手機", "市話", "信用卡"):
-        assert label in block
-    assert "姓名與地址不在辨識範圍內" in block
-
-
-def test_conversation_discloses_the_scope_outside_any_collapsed_block() -> None:
-    """「它會標 → 它沒標 → 這則沒個資」是錯的推論，而它一定會發生。
-
-    揭露因此與標註同層，不留在 `render_pii_block()` 那個預設收合的 `<details>` 裡。
-    """
-    text = "身分證 A123456789。"
-    message = Message(text=text)
-    document = build_document([message], LIMITS)
-    conversation = demo_ui.render_conversation(
-        [message], (), document, "你", "對方", recognizer_tw_id
-    )
-    assert demo_ui.PII_SCOPE_NOTE in conversation
-    for label in ("身分證", "手機", "市話", "信用卡"):
-        assert label in conversation
-    assert "姓名與地址不在辨識範圍內" in conversation
-    assert "<details" not in conversation
-
-
-def test_no_enable_control_for_names_or_addresses() -> None:
-    """姓名與地址以事實陳述表達，不是「暫時未開啟」，畫面上也沒有開關。"""
-    assert "姓名與地址不在辨識範圍內" in demo_ui.PII_SCOPE_NOTE
-    for attempt in ("<input", "<button", "<select", "checkbox"):
-        assert attempt not in demo_ui.PII_SCOPE_NOTE
 
 
 # ---------------------------------------------------------------------------

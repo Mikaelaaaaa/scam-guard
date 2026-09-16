@@ -162,7 +162,6 @@ STATUS_SEMANTIC = (
     "這次的語意判讀沒有通過語意驗證（例如指到一句不存在的句子），整筆作廢，判定維持規則層的結果。"
 )
 STATUS_TIMEOUT = "這次的語意判讀在期限內沒有寫完，已中止，判定維持規則層的結果。"
-STATUS_SKIPPED = "規則層已經有硬證據，昂貴階段依設計短路，這次沒有用到語意判讀。"
 STATUS_NO_SIGNAL = "語意判讀完成：模型讀完整段訊息，判為沒有詐騙話術，因此沒有新增任何訊號。"
 STATUS_HIT = "語意判讀完成：模型判出話術，判定卡上多了一項語意訊號。"
 """畫面上關於模型層的文字，一個狀態一段。
@@ -464,9 +463,13 @@ def first_pass_status(state: LlmState) -> str:
 
 
 def second_pass_status(result: SecondPass) -> str:
-    """第二趟之後關於模型層的一段文字。"""
+    """第二趟之後關於模型層的一段文字。
+
+    被短路（outcome 為 `None`）時回空字串：短路的呈現由四源列的「語意：未執行」
+    承接，不再另以一段文字解釋為何沒用到語意層。其餘狀態的文字照舊。
+    """
     if result.outcome is None:
-        return STATUS_SKIPPED
+        return ""
     if result.outcome is LlmOutcome.OK:
         return STATUS_HIT if _llm_hit(result.verdict) else STATUS_NO_SIGNAL
     return _OUTCOME_STATUS[result.outcome]
@@ -547,7 +550,7 @@ class InquiryMode:
         unregistered: Sequence[demo_ui.UnregisteredCheck],
     ) -> str:
         return demo_ui.render_verdict_card(
-            verdict, document, self._presentation.table, unregistered, self._presentation.recognizer
+            verdict, document, self._presentation.table, unregistered
         )
 
     def _echo(self, messages: Sequence[Message], document: Document) -> str:
@@ -725,7 +728,7 @@ class PracticeMode:
         unregistered: Sequence[demo_ui.UnregisteredCheck],
     ) -> str:
         return demo_ui.render_verdict_card(
-            verdict, document, self._presentation.table, unregistered, self._presentation.recognizer
+            verdict, document, self._presentation.table, unregistered
         )
 
     def _conversation(self, document: Document) -> str:
