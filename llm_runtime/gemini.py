@@ -34,8 +34,9 @@ _TRANSIENT_STATUS = frozenset({429, 500, 502, 503, 504})
 """可重試的 HTTP 狀態：額度（429）與伺服器忙碌（5xx）。其餘（400/401/404）是設定錯誤，
 不重試、直接 raise。"""
 
-DEFAULT_MODEL = "gemini-3.6-flash"
-"""預設模型。`gemini-2.5-flash` 已對新用戶關閉，改用 3.6。可由 `GEMINI_MODEL` 覆寫。"""
+DEFAULT_MODEL = "gemini-3.5-flash-lite"
+"""預設模型。免費層的每日請求數（RPD）差很多：`gemini-3.6-flash` 只有 20/日，
+`gemini-3.5-flash-lite` 有 500/日 —— demo 用 lite 才夠。可由 `GEMINI_MODEL` 覆寫。"""
 
 ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 """`generateContent` 端點。API key 以 query string `?key=` 帶（Gemini 的 API key 認證方式，
