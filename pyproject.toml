@@ -54,6 +54,13 @@ line = [
     "uvicorn>=0.30",
 ]
 
+# 單一伺服器 web demo（clients/web/）：FastAPI 服務前端 HTML + 判定，與 api 同一套。
+web = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "python-multipart>=0.0.9",
+]
+
 # LLM 層的執行期依賴。`scam_guard/` 的 `dependencies` 維持 `[]` ——
 # 核心只產生 prompt 與 grammar 這兩段字串，推論引擎的實際呼叫在 `llm_runtime/`，
 # 而核心的 import 圖裡沒有那個節點，所以未安裝此 extra 時零個 `try: import`。
