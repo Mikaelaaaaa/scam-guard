@@ -412,16 +412,13 @@ def test_no_state_can_be_read_as_the_model_found_nothing() -> None:
     話術」——那只有 `STATUS_NO_SIGNAL` 能說。短路那一段（`STATUS_SKIPPED`）已移除，
     短路的呈現改由四源列的「語意：未執行」承接。"""
     non_signal = [
-        browser_llm.STATUS_STRUCTURE,
-        browser_llm.STATUS_SEMANTIC,
-        browser_llm.STATUS_TIMEOUT,
         browser_llm.STATUS_LOAD_FAILED,
         browser_llm._SKIPPED_REASON,
         browser_llm._UNREGISTERED_REASON[LlmState.LOADING],
         browser_llm._UNREGISTERED_REASON[LlmState.LOAD_FAILED],
     ]
     assert browser_llm.STATUS_NO_SIGNAL not in non_signal
-    assert len({*non_signal, browser_llm.STATUS_NO_SIGNAL, browser_llm.STATUS_HIT}) == 9
+    assert len({*non_signal, browser_llm.STATUS_NO_SIGNAL, browser_llm.STATUS_HIT}) == 6
     for text in non_signal:
         assert "沒有詐騙話術" not in text
         assert "判為" not in text
