@@ -47,6 +47,13 @@ api = [
     "uvicorn>=0.30",
 ]
 
+# LINE webhook adapter（clients/line/）。與 api 同一套（fastapi + ASGI server）——
+# 驗簽與 Gemini 呼叫都用標準庫的 hmac / urllib，不需 line-bot-sdk。
+line = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+]
+
 # LLM 層的執行期依賴。`scam_guard/` 的 `dependencies` 維持 `[]` ——
 # 核心只產生 prompt 與 grammar 這兩段字串，推論引擎的實際呼叫在 `llm_runtime/`，
 # 而核心的 import 圖裡沒有那個節點，所以未安裝此 extra 時零個 `try: import`。
