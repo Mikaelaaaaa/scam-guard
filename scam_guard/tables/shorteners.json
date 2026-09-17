@@ -16,9 +16,51 @@
   ],
   "shorteners": [
     {
-      "domain": "reurl.cc",
-      "service": "reurl.cc，台灣最常用的免費短網址服務",
-      "source": "https://reurl.cc/ ；observed_in_sample: Cofacts 樣本 28 次",
+      "domain": "0rz.tw",
+      "service": "0rz.tw，台灣早期的短網址服務",
+      "source": "https://0rz.tw/",
+      "verified_on": "2026-09-14"
+    },
+    {
+      "domain": "bit.ly",
+      "service": "Bitly，全球最大的短網址服務",
+      "source": "https://bitly.com/ ；observed_in_sample: Cofacts 樣本 6 次",
+      "verified_on": "2026-09-14"
+    },
+    {
+      "domain": "buff.ly",
+      "service": "公開短網址服務",
+      "source": "PeterDaveHello/url-shorteners 維護清單",
+      "verified_on": "2026-09-17"
+    },
+    {
+      "domain": "clck.ru",
+      "service": "公開短網址服務",
+      "source": "PeterDaveHello/url-shorteners 維護清單",
+      "verified_on": "2026-09-17"
+    },
+    {
+      "domain": "cutt.ly",
+      "service": "公開短網址服務",
+      "source": "PeterDaveHello/url-shorteners 維護清單",
+      "verified_on": "2026-09-17"
+    },
+    {
+      "domain": "da.gd",
+      "service": "公開短網址服務",
+      "source": "PeterDaveHello/url-shorteners 維護清單",
+      "verified_on": "2026-09-17"
+    },
+    {
+      "domain": "goo.gl",
+      "service": "公開短網址服務",
+      "source": "PeterDaveHello/url-shorteners 維護清單",
+      "verified_on": "2026-09-17"
+    },
+    {
+      "domain": "is.gd",
+      "service": "is.gd 短網址服務",
+      "source": "https://is.gd/ ；observed_in_sample: Cofacts 樣本 10 次",
       "verified_on": "2026-09-14"
     },
     {
@@ -34,22 +76,52 @@
       "verified_on": "2026-09-14"
     },
     {
-      "domain": "pse.is",
-      "service": "Lihi 旗下短網址服務（台灣）",
-      "source": "https://lihi.cc/ ；observed_in_sample: Cofacts 樣本 1 次",
-      "verified_on": "2026-09-14"
-    },
-    {
       "domain": "lin.ee",
       "service": "LINE 官方短網址（LINE 官方帳號、LIFF 連結）",
       "source": "https://linecorp.com/ ；observed_in_sample: Cofacts 樣本 23 次",
       "verified_on": "2026-09-14"
     },
     {
-      "domain": "0rz.tw",
-      "service": "0rz.tw，台灣早期的短網址服務",
-      "source": "https://0rz.tw/",
+      "domain": "myppt.cc",
+      "service": "公開短網址服務",
+      "source": "PeterDaveHello/url-shorteners 維護清單",
+      "verified_on": "2026-09-17"
+    },
+    {
+      "domain": "ouo.io",
+      "service": "公開短網址服務",
+      "source": "PeterDaveHello/url-shorteners 維護清單",
+      "verified_on": "2026-09-17"
+    },
+    {
+      "domain": "ow.ly",
+      "service": "公開短網址服務",
+      "source": "PeterDaveHello/url-shorteners 維護清單",
+      "verified_on": "2026-09-17"
+    },
+    {
+      "domain": "page.link",
+      "service": "Firebase Dynamic Links，各家 App 自建的短連結（樣本中為 ynews.page.link）",
+      "source": "https://firebase.google.com/docs/dynamic-links ；observed_in_sample: Cofacts 樣本 8 次",
       "verified_on": "2026-09-14"
+    },
+    {
+      "domain": "pics.ee",
+      "service": "公開短網址服務",
+      "source": "PeterDaveHello/url-shorteners 維護清單",
+      "verified_on": "2026-09-17"
+    },
+    {
+      "domain": "picsee.co",
+      "service": "公開短網址服務",
+      "source": "PeterDaveHello/url-shorteners 維護清單",
+      "verified_on": "2026-09-17"
+    },
+    {
+      "domain": "piee.pw",
+      "service": "公開短網址服務",
+      "source": "PeterDaveHello/url-shorteners 維護清單",
+      "verified_on": "2026-09-17"
     },
     {
       "domain": "ppt.cc",
@@ -58,9 +130,81 @@
       "verified_on": "2026-09-14"
     },
     {
-      "domain": "bit.ly",
-      "service": "Bitly，全球最大的短網址服務",
-      "source": "https://bitly.com/ ；observed_in_sample: Cofacts 樣本 6 次",
+      "domain": "pse.is",
+      "service": "Lihi 旗下短網址服務（台灣）",
+      "source": "https://lihi.cc/ ；observed_in_sample: Cofacts 樣本 1 次",
+      "verified_on": "2026-09-14"
+    },
+    {
+      "domain": "psee.io",
+      "service": "公開短網址服務",
+      "source": "PeterDaveHello/url-shorteners 維護清單",
+      "verified_on": "2026-09-17"
+    },
+    {
+      "domain": "rb.gy",
+      "service": "公開短網址服務",
+      "source": "PeterDaveHello/url-shorteners 維護清單",
+      "verified_on": "2026-09-17"
+    },
+    {
+      "domain": "rebrand.ly",
+      "service": "公開短網址服務",
+      "source": "PeterDaveHello/url-shorteners 維護清單",
+      "verified_on": "2026-09-17"
+    },
+    {
+      "domain": "reurl.cc",
+      "service": "reurl.cc，台灣最常用的免費短網址服務",
+      "source": "https://reurl.cc/ ；observed_in_sample: Cofacts 樣本 28 次",
+      "verified_on": "2026-09-14"
+    },
+    {
+      "domain": "reurl.tw",
+      "service": "公開短網址服務",
+      "source": "PeterDaveHello/url-shorteners 維護清單",
+      "verified_on": "2026-09-17"
+    },
+    {
+      "domain": "risu.io",
+      "service": "公開短網址服務",
+      "source": "PeterDaveHello/url-shorteners 維護清單",
+      "verified_on": "2026-09-17"
+    },
+    {
+      "domain": "s.id",
+      "service": "公開短網址服務",
+      "source": "PeterDaveHello/url-shorteners 維護清單",
+      "verified_on": "2026-09-17"
+    },
+    {
+      "domain": "shorturl.at",
+      "service": "公開短網址服務",
+      "source": "PeterDaveHello/url-shorteners 維護清單",
+      "verified_on": "2026-09-17"
+    },
+    {
+      "domain": "surl.li",
+      "service": "公開短網址服務",
+      "source": "PeterDaveHello/url-shorteners 維護清單",
+      "verified_on": "2026-09-17"
+    },
+    {
+      "domain": "t.co",
+      "service": "X（Twitter）的自動短網址",
+      "source": "https://help.x.com/ ；t.co 由平台自動套用於所有外部連結",
+      "verified_on": "2026-09-14"
+    },
+    {
+      "domain": "t.ly",
+      "service": "公開短網址服務",
+      "source": "PeterDaveHello/url-shorteners 維護清單",
+      "verified_on": "2026-09-17"
+    },
+    {
+      "domain": "tiny.cc",
+      "service": "Tiny.cc 短網址服務",
+      "source": "https://tiny.cc/ ；observed_in_sample: Cofacts 樣本 1 次",
       "verified_on": "2026-09-14"
     },
     {
@@ -70,39 +214,39 @@
       "verified_on": "2026-09-14"
     },
     {
-      "domain": "is.gd",
-      "service": "is.gd 短網址服務",
-      "source": "https://is.gd/ ；observed_in_sample: Cofacts 樣本 10 次",
-      "verified_on": "2026-09-14"
-    },
-    {
-      "domain": "tiny.cc",
-      "service": "Tiny.cc 短網址服務",
-      "source": "https://tiny.cc/ ；observed_in_sample: Cofacts 樣本 1 次",
-      "verified_on": "2026-09-14"
-    },
-    {
-      "domain": "t.co",
-      "service": "X（Twitter）的自動短網址",
-      "source": "https://help.x.com/ ；t.co 由平台自動套用於所有外部連結",
-      "verified_on": "2026-09-14"
-    },
-    {
-      "domain": "youtu.be",
-      "service": "YouTube 的官方短網址",
-      "source": "https://www.youtube.com/ ；observed_in_sample: Cofacts 樣本 5 次",
-      "verified_on": "2026-09-14"
-    },
-    {
-      "domain": "page.link",
-      "service": "Firebase Dynamic Links，各家 App 自建的短連結（樣本中為 ynews.page.link）",
-      "source": "https://firebase.google.com/docs/dynamic-links ；observed_in_sample: Cofacts 樣本 8 次",
-      "verified_on": "2026-09-14"
+      "domain": "tny.im",
+      "service": "公開短網址服務",
+      "source": "PeterDaveHello/url-shorteners 維護清單",
+      "verified_on": "2026-09-17"
     },
     {
       "domain": "twm5g.co",
       "service": "台灣大哥大的官方短網址網域",
       "source": "observed_in_sample: Cofacts 樣本 4 次，指向 taiwanmobile.com 的行銷頁",
+      "verified_on": "2026-09-14"
+    },
+    {
+      "domain": "urlz.fr",
+      "service": "公開短網址服務",
+      "source": "PeterDaveHello/url-shorteners 維護清單",
+      "verified_on": "2026-09-17"
+    },
+    {
+      "domain": "v.gd",
+      "service": "公開短網址服務",
+      "source": "PeterDaveHello/url-shorteners 維護清單",
+      "verified_on": "2026-09-17"
+    },
+    {
+      "domain": "x.gy",
+      "service": "公開短網址服務",
+      "source": "PeterDaveHello/url-shorteners 維護清單",
+      "verified_on": "2026-09-17"
+    },
+    {
+      "domain": "youtu.be",
+      "service": "YouTube 的官方短網址",
+      "source": "https://www.youtube.com/ ；observed_in_sample: Cofacts 樣本 5 次",
       "verified_on": "2026-09-14"
     }
   ]
