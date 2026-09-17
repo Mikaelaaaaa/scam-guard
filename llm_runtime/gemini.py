@@ -17,11 +17,22 @@ application/json` 要求 JSON，格式由 prompt 內文約束，回傳再交給 
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 
 from scam_guard.llm.schema import FIELD_NAMES, LABELS
 from scam_guard.types import ScamType
+
+MAX_ATTEMPTS = 2
+"""一次 generate 最多打幾次。免費層常回 429，重試一次多半就過；再多會拖過 reply_token。"""
+
+RETRY_BACKOFF_S = 1.5
+"""兩次嘗試之間的等待。"""
+
+_TRANSIENT_STATUS = frozenset({429, 500, 502, 503, 504})
+"""可重試的 HTTP 狀態：額度（429）與伺服器忙碌（5xx）。其餘（400/401/404）是設定錯誤，
+不重試、直接 raise。"""
 
 DEFAULT_MODEL = "gemini-3.6-flash"
 """預設模型。`gemini-2.5-flash` 已對新用戶關閉，改用 3.6。可由 `GEMINI_MODEL` 覆寫。"""
@@ -98,6 +109,11 @@ class GeminiRuntime:
         `grammar` 收下不用（Gemini 無 GBNF）。`deadline_s` 併入 HTTP timeout ——
         Gemini 沒有 llama.cpp 那種逐 token 停止條件，所以期限只能是整次呼叫的上界，
         取 `deadline_s` 與建構時 `timeout_s` 的較小者。
+
+        **失敗就 raise `GeminiCallFailed`，不優雅降級。** 使用者的決定：LLM 是必備層，
+        它失敗就是整個判定失敗，前端要顯示「失敗」，不給只有三層的降級結果。免費層常回
+        429，先重試 `MAX_ATTEMPTS` 次（transient）；用盡仍失敗、或設定錯誤（401/404）就
+        raise，由介面層接住並寫「語意判讀失敗」。
         """
         body = json.dumps(
             {
@@ -111,19 +127,28 @@ class GeminiRuntime:
             }
         ).encode("utf-8")
         url = ENDPOINT.format(model=self._model) + "?key=" + self._api_key
-        request = urllib.request.Request(
-            url, data=body, headers={"Content-Type": "application/json"}, method="POST"
-        )
         timeout = min(self._timeout_s, deadline_s) if deadline_s > 0 else self._timeout_s
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", "replace")[:200]
-            raise GeminiCallFailed(f"Gemini 回 HTTP {error.code}：{detail}") from error
-        except urllib.error.URLError as error:
-            raise GeminiCallFailed(f"Gemini 連線失敗：{error.reason}") from error
-        return _extract_text(payload)
+        reason = ""
+        for attempt in range(MAX_ATTEMPTS):
+            request = urllib.request.Request(
+                url, data=body, headers={"Content-Type": "application/json"}, method="POST"
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                return _extract_text(payload)
+            except urllib.error.HTTPError as error:
+                detail = error.read().decode("utf-8", "replace")[:150]
+                if error.code not in _TRANSIENT_STATUS:
+                    raise GeminiCallFailed(
+                        f"Gemini 回 HTTP {error.code}（設定錯誤，不重試）：{detail}"
+                    ) from error
+                reason = f"HTTP {error.code}：{detail}"
+            except urllib.error.URLError as error:
+                reason = f"連線失敗：{error.reason}"
+            if attempt + 1 < MAX_ATTEMPTS:
+                time.sleep(RETRY_BACKOFF_S)
+        raise GeminiCallFailed(f"Gemini 呼叫失敗（已重試 {MAX_ATTEMPTS} 次）：{reason}")
 
 
 class GeminiCallFailed(RuntimeError):
