@@ -39,6 +39,7 @@ import gradio as gr
 
 import demo_ui
 from scam_guard.allowlist import RankAllowlist
+from llm_runtime.gemini import GeminiRuntime
 from scam_guard.blocklist import BlocklistStore
 from scam_guard.check import CheckRegistry
 from scam_guard.llm.check import LlmCheck
@@ -265,7 +266,19 @@ def build_llm_check() -> LlmCheck | None:
     確認 spec 存在後的 `import_module` 因此不可能拋 `ModuleNotFoundError`。
     **不呼叫 `ensure_model()`**（本機不下載 806 MB，demo 啟動不連網）。
     本機同步呼叫 `llama.cpp`，直接建 `LlmCheck`，不需 `TwoPass` / `ReplayRuntime`。
+
+    **`GEMINI_API_KEY` 已設時優先用 Gemini**（雲端，不需本機 806 MB 模型、不需
+    `llm` extra），走 `GeminiRuntime`；未設才落到 llama.cpp。Gemini 送訊息到 Google，
+    是伺服器端介面本來就在的取捨；本機 demo 有 key 就用它，方便驗證。
     """
+    if os.environ.get("GEMINI_API_KEY"):
+        return LlmCheck(
+            runtime=GeminiRuntime(),
+            counter=LlmOutcomeCounter(),
+            table=TABLE,
+            budget=DEFAULT_BUDGET,
+            deadline_s=LLM_DEADLINE_S,
+        )
     model_path = os.environ.get(GGUF_ENV)
     if not model_path:
         print(

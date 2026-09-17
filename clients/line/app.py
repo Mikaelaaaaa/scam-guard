@@ -26,6 +26,7 @@ from fastapi import FastAPI, Request, Response
 
 from clients.line.registry import LLM_ENABLED, REGISTRY, TABLE
 from clients.line.render import render_verdict
+from llm_runtime.gemini import GeminiCallFailed
 from scam_guard.normalize import DEFAULT_LIMITS
 from scam_guard.pipeline import detect
 from scam_guard.types import Message
@@ -35,6 +36,8 @@ logger = logging.getLogger("scam_guard.line")
 
 REPLY_ENDPOINT = "https://api.line.me/v2/bot/message/reply"
 UNSUPPORTED = "我只看得懂文字訊息，請把你收到的可疑訊息用文字貼給我。"
+LLM_FAILED = "語意判讀失敗，本次無法完成判定，請稍後再試。"
+"""語意層（必備）失敗時的回覆。使用者要求：失敗就寫失敗，不給只有規則的降級結果。"""
 
 app = FastAPI(title="scam-guard LINE adapter")
 
@@ -79,9 +82,17 @@ def _reply(reply_token: str, text: str) -> None:
 
 
 def _judge(text: str) -> str:
-    """一則文字訊息 → 判定 → 回覆字串。"""
+    """一則文字訊息 → 判定 → 回覆字串。
+
+    語意層（Gemini，必備）失敗時回 `LLM_FAILED` —— 不優雅降級成只有規則層的結果。
+    只接 `GeminiCallFailed`（具體型別），其餘例外照常傳播。
+    """
     request = ScamRequest(messages=[Message(text=text)])
-    verdict = detect(request, REGISTRY, TABLE, limits=DEFAULT_LIMITS)
+    try:
+        verdict = detect(request, REGISTRY, TABLE, limits=DEFAULT_LIMITS)
+    except GeminiCallFailed as error:
+        logger.warning("語意層失敗，回覆失敗訊息：%s", error)
+        return LLM_FAILED
     return render_verdict(verdict)
 
 

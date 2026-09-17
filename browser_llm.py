@@ -154,28 +154,15 @@ class LlmState(Enum):
 
 
 STATUS_LOAD_FAILED = "模型載入失敗，這次的判定只有規則層。失敗的原文寫在上方的模型那一列。"
-STATUS_STRUCTURE = "這次的語意判讀沒有產生一個完整的 JSON 物件，整筆作廢，判定維持規則層的結果。"
-STATUS_SEMANTIC = (
-    "這次的語意判讀沒有通過語意驗證（例如指到一句不存在的句子），整筆作廢，判定維持規則層的結果。"
-)
-STATUS_TIMEOUT = "這次的語意判讀在期限內沒有寫完，已中止，判定維持規則層的結果。"
 STATUS_NO_SIGNAL = "語意判讀完成：模型讀完整段訊息，判為沒有詐騙話術，因此沒有新增任何訊號。"
 STATUS_HIT = "語意判讀完成：模型判出話術，判定卡上多了一項語意訊號。"
 """畫面上關於模型層的文字，一個狀態一段。
 
 **沒有任何一段可以被讀成「模型說沒問題」，除了 `STATUS_NO_SIGNAL`** ——
-而那一段的前提是模型真的跑完、輸出真的通過了七條語意驗證。三種失敗
-（結構／語意／逾時）與載入失敗各自說自己的事，理由是它們指向不同的處置（見
-`scam_guard.llm.validate.LlmOutcome` 的對照表）。三種「未執行」的子原因
-（無需動用／語意模型載入中／語意模型載入失敗）不在這一列，走四源列語意格的
-`unregistered` 通道（`_UNREGISTERED_REASON` / `_SKIPPED_REASON`）。
+而那一段的前提是模型真的跑完、輸出真的通過了七條語意驗證。三種判讀失敗
+（結構／語意／逾時）**不再有文字**（使用者的決定：沒產生合法 JSON、沒通過驗證
+時不在下面寫解釋），由四源列語意格的「未執行」承接，與短路同一個通道。
 """
-
-_OUTCOME_STATUS: Mapping[LlmOutcome, str] = {
-    LlmOutcome.STRUCTURE: STATUS_STRUCTURE,
-    LlmOutcome.SEMANTIC: STATUS_SEMANTIC,
-    LlmOutcome.TIMEOUT: STATUS_TIMEOUT,
-}
 
 LLM_CHECK_LABEL = "語意判讀"
 
@@ -481,14 +468,13 @@ def first_pass_status(state: LlmState) -> str:
 def second_pass_status(result: SecondPass) -> str:
     """第二趟之後關於模型層的一段文字。
 
-    被短路（outcome 為 `None`）時回空字串：短路的呈現由四源列的「語意：未執行」
-    承接，不再另以一段文字解釋為何沒用到語意層。其餘狀態的文字照舊。
+    **三種失敗（STRUCTURE / SEMANTIC / TIMEOUT）與短路一樣回空字串。** 使用者的決定：
+    語意層沒產生合法 JSON、或沒通過驗證時，不在下面寫一段解釋，由四源列的「語意：
+    未執行」承接就好。只有真的跑完（`OK`）才有文字：命中或判為無話術。
     """
-    if result.outcome is None:
-        return ""
     if result.outcome is LlmOutcome.OK:
         return STATUS_HIT if _llm_hit(result.verdict) else STATUS_NO_SIGNAL
-    return _OUTCOME_STATUS[result.outcome]
+    return ""
 
 
 def first_pass_unregistered(

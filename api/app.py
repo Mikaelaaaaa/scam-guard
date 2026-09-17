@@ -62,6 +62,7 @@ from api.errors import validation_error_handler
 from api.health import HealthResponse, build_health
 from api.limits import BodySizeLimitMiddleware
 from api.schema import CheckRequest, CheckResponse, verdict_to_response
+from llm_runtime.gemini import GeminiRuntime
 from scam_guard.allowlist import RankAllowlist
 from scam_guard.blocklist import BlocklistStore
 from scam_guard.check import CheckRegistry
@@ -201,7 +202,18 @@ def build_llm_check() -> LlmCheck | None:
     extra 是否安裝以 `importlib.util.find_spec` 布林探測，**不用 `try`/`except import`**；
     確認 spec 存在後的 `import_module` 因此不可能拋 `ModuleNotFoundError`。
     **不呼叫 `ensure_model()`**（不下載模型）。同步呼叫 `llama.cpp`，直接建 `LlmCheck`。
+
+    **`GEMINI_API_KEY` 已設時優先用 Gemini**（雲端，不需本機 GGUF 與 `llm` extra），
+    與 `app.py`、LINE adapter 一致 —— 三個伺服器端介面因此走同一個 Gemini 後端。
     """
+    if os.environ.get("GEMINI_API_KEY"):
+        return LlmCheck(
+            runtime=GeminiRuntime(),
+            counter=LlmOutcomeCounter(),
+            table=TABLE,
+            budget=DEFAULT_BUDGET,
+            deadline_s=LLM_DEADLINE_S,
+        )
     model_path = os.environ.get(GGUF_ENV)
     if not model_path:
         print(

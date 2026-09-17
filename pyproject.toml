@@ -54,6 +54,13 @@ line = [
     "uvicorn>=0.30",
 ]
 
+# 單一伺服器 web demo（clients/web/）：FastAPI 服務前端 HTML + 判定，與 api 同一套。
+web = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "python-multipart>=0.0.9",
+]
+
 # LLM 層的執行期依賴。`scam_guard/` 的 `dependencies` 維持 `[]` ——
 # 核心只產生 prompt 與 grammar 這兩段字串，推論引擎的實際呼叫在 `llm_runtime/`，
 # 而核心的 import 圖裡沒有那個節點，所以未安裝此 extra 時零個 `try: import`。
@@ -140,6 +147,9 @@ select = ["E", "F", "TID"]
 [tool.ruff.lint.per-file-ignores]
 "api/*" = ["TID251"]
 "adapters/*" = ["TID251"]
+# clients/ 是介面層（LINE webhook、單一伺服器 web demo），與 api/ 同性質：
+# 當然要 import fastapi/linebot，豁免核心界線的禁令。
+"clients/*" = ["TID251"]
 "app.py" = ["TID251"]
 # tools/ 在部署前由人執行一次，產物是一份本機快照；net/ 在每次請求中執行。
 # 兩者都做網路 I/O，豁免上方的網路函式庫禁令 —— 但**不可合併成一個目錄**：
